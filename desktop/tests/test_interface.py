@@ -207,6 +207,11 @@ def test_gear_hover_keeps_layout_and_reverses(app):
     assert (gear.winfo_reqwidth(),gear.winfo_reqheight()) == before
 
 
+def test_title_chinese_glyphs_are_not_identical_missing_boxes(app):
+    # Pillow does not inherit Tk's automatic CJK font fallback.
+    assert app.ui.title._raster('录').tobytes() != app.ui.title._raster('音').tobytes()
+
+
 def test_morphing_title_interrupts_and_fits_long_text(app):
     title = app.ui.title
     title.configure(text='just beat it')

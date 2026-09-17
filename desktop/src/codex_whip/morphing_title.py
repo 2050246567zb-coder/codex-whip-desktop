@@ -36,7 +36,11 @@ class MorphingTitle(tk.Label):
         self._mask = Image.new('L',(880,104))
         self._old = self._new = self._mask
         super().__init__(parent,text='',bg=parent.cget('bg'),bd=0,padx=0,pady=0)
-        candidates = ['C:/Windows/Fonts/msyhbd.ttc','/System/Library/Fonts/Supplemental/Arial Bold.ttf']
+        candidates = ['C:/Windows/Fonts/msyhbd.ttc',
+                      '/System/Library/Fonts/PingFang.ttc',
+                      '/System/Library/Fonts/STHeiti Medium.ttc',
+                      '/System/Library/Fonts/Supplemental/Songti.ttc',
+                      '/System/Library/Fonts/Supplemental/Arial Bold.ttf']
         size = round(self.winfo_fpixels('23p')*2)
         path = next((p for p in candidates if Path(p).exists()),None)
         self._font = ImageFont.truetype(path,size) if path else ImageFont.load_default(size=size)
