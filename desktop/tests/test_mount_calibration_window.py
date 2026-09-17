@@ -104,6 +104,6 @@ def test_main_window_first_use_reopen_and_stale_arm_result(tmp_path, monkeypatch
     next_launch = CodexWhipWindow(root, Settings(), None)
     try:
         assert next_launch._mount_prompted  # No forced onboarding for saved users.
-        assert next_launch.sensor_calibrate_button.cget("text") == "校准手持零点"
+        assert next_launch.sensor_calibrate_button.cget("text") == "立即归中"
     finally:
         next_launch.close()

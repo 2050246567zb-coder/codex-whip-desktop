@@ -1270,6 +1270,9 @@ class CodexWhipWindow:
 
 
 def main() -> int:
+    if "--ui-smoke" in sys.argv:
+        from .ui_smoke import main as smoke_main
+        return smoke_main(sys.argv[sys.argv.index("--ui-smoke") + 1:])
     migration = import_bundled_profile_once()
     config_path = find_config_path()
     try:
