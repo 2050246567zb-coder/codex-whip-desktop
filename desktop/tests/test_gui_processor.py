@@ -1,0 +1,228 @@
+import asyncio
+import threading
+
+from codex_whip.calibration import LearningSample
+from codex_whip.gui import CodexWhipWindow, GuiEventProcessor
+from codex_whip.models import DeviceMessage, RawMotionBatch, RawMotionFrame, WhipEvent
+from codex_whip.senders.base import SendResult
+from codex_whip.settings import Settings
+from codex_whip.voice import VoiceModule, VoiceSettingsStore
+from codex_whip.visual_settings import VisualSettings, VisualSettingsStore
+
+
+def test_safe_gui_mode_records_whip_without_sending() -> None:
+    emitted: list[tuple[str, object]] = []
+    processor = GuiEventProcessor(
+        Settings(), threading.Event(), lambda kind, payload: emitted.append((kind, payload))
+    )
+
+    asyncio.run(processor.handle(WhipEvent(7, 980.0, 3.2, 120)))
+
+    assert emitted[0][0] == "whip"
+    assert emitted[0][1]["sequence"] == 7  # type: ignore[index]
+    assert emitted[1][0] == "send_result"
+    assert emitted[1][1].sent is False  # type: ignore[union-attr]
+
+
+def test_gui_processor_reports_device_messages() -> None:
+    emitted: list[tuple[str, object]] = []
+    processor = GuiEventProcessor(
+        Settings(), threading.Event(), lambda kind, payload: emitted.append((kind, payload))
+    )
+
+    asyncio.run(processor.handle(DeviceMessage("PONG", ("0.1.0",), "PONG,0.1.0")))
+
+    assert emitted == [
+        ("device", DeviceMessage("PONG", ("0.1.0",), "PONG,0.1.0"))
+    ]
+
+
+def test_gui_processor_routes_learning_samples_without_sending() -> None:
+    emitted: list[tuple[str, object]] = []
+    processor = GuiEventProcessor(
+        Settings(), threading.Event(), lambda kind, payload: emitted.append((kind, payload))
+    )
+    sample = LearningSample(1, "CAPTURED", 800, 1.2, 140, 70, 0.4, 0.6, 20, 200)
+
+    asyncio.run(processor.handle(sample))
+
+    assert emitted == [("learning_sample", sample)]
+
+
+def test_firmware_version_gate() -> None:
+    assert CodexWhipWindow._version_at_least("0.3.1", (0, 3, 1))
+    assert CodexWhipWindow._version_at_least("0.4", (0, 3, 1))
+    assert not CodexWhipWindow._version_at_least("0.3.0", (0, 3, 1))
+    assert not CodexWhipWindow._version_at_least("broken", (0, 3, 1))
+
+
+def test_gui_applies_visual_damage_frequency_immediately(tmp_path) -> None:
+    window = object.__new__(CodexWhipWindow)
+    window.visual_store = VisualSettingsStore(tmp_path / "visual-settings.json")
+    applied: list[int] = []
+    emitted: list[tuple[str, object]] = []
+    window.effects = type(
+        "Effects",
+        (),
+        {"set_damage_interval": lambda _self, value: applied.append(value)},
+    )()
+    window.emit = lambda kind, payload: emitted.append((kind, payload))
+
+    result = window.apply_visual_settings(VisualSettings(strikes_per_wound=4))
+
+    assert result is True
+    assert window.visual_store.settings.strikes_per_wound == 4
+    assert applied == [4]
+    assert emitted[-1] == (
+        "log",
+        "视觉设置已保存：每 4 次显示伤口",
+    )
+
+
+def test_gui_processor_exposes_whip2_shape_metrics() -> None:
+    emitted: list[tuple[str, object]] = []
+    processor = GuiEventProcessor(
+        Settings(), threading.Event(), lambda kind, payload: emitted.append((kind, payload))
+    )
+    event = WhipEvent(8, 1200.0, 4.1, 144, 91.5, 0.76, 0.64, 28, 215.0)
+
+    asyncio.run(processor.handle(event))
+
+    payload = emitted[0][1]
+    assert payload["angular_travel"] == 91.5  # type: ignore[index]
+    assert payload["direction_consistency"] == 0.76  # type: ignore[index]
+    assert payload["dominant_axis"] == 0.64  # type: ignore[index]
+    assert payload["peak_gap"] == 28  # type: ignore[index]
+
+
+def test_gui_processor_marks_mouse_whip_source() -> None:
+    emitted: list[tuple[str, object]] = []
+    processor = GuiEventProcessor(
+        Settings(), threading.Event(), lambda kind, payload: emitted.append((kind, payload))
+    )
+
+    asyncio.run(processor.handle(WhipEvent(1_000_001, 980, 3.2, 120), source="mouse"))
+
+    payload = emitted[0][1]
+    assert emitted[0][0] == "whip"
+    assert payload["source"] == "mouse"  # type: ignore[index]
+
+
+def test_gui_processor_routes_raw_imu_batches_to_screen_pose() -> None:
+    emitted: list[tuple[str, object]] = []
+    processor = GuiEventProcessor(
+        Settings(), threading.Event(), lambda kind, payload: emitted.append((kind, payload))
+    )
+    batch = RawMotionBatch(
+        1,
+        1000,
+            (
+                RawMotionFrame(1000, 0, 0, 0, 0, 0, 1),
+                RawMotionFrame(1010, 0, 420, 180, 0.35, 0.10, 0.92),
+                RawMotionFrame(1020, 0, 420, 180, 0.35, 0.10, 0.92),
+            ),
+    )
+
+    asyncio.run(processor.handle(batch))
+
+    assert emitted[0][0] == "sensor_pose"
+    pose = emitted[0][1]
+    assert abs(pose.offset_x) > 0.1  # type: ignore[union-attr]
+    assert abs(pose.angle_degrees) > 0.1  # type: ignore[union-attr]
+
+
+def test_gui_processor_calibrates_recent_sensor_pose() -> None:
+    emitted: list[tuple[str, object]] = []
+    processor = GuiEventProcessor(
+        Settings(), threading.Event(), lambda kind, payload: emitted.append((kind, payload))
+    )
+    raw = RawMotionBatch(
+        1,
+        1000,
+        tuple(RawMotionFrame(t, 0, 0, 0, 0, 0.6, 0.8) for t in range(1000, 1610, 10)),
+    )
+    asyncio.run(processor.handle(raw))
+    emitted.clear()
+
+    processor.calibrate_sensor_neutral()
+
+    assert emitted[0][0] == "sensor_pose"
+    pose = emitted[0][1]
+    assert pose.offset_x == 0.0  # type: ignore[union-attr]
+    assert pose.offset_y == 0.0  # type: ignore[union-attr]
+    assert emitted[1] == (
+        "sensor_calibration",
+        (True, "手持零点已校准；当前姿态对应 Codex 窗口中心。"),
+    )
+
+
+def test_processor_enables_idle_center_only_outside_direction_wizard():
+    emitted = []
+    processor = GuiEventProcessor(Settings(), threading.Event(), lambda *e: emitted.append(e))
+    def batch(start, end):
+        return RawMotionBatch(1, start, tuple(RawMotionFrame(t, 0, 0, 0, 0, 0, 1)
+                                             for t in range(start, end, 10)))
+    asyncio.run(processor.handle(batch(0, 3500)))
+    assert any(k == 'sensor_pose' and v.auto_centered for k, v in emitted)
+    assert not any(k in ('whip', 'send_result') for k, _ in emitted)
+    emitted.clear()
+    processor.mount_command('open', 'idle-test')
+    asyncio.run(processor.handle(batch(3500, 10500)))
+    assert all(not v.auto_centered for k, v in emitted if k == 'sensor_pose')
+    processor.mount_command('cancel', 'idle-test')
+    emitted.clear()
+    asyncio.run(processor.handle(batch(10500, 14000)))
+    assert any(k == 'sensor_pose' and v.auto_centered for k, v in emitted)
+
+
+def test_auto_center_never_changes_raw_input_or_creates_whip_events():
+    from unittest.mock import Mock
+    engine = Mock()
+    engine.feed_batch.return_value = None
+    emitted = []
+    processor = GuiEventProcessor(Settings(), threading.Event(), lambda *e: emitted.append(e), motion_engine=engine)
+    samples = tuple(RawMotionFrame(t, 0, 0, 0, 0, 0, 1) for t in range(0, 3600, 10))
+    batch = RawMotionBatch(1, 0, samples)
+    asyncio.run(processor.handle(batch))
+    assert engine.feed_batch.call_args.args[0] is batch
+    assert batch.frames == samples
+    assert any(k == 'sensor_pose' and v.auto_centered for k, v in emitted)
+    assert not any(k in ('whip', 'send_result', 'send_error') for k, _ in emitted)
+
+
+def test_pending_voice_text_has_priority_and_clears_only_after_send(tmp_path) -> None:
+    emitted: list[tuple[str, object]] = []
+    voice = VoiceModule(
+        VoiceSettingsStore(tmp_path / "voice.json"),
+        lambda kind, payload: emitted.append((kind, payload)),
+    )
+    voice.set_pending("完成语音指定的关键任务")
+    emitted.clear()
+    armed = threading.Event()
+    armed.set()
+    processor = GuiEventProcessor(
+        Settings(), armed, lambda kind, payload: emitted.append((kind, payload)),
+        voice_module=voice,
+    )
+
+    class Sender:
+        def send(self, prompt, _event):
+            assert prompt == "完成语音指定的关键任务"
+            return SendResult(True, "已发送")
+
+    processor._live_sender = Sender()
+    asyncio.run(processor.handle(WhipEvent(44, 900, 3.0, 120)))
+
+    whip_payload = next(payload for kind, payload in emitted if kind == "whip")
+    assert whip_payload["voice_prompt"] is True
+    assert voice.pending_text is None
+
+
+def test_retired_shortcut_never_registers():
+    from unittest.mock import Mock
+    window = object.__new__(CodexWhipWindow)
+    listener = Mock()
+    window._scare_hotkey = listener
+    assert window._replace_scare_hotkey(VisualSettings(scare_enabled=True), log=True)
+    listener.stop.assert_called_once()
+    assert window._scare_hotkey is None

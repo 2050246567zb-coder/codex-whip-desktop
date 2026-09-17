@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-whip"
+version = "2.2.22"
+description = "Receive BLE whip gestures and send a configurable nudge to Codex on Windows or macOS."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "bleak>=2.1,<4",
+  "Pillow>=11.2,<13",
+  "psutil>=6,<8",
+  "pywinauto>=0.6.9,<1; sys_platform == 'win32'",
+  "pyobjc-framework-Cocoa>=11,<13; sys_platform == 'darwin'",
+  "pyobjc-framework-Quartz>=11,<13; sys_platform == 'darwin'",
+  "opencc-python-reimplemented>=0.1.7,<1; sys_platform == 'darwin'",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<10",
+  "pytest-cov>=5,<8",
+]
+build = [
+  "pyinstaller>=6,<7",
+]
+
+[project.scripts]
+codex-whip = "codex_whip.cli:main"
+
+[project.gui-scripts]
+codex-whip-gui = "codex_whip.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["src"]
+testpaths = ["tests"]

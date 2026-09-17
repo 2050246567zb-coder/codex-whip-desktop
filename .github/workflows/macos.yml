@@ -1,0 +1,38 @@
+name: macOS build and UI regression
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  apple-silicon:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python with native Tk
+        run: |
+          brew install python@3.12 python-tk@3.12
+          echo "CODEX_WHIP_PYTHON=$(brew --prefix python@3.12)/bin/python3.12" >> "$GITHUB_ENV"
+      - name: Build native app
+        run: bash macos/build-macos.sh
+      - name: Install test tools
+        run: macos/.venv-macos/bin/python -m pip install -e 'desktop[dev]'
+      - name: UI and animation regression (isolated processes)
+        shell: bash
+        run: |
+          mkdir -p macos/test-results
+          failed=0
+          for suite in interface interface_state hover_clock morphing_title tick_slider settings_window mount_calibration_window effects macos_sender; do
+            macos/.venv-macos/bin/python -m pytest "desktop/tests/test_${suite}.py" --junitxml="macos/test-results/${suite}.xml" || failed=1
+          done
+          exit "$failed"
+      - name: Save build and test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexWhip-macOS-Apple-Silicon
+          retention-days: 7
+          path: |
+            macos/dist/*.dmg
+            macos/dist/*.zip
+            macos/test-results/*.xml

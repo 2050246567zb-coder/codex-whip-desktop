@@ -1,0 +1,23 @@
+[ble]
+device_name = "CodexWhip"
+scan_timeout_seconds = 12.0
+reconnect_seconds = 3.0
+
+[events]
+minimum_interval_seconds = 1.5
+
+[codex]
+# Live mode accepts only a visible ChatGPT.exe whose executable lives inside
+# the Windows package OpenAI.Codex_*. It fails closed if the target is ambiguous.
+package_marker = "OpenAI.Codex_"
+composer_name_hints = ["message", "ask", "codex", "输入", "消息"]
+send_button_name_hints = ["send", "发送"]
+refuse_when_composer_has_text = true
+
+[messages]
+items = [
+  "鞭子响了一下。继续当前任务，马上推进最关键的下一步；不要牺牲正确性，少解释，先产出可验证结果。",
+  "检测到一次催工挥动：别停在计划上，继续执行当前任务，完成一个可验证节点后再汇报。",
+  "加速干活：沿着当前目标继续推进，优先解决阻塞项，不要重复已经完成的内容。",
+]
+

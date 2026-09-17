@@ -1,0 +1,235 @@
+import tkinter as tk
+
+import pytest
+
+from codex_whip.calibration import DetectorProfile, LearningSample
+from codex_whip.motion_v3 import MotionEngine
+from codex_whip.messages import MessageProfileStore
+from codex_whip.settings_window import DetectorSettingsWindow
+from codex_whip.voice import VoiceSettingsStore
+from codex_whip.visual_settings import VisualSettings, VisualSettingsStore
+
+
+def test_action_button_proportions_survive_disabled_state(root):
+    from tkinter import font as tkfont
+    from codex_whip.settings_style import ActionButton
+    calls = []
+    buttons = [ActionButton(root,text,lambda: calls.append(True),primary=i!=1)
+               for i,text in enumerate(('开始校准','取消','保存并完成'))]
+    try:
+        for b in buttons:
+            b.pack()
+        root.update_idletasks()
+        sizes = [(b.winfo_reqwidth(),b.winfo_reqheight()) for b in buttons]
+        assert len({h for w,h in sizes}) == 1
+        for b,(w,h) in zip(buttons,sizes):
+            font = tkfont.Font(root=b,font=b.cget('font'))
+            assert b._paint_key[0]-font.measure(b.cget('text')) == 28
+        save = buttons[-1]
+        save.configure(state='disabled')
+        root.update_idletasks()
+        assert (save.winfo_reqwidth(),save.winfo_reqheight()) == sizes[-1]
+        assert save._disabled_surface.winfo_manager() == 'place'
+        save.invoke()
+        assert calls == []
+        save.configure(state='normal')
+        assert not save._disabled_surface.winfo_manager()
+        save.invoke()
+        assert calls == [True]
+    finally:
+        for b in buttons:
+            b.destroy()
+
+
+def sample(sequence: int) -> LearningSample:
+    return LearningSample(
+        sequence=sequence,
+        result="CAPTURED",
+        peak_gyro_dps=900.0,
+        peak_dynamic_accel_g=1.2,
+        duration_ms=140,
+        angular_travel_deg=70.0,
+        direction_consistency=0.4,
+        dominant_axis_ratio=0.6,
+        peak_gap_ms=25,
+        peak_jerk_gps=200.0,
+    )
+
+
+@pytest.fixture(scope="module")
+def root() -> tk.Tk:
+    value = tk.Tk()
+    value.withdraw()
+    yield value
+    value.destroy()
+
+
+def test_learning_counts_only_after_manual_take(root: tk.Tk) -> None:
+    commands: list[str] = []
+    window = DetectorSettingsWindow(
+        root,
+        DetectorProfile(),
+        lambda command: commands.append(command) or True,
+        lambda _profile: True,
+    )
+    try:
+        window.start_positive_learning()
+        window.handle_sample(sample(99))
+        assert len(window._positive_samples) == 0
+
+        for sequence in range(15):
+            window.request_record()
+            assert commands[-1] == "LEARN,TAKE"
+            window.handle_sample(sample(sequence))
+
+        assert len(window._positive_samples) == 15
+        assert window._stage == "positive_done"
+        assert commands.count("LEARN,TAKE") == 15
+        assert commands[-1] == "LEARN,STOP"
+    finally:
+        window.close()
+
+
+def test_empty_take_does_not_increment_progress(root: tk.Tk) -> None:
+    commands: list[str] = []
+    window = DetectorSettingsWindow(
+        root,
+        DetectorProfile(),
+        lambda command: commands.append(command) or True,
+        lambda _profile: True,
+    )
+    try:
+        window.start_positive_learning()
+        window.request_record()
+        window.handle_device_status(("EMPTY",))
+
+        assert len(window._positive_samples) == 0
+        assert not window._awaiting_record
+        assert str(window.record_button["state"]) == "normal"
+        assert "未计数" in window.learning_status.get()
+    finally:
+        window.close()
+
+
+def test_v3_settings_builds_complete_learning_controls(
+    root: tk.Tk, tmp_path
+) -> None:
+    commands: list[str] = []
+    engine = MotionEngine(tmp_path / "motion-v3.json")
+    window = DetectorSettingsWindow(
+        root,
+        DetectorProfile(),
+        lambda command: commands.append(command) or True,
+        lambda _profile: True,
+        motion_engine=engine,
+        raw_supported=True,
+    )
+    try:
+        assert window.positive_button.winfo_exists()
+        assert window.record_button.winfo_exists()
+        assert window.tolerance_scale.winfo_exists()
+        assert window.save_button.winfo_exists()
+
+        window.start_positive_learning()
+        assert commands[-1] == "RAW,2"
+        assert window._stage == "positive"
+        assert str(window.record_button["state"]) == "normal"
+    finally:
+        window.close()
+
+
+def test_message_settings_build_cards_and_save_order(root: tk.Tk, tmp_path) -> None:
+    store = MessageProfileStore(("first", "second"), tmp_path / "messages.json")
+    window = DetectorSettingsWindow(
+        root,
+        DetectorProfile(),
+        lambda _command: True,
+        lambda _profile: True,
+        message_store=store,
+    )
+    try:
+        assert len(window._message_widgets) == 2
+        window.message_order.set("sequential")
+        window._message_widgets[0].delete("1.0", "end")
+        window._message_widgets[0].insert("1.0", "updated")
+        window._save_messages()
+
+        assert store.profile.order == "sequential"
+        assert store.profile.messages == ("updated", "second")
+    finally:
+        window.close()
+
+
+def test_visual_settings_adjust_and_save_wound_frequency(root: tk.Tk, tmp_path) -> None:
+    message_store = MessageProfileStore(("first",), tmp_path / "messages.json")
+    visual_store = VisualSettingsStore(tmp_path / "visual-settings.json")
+
+    def apply(settings: VisualSettings) -> bool:
+        visual_store.update(settings)
+        return True
+
+    window = DetectorSettingsWindow(
+        root,
+        DetectorProfile(),
+        lambda _command: True,
+        lambda _profile: True,
+        message_store=message_store,
+        visual_store=visual_store,
+        apply_visual_settings=apply,
+    )
+    try:
+        assert window.visual_frequency_spinbox.winfo_exists()
+        assert not hasattr(window, "visual_scare_hotkey_entry")
+        window.visual_strikes_per_wound.set("5")
+        window._save_visual_settings()
+        assert visual_store.settings.strikes_per_wound == 5
+        assert not visual_store.settings.scare_enabled
+        assert "每 5 次" in window.visual_status.get()
+    finally:
+        window.close()
+
+
+def test_tap_calibration_auto_steps_test_and_cancel(root: tk.Tk, tmp_path) -> None:
+    starts: list[bool] = []
+    records: list[bool] = []
+    intervals: list[int] = []
+    cancels: list[bool] = []
+    store = VoiceSettingsStore(tmp_path / "voice.json")
+    window = DetectorSettingsWindow(
+        root,
+        DetectorProfile(),
+        lambda _command: True,
+        lambda _profile: True,
+        voice_store=store,
+        start_voice_calibration=lambda: starts.append(True) or True,
+        record_voice_calibration=lambda: records.append(True) or True,
+        cancel_voice_calibration=lambda: cancels.append(True),
+        voice_model_ready=lambda: True,
+        set_tap_interval=intervals.append,
+    )
+    try:
+        assert str(window.voice_record_button["state"]) == "disabled"
+        window._begin_voice_calibration()
+        assert starts == [True]
+        assert not window.voice_record_button.winfo_ismapped()
+        assert window._tap_stage == 'light'
+        assert str(window.tap_save['state']) == 'disabled'
+        window.tap_interval_slider.set(.2)
+        assert intervals[-1] == 200
+        assert window.tap_interval_label.get() == '敲击间隔：0.2秒'
+        assert window.tap_save._paint_key[2] == '#AFC5EB'
+        assert window.tap_save.cget('image')
+        window.handle_tap_calibration(dict(stage='heavy'))
+        assert '2 / 2' in window.tap_step.get()
+        window.handle_tap_calibration(dict(stage='test', threshold=.5, light=.8, heavy=4, accepted=1))
+        assert str(window.tap_save['state']) == 'normal'
+        window.tap_interval_slider.set(1)
+        assert intervals[-1] == 1000
+        assert '测试通过 1 次' in window.tap_result.get()
+        assert records == []
+        window._select_section('voice')
+        assert not window._voice_calibrating
+        assert window.tap_interval.get() == .7
+    finally:
+        window.close()
+    assert cancels == [True]
