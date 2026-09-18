@@ -1286,6 +1286,18 @@ def main() -> int:
 
     root = tk.Tk()
     window = CodexWhipWindow(root, settings, config_path)
+    # Opt-in CI evidence only: use the normal constructor, native overlays,
+    # discovery and BLE worker, without replacing any feature with mocks.
+    startup_report = os.environ.get('CODEX_WHIP_STARTUP_REPORT')
+    if startup_report:
+        def report_ready():
+            Path(startup_report).write_text(json.dumps({
+                'ready': True, 'version': __version__,
+                'root_visible': bool(root.winfo_viewable()),
+                'native_effects': type(window.effects).__name__,
+                'sending_enabled': window.armed.is_set(),
+            }), encoding='utf-8')
+        root.after(1500, report_ready)
     if migration.imported:
         window.emit("log", f"已继承 Windows 数据：{len(migration.imported)} 个文件")
     for error in migration.errors:

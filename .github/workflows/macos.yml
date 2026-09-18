@@ -19,6 +19,8 @@ jobs:
         run: bash macos/build-macos.sh
       - name: Install test tools
         run: macos/.venv-macos/bin/python -m pip install -e 'desktop[dev]'
+      - name: Normal packaged startup with native features (no mocks)
+        run: macos/.venv-macos/bin/python macos/test-normal-startup.py
       - name: Launch packaged UI with synthetic inputs (no BLE or sending)
         run: macos/dist/CodexWhip.app/Contents/MacOS/CodexWhip --ui-smoke --output "$PWD/macos/test-results/ui"
       - name: UI and animation regression (isolated processes)
@@ -41,3 +43,4 @@ jobs:
             macos/dist/*.zip
             macos/test-results/*.xml
             macos/test-results/ui/
+            macos/test-results/startup/
