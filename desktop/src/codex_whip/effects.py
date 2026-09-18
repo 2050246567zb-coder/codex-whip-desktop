@@ -1698,6 +1698,7 @@ class CodexWhipEffects:
         self.hit_window.bind("<ButtonPress-1>", self._handle_press)
         self.hit_window.bind("<B1-Motion>", self._handle_drag)
         self.hit_window.bind("<ButtonRelease-1>", self._handle_release)
+        self.hit_window.bind("<Button-3>", self._handle_clock_toggle)
         self.capture_window.bind("<Motion>", self._handle_manual_motion)
         self.capture_window.bind("<Button-1>", self._handle_manual_strike)
         self.capture_window.bind("<Button-3>", self._handle_manual_cancel)
@@ -2355,6 +2356,9 @@ class CodexWhipEffects:
         self.damage_window.withdraw()
 
     def play(self) -> bool:
+        presentation = getattr(self, '_presentation', None)
+        if presentation is not None:
+            self._begin_presentation_strike()
         if getattr(self, "_settings_open", False):
             return False
         if getattr(self, "_scare_active", False):
@@ -2403,6 +2407,7 @@ class CodexWhipEffects:
 
     def play_at(self, screen_point: Point) -> bool:
         """Play a strike whose impact tip lands on a screen coordinate."""
+        self._begin_presentation_strike()
         if getattr(self, "_scare_active", False):
             return False
         if not self._target_available():
@@ -2541,24 +2546,26 @@ class CodexWhipEffects:
             self.hit_window.withdraw()
             return
         padding = 20
+        presentation = getattr(self, '_presentation', None)
+        hit_pose = presentation.hit_pose if presentation is not None else self.IDLE
         x1 = round(
             self._visual_origin[0]
-            + min(self.IDLE.handle_start[0], self.IDLE.handle_end[0])
+            + min(hit_pose.handle_start[0], hit_pose.handle_end[0])
             - padding
         )
         y1 = round(
             self._visual_origin[1]
-            + min(self.IDLE.handle_start[1], self.IDLE.handle_end[1])
+            + min(hit_pose.handle_start[1], hit_pose.handle_end[1])
             - padding
         )
         x2 = round(
             self._visual_origin[0]
-            + max(self.IDLE.handle_start[0], self.IDLE.handle_end[0])
+            + max(hit_pose.handle_start[0], hit_pose.handle_end[0])
             + padding
         )
         y2 = round(
             self._visual_origin[1]
-            + max(self.IDLE.handle_start[1], self.IDLE.handle_end[1])
+            + max(hit_pose.handle_start[1], hit_pose.handle_end[1])
             + padding
         )
         self._set_geometry(self.hit_window, WindowRectangle(x1, y1, x2, y2))
@@ -2671,6 +2678,9 @@ class CodexWhipEffects:
         cursor = _cursor_position()
         if cursor is None:
             return False
+        presentation = getattr(self, '_presentation', None)
+        if presentation is not None:
+            presentation.hero._set_clock(False)
         self._cancel_animation()
         self._manual_armed = True
         self._manual_motion_direction = (1.0, 0.0)
@@ -2742,6 +2752,43 @@ class CodexWhipEffects:
     def _handle_manual_cancel(self, _event: tk.Event) -> str:
         self.disarm_manual()
         return "break"
+
+    def _handle_clock_toggle(self, _event: tk.Event) -> str:
+        presentation = getattr(self, '_presentation', None)
+        if presentation is not None and not self._manual_armed and self._target_available():
+            presentation.toggle_clock()
+        return "break"
+
+    def set_presentation(self, **state) -> None:
+        if getattr(self, '_presentation_failed', False):
+            return
+        try:
+            if getattr(self, '_presentation', None) is None:
+                from .overlay_presentation import OverlayPresentation
+                self._presentation = OverlayPresentation(self)
+            self._presentation.update(**state)
+        except Exception as exc:
+            self._disable_presentation(exc)
+
+    def _begin_presentation_strike(self):
+        presentation = getattr(self, '_presentation', None)
+        if presentation is not None:
+            try:
+                presentation.begin_strike()
+            except Exception as exc:
+                self._disable_presentation(exc)
+
+    def _disable_presentation(self, exc):
+        presentation = getattr(self, '_presentation', None)
+        self._presentation = None
+        self._presentation_failed = True
+        if presentation is not None:
+            try:
+                presentation.close()
+            except Exception:
+                pass
+        self._whip_drawing.draw(self._preview_pose)
+        self._log(f'附加状态动画已停用，保留正常抽打：{type(exc).__name__}')
 
     def _physics_frame(self) -> None:
         self._physics_after = None
@@ -2861,6 +2908,16 @@ class CodexWhipEffects:
                 if not self.window.winfo_viewable():
                     self.window.deiconify()
                     self._make_click_through()
+                presentation = getattr(self, '_presentation', None)
+                if presentation is not None:
+                    try:
+                        if presentation.owns_geometry:
+                            self._whip_drawing.hide()
+                        else:
+                            self._whip_drawing.draw(self._preview_pose)
+                        presentation.render(_cursor_position())
+                    except Exception as exc:
+                        self._disable_presentation(exc)
             else:
                 self.disarm_manual(log=False)
                 self.hit_window.withdraw()
@@ -2927,6 +2984,14 @@ class CodexWhipEffects:
 
     def _animate_whip(self) -> None:
         elapsed_ms = (time.perf_counter() - self._animation_started_at) * 1000.0
+        # A busy UI can skip the whole impact interval. Never lose the hit.
+        if elapsed_ms >= self.IMPACT_AT_MS and not self._impact_fired:
+            self._impact_fired = True
+            self._show_impact(self._animation_strike_pose.cord[-1])
+            self._play_sound(self._crack_sound)
+            if self._pending_impact_screen is not None:
+                self._maybe_record_damage(self._pending_impact_screen, self._pending_damage_direction)
+            self._start_shake()
         if elapsed_ms < 65.0:
             progress = cubic_bezier_ease_in_out(elapsed_ms / 65.0)
             pose = interpolate_pose(
@@ -2973,16 +3038,6 @@ class CodexWhipEffects:
 
         self._draw_pose(pose)
         self._current_pose = pose
-        if elapsed_ms >= self.IMPACT_AT_MS and not self._impact_fired:
-            self._impact_fired = True
-            self._show_impact(self._animation_strike_pose.cord[-1])
-            self._play_sound(self._crack_sound)
-            if self._pending_impact_screen is not None:
-                self._maybe_record_damage(
-                    self._pending_impact_screen,
-                    self._pending_damage_direction,
-                )
-            self._start_shake()
         self._animation_after = self._root.after(self.FRAME_MS, self._animate_whip)
 
     def _set_fixed_animation_poses(self) -> None:
@@ -3015,7 +3070,9 @@ class CodexWhipEffects:
 
     def _draw_pose(self, pose: WhipPose) -> None:
         self._preview_pose = pose
-        self._whip_drawing.draw(pose)
+        presentation = getattr(self, '_presentation', None)
+        if presentation is None or not presentation.owns_geometry:
+            self._whip_drawing.draw(pose)
 
     def preview_frame(self) -> tuple[WhipPose, Point]:
         """Read-only view of the frame already drawn; never advances physics."""
@@ -3135,6 +3192,10 @@ class CodexWhipEffects:
         self._current_pose = self.IDLE
 
     def close(self) -> None:
+        presentation = getattr(self, '_presentation', None)
+        if presentation is not None:
+            presentation.close()
+            self._presentation = None
         self.disarm_manual(log=False)
         self._cancel_animation()
         self._hide_scare(restore=False)

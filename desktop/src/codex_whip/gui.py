@@ -1064,7 +1064,11 @@ class CodexWhipWindow:
                     self._append_log(str(detail))
                 elif kind == "whip":
                     if payload.get("source") != "mouse":
-                        self.effects.play()
+                        try:
+                            self.effects.play()
+                        except Exception as exc:
+                            # Visual faults must not kill the BLE/UI event pump.
+                            self._append_log(f"抽打画面异常（继续处理手柄事件）：{type(exc).__name__}")
                     summary = (
                         f"#{payload['sequence']}  ·  {payload['gyro']:.0f} dps  ·  "
                         f"{payload['accel']:.2f} g  ·  {payload['duration']} ms"
@@ -1337,7 +1341,7 @@ def main() -> int:
 
     root = tk.Tk()
     window = CodexWhipWindow(root, settings, config_path)
-    # Opt-in CI evidence: normal startup, without feature mocks.
+    # Opt-in evidence from a normal packaged launch; no feature mocks.
     startup_report = os.environ.get('CODEX_WHIP_STARTUP_REPORT')
     if startup_report:
         def report_ready():

@@ -61,7 +61,7 @@ def button(parent, text, command, *, primary=False, **kwargs):
 
 class Hero(tk.Canvas):
     """Read-only overlay mirror plus the generated microphone and audio meter."""
-    def __init__(self, parent, *, reduce_motion=False, size=290, frame_provider=None):
+    def __init__(self, parent, *, reduce_motion=False, size=290, frame_provider=None, interactive=True, direct_pose=False, external_clock=False):
         super().__init__(parent, width=size, height=size, bg=parent.cget("bg"),
                          highlightthickness=0)
         self.reduce_motion = reduce_motion
@@ -80,6 +80,8 @@ class Hero(tk.Canvas):
         self._surface = None
         self._sources = {}
         self._frame_provider = frame_provider
+        self.direct_pose = direct_pose
+        self.external_clock = external_clock
         self._whip_drawing = WhipDrawing(self)
         self._preview_key = None
         self.clock_enabled = False
@@ -108,11 +110,13 @@ class Hero(tk.Canvas):
                 self._sources[key] = source.convert("RGBA")
         self.bind("<Configure>", lambda _e: self._wake())
         self.bind("<Destroy>", lambda _e: self.close())
-        self.bind("<Motion>", self._hover_motion)
-        self.bind("<Leave>", self._outer_motion)
         self._pointer_host = self.winfo_toplevel()
-        self._pointer_binding = self._pointer_host.bind('<Motion>', self._outer_motion, add='+')
-        self._leave_binding = self._pointer_host.bind('<Leave>', self._outer_motion, add='+')
+        self._pointer_binding = self._leave_binding = None
+        if interactive:
+            self.bind("<Motion>", self._hover_motion)
+            self.bind("<Leave>", self._outer_motion)
+            self._pointer_binding = self._pointer_host.bind('<Motion>', self._outer_motion, add='+')
+            self._leave_binding = self._pointer_host.bind('<Leave>', self._outer_motion, add='+')
         self._wake()
 
     def _set_clock(self, active):
@@ -191,13 +195,15 @@ class Hero(tk.Canvas):
             self.itemconfigure(item,fill=color,state="normal")
 
     def _wake(self):
+        if self.external_clock:
+            return
         if not self._closed and self._timer is None:
             self._timer = self.after(16, self._draw)
 
     def set_mode(self, mode):
         if self.mode != mode:
             voice_target = 1. if mode == 'recording' else 0.
-            if voice_target != self._voice_target:
+            if voice_target != self._voice_target or self._voice_source is not None:
                 self._voice_source = self._display_pose
                 self._voice_from = self._voice_amount
                 self._voice_target = voice_target
@@ -276,6 +282,8 @@ class Hero(tk.Canvas):
             return point[0]*scale+offset[0], point[1]*scale+offset[1]
         live = WhipPose(screen(pose.handle_start), screen(pose.handle_end),
                         tuple(screen(p) for p in pose.cord))
+        if self.direct_pose:
+            live, scale = pose, 1.0
         self._update_tilt()
         target = project_pose(clock_pose(w,h,len(pose.cord)),w,h,self._tilt) if self._clock_hover else live
         if self.mode == 'connecting':
@@ -309,7 +317,9 @@ class Hero(tk.Canvas):
             self._clock_alpha *= 1-self._voice_amount
         self._draw_dial(w,h,self._clock_alpha)
         # Geometry is in screen pixels; retain the shared whip stroke scale.
-        self._whip_drawing._draw_pose(self._display_pose, scale*(1+2.5*self._voice_amount))
+        voice_scale = .4 if self.direct_pose else 2.5
+        clock_scale = 1-.5*self._clock_alpha if self.direct_pose else 1.
+        self._whip_drawing._draw_pose(self._display_pose, scale*clock_scale*(1+voice_scale*self._voice_amount))
         self._whip_drawing.fade_cord(1-self._voice_amount, self.cget('bg'))
         self._draw_voice(w,h)
         self._draw_loading(w,h)
@@ -333,11 +343,15 @@ class Hero(tk.Canvas):
                                        outline=color,width=1.4,tags='voice_art')
                 self.tag_lower(ring)
         # Flat black capsule: the same visual language as the cartoon handle.
-        size = min(w,h)*.075*(.9+.1*alpha)
-        bg = self.winfo_rgb(self.cget('bg'))
-        color = '#' + ''.join(f'{round(v/257*(1-alpha)):02x}' for v in bg)
-        self.create_line(x,y-size*.65,x,y+size*.15,width=size,
-                         fill=color,capstyle='round',tags='voice_art')
+        size = min(w,h)*.075
+        # Grow from the existing handle tip, never fade a full-size ghost head.
+        width = 2. + (size-2.)*alpha
+        start = self._display_pose.handle_start
+        length = max(.001, math.hypot(x-start[0], y-start[1]))
+        dx,dy = (x-start[0])/length, (y-start[1])/length
+        self.create_line(x+dx*size*.65*alpha,y+dy*size*.65*alpha,
+                         x-dx*size*.15*alpha,y-dy*size*.15*alpha,width=width,
+                         fill='#171717',capstyle='round',tags='voice_art')
 
     def _draw_loading(self,w,h):
         amount = ease((time.monotonic()-self._loading_transition_at)/.28)
@@ -924,6 +938,13 @@ class Interface:
                 self.pending.pack_forget()
             else:
                 self.pending.pack_forget()
+        sync_presentation = getattr(getattr(a, 'effects', None), 'set_presentation', None)
+        if sync_presentation:
+            sync_presentation(mode=mode, title=title, subtitle=subtitle,
+                              deadline=self._pending_until if self._pending else None,
+                              clock_enabled=self.hero.clock_enabled,
+                              reduce_motion=self.hero.reduce_motion,
+                              level=self.hero._level)
         self._timer = self.root.after(100, self._refresh)
 
     def close(self):

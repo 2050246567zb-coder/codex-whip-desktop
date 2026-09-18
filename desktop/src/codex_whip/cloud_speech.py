@@ -128,10 +128,12 @@ class SpeechRouter:
         if not self.ready:
             raise SpeechError('请在设置 → 输入中填写并保存 API Key')
 
-    def transcribe(self, sample_rate, pcm):
+    def transcribe(self, sample_rate, pcm, *, on_started=None):
         provider = self.store.settings.speech_provider
         if provider == 'local':
-            return self.local.transcribe(sample_rate, pcm)
+            if on_started is None:
+                return self.local.transcribe(sample_rate, pcm)
+            return self.local.transcribe(sample_rate, pcm, on_started=on_started)
         preset = PRESETS[provider]
         if sample_rate != 16000 or len(pcm) % 2 or len(pcm) > 16000*2*31:
             raise SpeechError('录音格式或长度无效，未上传')
@@ -152,6 +154,8 @@ class SpeechRouter:
         request = urllib.request.Request(preset.url, data=body, method='POST',
             headers={'Authorization': f'Bearer {key}', 'Content-Type': content_type})
         try:
+            if on_started is not None:
+                on_started()
             with urllib.request.build_opener(_NoRedirect()).open(request, timeout=30) as response:
                 raw = response.read(1024*1024+1)
             if len(raw) > 1024*1024:

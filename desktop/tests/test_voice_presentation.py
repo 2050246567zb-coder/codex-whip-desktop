@@ -61,6 +61,51 @@ def test_recognizing_reduced_motion_is_static(app):
     assert hero._display_pose == first
 
 
+def test_mic_head_grows_solid_and_error_returns_directly_to_whip(app, monkeypatch):
+    connected(app)
+    ui = app.ui
+    ui.stage = 'ready'
+    refresh(ui)
+    hero = ui.hero
+    hero._draw()
+    ui.observe('voice_state', {'state':'recording'})
+    refresh(ui)
+    hero._voice_at -= .14
+    hero._draw()
+    head = hero.find_withtag('voice_art')[-1]
+    assert hero.itemcget(head,'fill') == '#171717'
+    partial_width = float(hero.itemcget(head,'width'))
+    hero._voice_at -= 1
+    hero._draw()
+    assert float(hero.itemcget(hero.find_withtag('voice_art')[-1],'width')) > partial_width
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Error return must not use infinity geometry')
+    monkeypatch.setattr('codex_whip.interface.recognizing_pose', forbidden)
+    ui.observe('voice_error','录音过短')
+    refresh(ui)
+    hero._voice_at -= .14
+    hero._draw()
+    assert hero.mode == 'whip'
+    hero._voice_at -= 1
+    hero._draw()
+    assert hero._voice_amount == 0
+    assert not hero.find_withtag('voice_art')
+
+
+def test_interrupt_mic_exit_uses_current_pose(app):
+    connected(app)
+    hero = app.ui.hero
+    hero.set_mode('recording')
+    hero._voice_at -= 1
+    hero._draw()
+    hero.set_mode('recognizing')
+    hero._voice_at -= .1
+    hero._draw()
+    displayed = hero._display_pose
+    hero.set_mode('whip')
+    assert hero._voice_source == displayed
+
+
 def test_recording_centers_head_hides_rope_and_reduced_motion_stops_ripples(app):
     connected(app)
     ui = app.ui

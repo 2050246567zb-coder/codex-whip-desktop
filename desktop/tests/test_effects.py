@@ -57,6 +57,27 @@ class FakeEffects:
         self.detached += 1
 
 
+def test_delayed_animation_frame_still_fires_hit_exactly_once(monkeypatch):
+    from unittest.mock import Mock
+    effect=object.__new__(CodexWhipEffects)
+    effect._animation_started_at=1.
+    effect._impact_fired=False
+    effect._animation_strike_pose=CodexWhipEffects.STRIKE
+    effect._animation_idle_pose=CodexWhipEffects.IDLE
+    effect._pending_impact_screen=(400,300)
+    effect._pending_damage_direction=(1,0)
+    effect._crack_sound=b'test'
+    for name in ('_show_impact','_play_sound','_maybe_record_damage','_start_shake',
+                 '_draw_pose','_hide_impact','_sync_position','_show_idle_hitbox'):
+        setattr(effect,name,Mock())
+    monkeypatch.setattr('codex_whip.effects.time.perf_counter',lambda:1.5)
+    effect._animate_whip()
+    effect._animate_whip()
+    effect._play_sound.assert_called_once_with(b'test')
+    effect._maybe_record_damage.assert_called_once_with((400,300),(1,0))
+    effect._start_shake.assert_called_once()
+
+
 def test_animation_curve_has_exact_endpoints_and_is_monotonic() -> None:
     values = [cubic_bezier_ease_in_out(index / 20) for index in range(21)]
     assert values[0] == pytest.approx(0.0, abs=0.00001)

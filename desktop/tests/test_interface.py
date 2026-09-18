@@ -36,6 +36,22 @@ def test_clock_tilts_and_exits_when_pointer_is_far(app):
     assert all(hero.itemcget(i,'state')=='hidden' for i in hero._dial_edges)
 
 
+def test_visual_error_does_not_stop_whip_event_pump(app):
+    import asyncio
+    import threading
+    from codex_whip.gui import GuiEventProcessor
+    from codex_whip.models import WhipEvent
+    app.effects.play.side_effect=RuntimeError('presentation failed')
+    processor=GuiEventProcessor(Settings(),threading.Event(),app.emit)
+    asyncio.run(processor.handle(WhipEvent(123,980.,3.2,120)))
+    app.emit('log','event pump still alive')
+    app._drain_events()
+    text=app.log_text.get('1.0','end')
+    assert '抽打画面异常' in text
+    assert 'event pump still alive' in text
+    assert '#123' in app.last_event_value.get()
+
+
 def test_target_switch_disarms_and_hides_previous_overlay(app):
     app.armed.set()
     app.arm_value.set(True)

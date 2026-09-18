@@ -1,46 +1,83 @@
-name: Existing Mac package on latest macOS
+name: macOS build and UI regression
 on:
   workflow_dispatch:
+  push:
+    branches: [master]
 permissions:
   contents: read
-  actions: read
 jobs:
-  compatibility:
-    runs-on: xcode-27
-    timeout-minutes: 20
+  apple-silicon:
+    runs-on: macos-15
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-      - name: Record actual environment
+      - name: Record environment
         run: |
           mkdir -p macos/test-results
           sw_vers | tee macos/test-results/environment.txt
-          uname -m | tee -a macos/test-results/environment.txt
-          xcodebuild -version | tee -a macos/test-results/environment.txt
-      - name: Download previously delivered 2.2.28 package
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Python with native Tk
         run: |
-          gh run download 35317276597 --name CodexWhip-macOS-Apple-Silicon --dir previous-artifact
-          mkdir -p macos/dist
-          package=$(find previous-artifact -name 'CodexWhip-2.2.28-Apple-Silicon.zip' -print -quit)
+          brew install python@3.12 python-tk@3.12
+          echo "CODEX_WHIP_PYTHON=$(brew --prefix python@3.12)/bin/python3.12" >> "$GITHUB_ENV"
+      - name: Build native app
+        run: bash macos/build-macos.sh
+      - name: Install test tools
+        run: macos/.venv-macos/bin/python -m pip install -e 'desktop[dev]'
+      - name: Normal packaged startup with native features (no mocks)
+        run: macos/.venv-macos/bin/python macos/test-normal-startup.py
+      - name: Launch packaged UI with synthetic inputs (no BLE or sending)
+        run: macos/dist/CodexWhip.app/Contents/MacOS/CodexWhip --ui-smoke --output "$PWD/macos/test-results/ui"
+      - name: UI and animation regression (isolated processes)
+        shell: bash
+        run: |
+          mkdir -p macos/test-results
+          failed=0
+          for suite in interface interface_state hover_clock morphing_title voice_presentation voice_expiry tick_slider settings_window mount_calibration_window effects macos_sender cloud_speech speech_settings recognizing_pose voice whip_sensitivity target_app overlay_presentation; do
+            macos/.venv-macos/bin/python -m pytest "desktop/tests/test_${suite}.py" --junitxml="macos/test-results/${suite}.xml" || failed=1
+          done
+          exit "$failed"
+      - name: Save build and test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexWhip-macOS-Apple-Silicon
+          retention-days: 7
+          path: |
+            macos/dist/*.dmg
+            macos/dist/*.zip
+            macos/test-results/*.txt
+            macos/test-results/*.xml
+            macos/test-results/ui/
+            macos/test-results/startup/
+
+  latest-os:
+    needs: apple-silicon
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: CodexWhip-macOS-Apple-Silicon
+          path: downloaded
+      - name: Unpack identical 2.2.32 package and record OS
+        run: |
+          mkdir -p macos/dist macos/test-results
+          sw_vers | tee macos/test-results/environment.txt
+          uname -m | tee -a macos/test-results/environment.txt
+          package=$(find downloaded -name 'CodexWhip-2.2.32-Apple-Silicon.zip' -print -quit)
           test -n "$package"
           shasum -a 256 "$package" | tee macos/test-results/package-sha256.txt
           ditto -x -k "$package" macos/dist
           codesign --verify --deep --strict --verbose=2 macos/dist/CodexWhip.app
-      - name: Normal packaged startup
+      - name: Normal startup
         run: python3 macos/test-normal-startup.py
-      - name: Packaged UI animations with synthetic inputs
+      - name: Packaged UI animation smoke
         if: ${{ !cancelled() }}
         run: macos/dist/CodexWhip.app/Contents/MacOS/CodexWhip --ui-smoke --output "$PWD/macos/test-results/ui"
-      - name: Preserve crash reports
+      - uses: actions/upload-artifact@v4
         if: always()
-        run: |
-          mkdir -p macos/test-results/crashes
-          find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -name '*CodexWhip*' -exec cp {} macos/test-results/crashes/ \; 2>/dev/null || true
-      - name: Save evidence
-        if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: macOS-27-compatibility-evidence
+          name: CodexWhip-2.2.32-macOS27-evidence
           retention-days: 7
           path: macos/test-results/

@@ -818,7 +818,7 @@ class WhisperCppTranscriber:
                 pass
             raise
 
-    def transcribe(self, sample_rate: int, pcm: bytes) -> str:
+    def transcribe(self, sample_rate: int, pcm: bytes, *, on_started=None) -> str:
         if not self.ready:
             raise RuntimeError("本地语音模型尚未准备完成")
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -832,6 +832,8 @@ class WhisperCppTranscriber:
                 output.setframerate(sample_rate)
                 output.writeframes(pcm)
             creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            if on_started is not None:
+                on_started()
             completed = subprocess.run(
                 [
                     str(self.executable_path),
@@ -1194,10 +1196,30 @@ class VoiceModule:
             except ValueError as exc:
                 self.emit("voice_error", str(exc))
             return
-        self.emit("voice_state", {"state": "recognizing", "session": message.session})
         try:
             sample_rate, pcm = self.assembler.finish(message)
-            text = await asyncio.to_thread(self._recording_transcriber.transcribe, sample_rate, pcm)
+            from threading import Event
+            from .cloud_speech import SpeechRouter
+            started = Event()
+            transcriber = self._recording_transcriber
+            def transcribe():
+                if isinstance(transcriber, (SpeechRouter, WhisperCppTranscriber)):
+                    return transcriber.transcribe(sample_rate, pcm, on_started=started.set)
+                started.set()
+                return transcriber.transcribe(sample_rate, pcm)
+            task = asyncio.create_task(asyncio.to_thread(transcribe))
+            announced = False
+            try:
+                # Do not flash a loading shape for immediate rejection/empty results.
+                while not task.done():
+                    done, _ = await asyncio.wait({task}, timeout=.2)
+                    if not done and started.is_set() and not announced:
+                        self.emit("voice_state", {"state": "recognizing", "session": message.session})
+                        announced = True
+                text = task.result()
+            finally:
+                if not task.done():
+                    task.cancel()
         except Exception as exc:
             self.emit("voice_error", str(exc))
             return
