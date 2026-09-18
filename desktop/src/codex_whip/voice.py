@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.request
 import wave
 from collections import deque
@@ -910,6 +911,7 @@ class VoiceModule:
         self.detector = DoubleTapDetector(store.settings)
         self.assembler = VoiceAudioAssembler()
         self._pending_text: str | None = None
+        self._pending_until = 0.0
         self._pending_lock = threading.Lock()
         self._calibration_remaining = 0
         self._calibration_events: list[DoubleTapEvent] = []
@@ -964,12 +966,23 @@ class VoiceModule:
 
     @property
     def pending_text(self) -> str | None:
+        self.expire_pending()
         with self._pending_lock:
             return self._pending_text
+
+    def expire_pending(self) -> bool:
+        with self._pending_lock:
+            if not self._pending_text or time.monotonic() < self._pending_until:
+                return False
+            self._pending_text = None
+            self._pending_until = 0.0
+        self.emit('voice_pending', None)
+        return True
 
     def clear_pending(self) -> None:
         with self._pending_lock:
             self._pending_text = None
+            self._pending_until = 0.0
         self.emit("voice_pending", None)
 
     def set_pending(self, text: str) -> None:
@@ -979,6 +992,7 @@ class VoiceModule:
             return
         with self._pending_lock:
             self._pending_text = value
+            self._pending_until = time.monotonic() + 10.0
         self.emit("voice_pending", value)
 
     def mark_sent(self, prompt: str) -> None:
@@ -986,6 +1000,7 @@ class VoiceModule:
             if self._pending_text != prompt:
                 return
             self._pending_text = None
+            self._pending_until = 0.0
         self.emit("voice_pending", None)
 
     def update_settings(self) -> None:
@@ -1182,7 +1197,5 @@ class VoiceModule:
             self.clear_pending()
             self.emit("voice_state", {"state": "empty", "session": message.session})
             return
-        with self._pending_lock:
-            self._pending_text = text
-        self.emit("voice_pending", text)
+        self.set_pending(text)
         self.emit("voice_state", {"state": "ready", "text": text})

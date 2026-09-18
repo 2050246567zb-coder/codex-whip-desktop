@@ -38,8 +38,8 @@ def main(argv=None) -> int:
         root.geometry("560x660+80+80")
         app.ui.stage = "ready"
 
-        def settle_and_capture(name):
-            until = time.monotonic() + 1.2
+        def settle_and_capture(name, delay=1.2):
+            until = time.monotonic() + delay
             while time.monotonic() < until:
                 root.update()
                 time.sleep(.008)
@@ -66,6 +66,9 @@ def main(argv=None) -> int:
             app.ui.observe('voice_pending', '请继续完成界面和动画测试')
             app.ui.observe('voice_state', {'state':'ready'})
             settle_and_capture('07-voice-pending')
+            settle_and_capture('07b-countdown-half',3.8)
+            settle_and_capture('07c-countdown-near-end',3.8)
+            settle_and_capture('07d-expired',2.1)
             app.ui.observe('voice_pending', '')
             settle_and_capture('08-after-send')
         finally:

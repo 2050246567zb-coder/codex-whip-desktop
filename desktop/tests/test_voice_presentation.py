@@ -84,3 +84,30 @@ def test_long_transcription_is_wrapped_inside_title(app):
     left, top, right, bottom = mask.getbbox()
     assert 0 <= left < right <= mask.width
     assert 0 <= top < bottom <= mask.height
+
+
+def test_expired_voice_restores_normal_home_and_replacement_restarts_timer(app,monkeypatch):
+    clock = [100.]
+    monkeypatch.setattr('codex_whip.interface.time.monotonic',lambda:clock[0])
+    connected(app)
+    ui = app.ui
+    ui.stage = 'ready'
+    app.voice_module.set_pending('first')
+    ui.observe('voice_pending','first')
+    ui.observe('voice_state',{'state':'ready'})
+    refresh(ui)
+    assert ui.subtitle._deadline == 110.
+    clock[0] = 109.
+    app.voice_module.set_pending('second')
+    ui.observe('voice_pending','second')
+    refresh(ui)
+    assert ui.subtitle._deadline == 119.
+    clock[0] = 110.
+    refresh(ui)
+    assert ui.title.cget('text') == 'second'
+    clock[0] = 119.
+    refresh(ui)
+    assert ui.title.cget('text') == 'just beat it'
+    assert ui.subtitle._deadline is None
+    assert ui.subtitle._sand_timer is None
+    assert app.voice_module.pending_text is None

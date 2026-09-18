@@ -26,7 +26,7 @@ jobs:
         run: |
           mkdir -p macos/test-results
           failed=0
-          for suite in interface interface_state hover_clock morphing_title voice_presentation tick_slider settings_window mount_calibration_window effects macos_sender; do
+          for suite in interface interface_state hover_clock morphing_title voice_presentation voice_expiry tick_slider settings_window mount_calibration_window effects macos_sender; do
             macos/.venv-macos/bin/python -m pytest "desktop/tests/test_${suite}.py" --junitxml="macos/test-results/${suite}.xml" || failed=1
           done
           exit "$failed"

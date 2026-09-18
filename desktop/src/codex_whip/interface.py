@@ -26,6 +26,7 @@ from .effects import CodexWhipEffects, WhipPose
 from .whip_drawing import WhipDrawing
 from .gear_button import GearButton
 from .morphing_title import MorphingTitle
+from .sand_countdown import SandCountdownTitle
 from .hover_clock import clock_pose, morph, ease, near_whip, project, project_pose, pointer_tilt, loading_pose, cord_rotation
 
 BG, CARD, SOFT = "#F5F5F7", "#FFFFFF", "#EAEAED"
@@ -104,8 +105,6 @@ class Hero(tk.Canvas):
         for key, file in (("microphone", "microphone.png"),):
             with Image.open(asset_path(file)) as source:
                 self._sources[key] = source.convert("RGBA")
-        # Reuse the generated grille artwork, not the old desk microphone body.
-        self._mic_head = self._sources['microphone'].crop((470, 225, 785, 540))
         self.bind("<Configure>", lambda _e: self._wake())
         self.bind("<Destroy>", lambda _e: self.close())
         self.bind("<Motion>", self._hover_motion)
@@ -321,11 +320,12 @@ class Hero(tk.Canvas):
                 ring = self.create_oval(x-radius,y-radius,x+radius,y+radius,
                                        outline=color,width=1.4,tags='voice_art')
                 self.tag_lower(ring)
-        size = max(1,round(min(w,h)*.14*(.9+.1*alpha)))
-        head = self._mic_head.resize((size,size),Image.Resampling.LANCZOS)
-        head.putalpha(head.getchannel('A').point(lambda value:round(value*alpha)))
-        self._photo = ImageTk.PhotoImage(head,master=self)
-        self.create_image(x,y-size*.3,image=self._photo,tags='voice_art')
+        # Flat black capsule: the same visual language as the cartoon handle.
+        size = min(w,h)*.075*(.9+.1*alpha)
+        bg = self.winfo_rgb(self.cget('bg'))
+        color = '#' + ''.join(f'{round(v/257*(1-alpha)):02x}' for v in bg)
+        self.create_line(x,y-size*.65,x,y+size*.15,width=size,
+                         fill=color,capstyle='round',tags='voice_art')
 
     def _draw_loading(self,w,h):
         amount = ease((time.monotonic()-self._loading_transition_at)/.28)
@@ -375,6 +375,7 @@ class Interface:
         self._timer = None
         self._voice_state = ""
         self._pending = ""
+        self._pending_until = 0.
         self._notice = ""
         self._notice_until = 0.0
         self._render_key = None
@@ -412,7 +413,7 @@ class Interface:
         self.title = MorphingTitle(shell, lambda: self.preferences.reduce_motion)
         self.hero.clock_title_changed = self._clock_title_changed
         self.title.pack(pady=(0, 9))
-        self.subtitle = MorphingTitle(shell, lambda: self.preferences.reduce_motion,point_size=10,height=44)
+        self.subtitle = SandCountdownTitle(shell, lambda: self.preferences.reduce_motion,point_size=10,height=44)
         self.subtitle.pack(fill="x")
         self.choices = tk.Frame(shell, bg=BG)
         self.whip_choice = tk.BooleanVar(master=self.root, value=False)
@@ -754,6 +755,7 @@ class Interface:
             self.hero.audio_level(float(payload))
         elif kind == "voice_pending":
             self._pending = str(payload or "")
+            self._pending_until = time.monotonic()+10. if self._pending else 0.
             if not self._pending and self._voice_state == "ready":
                 self._voice_state = ""
         elif kind in {"voice_error", "voice_model_error", "send_error"}:
@@ -780,6 +782,9 @@ class Interface:
         if self._closed:
             return
         a = self.app
+        a.voice_module.expire_pending()
+        if self._pending and time.monotonic() >= self._pending_until:
+            self.observe('voice_pending', None)
         connected = a.ble_connected and self.app.worker_loop is not None
         fresh = connected and time.monotonic() - self._sensor_at < 1.5
         if self.stage in {"connect", "calibrate"}:
@@ -852,6 +857,7 @@ class Interface:
                 a.arm_check.configure(state="normal")
             self.title.configure(text=title)
             self.subtitle.configure(text=subtitle)
+            self.subtitle.set_countdown(self._pending_until if subtitle == 'beat it, then send' else None)
             self.step_label.configure(text=step)
             self.hero.clock_enabled = self.stage == "ready" and connected and not self._pending and mode == 'whip'
             self.hero.set_mode(mode)
