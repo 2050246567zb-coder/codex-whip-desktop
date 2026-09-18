@@ -1,5 +1,7 @@
 """Presentation-only clock geometry; never writes sensor or overlay state."""
 import math
+from bisect import bisect_right
+from functools import lru_cache
 from datetime import datetime
 from .effects import WhipPose
 
@@ -70,6 +72,34 @@ def loading_pose(width, height, nodes, elapsed):
         return width/2+math.cos(a)*radius, height/2+math.sin(a)*radius
     return WhipPose(point(0),point(.38),
         tuple(point(.38+i/max(1,nodes-1)*(math.tau-.9-.38)) for i in range(nodes)))
+
+
+@lru_cache(maxsize=8)
+def _infinity_track(width, height):
+    """Arc-length lookup avoids accelerating through the figure-eight waist."""
+    size = min(width, height)
+    points = tuple((width/2 + size*.36*math.sin(i*math.tau/512),
+                    height/2 + size*.17*math.sin(i*math.tau/256))
+                   for i in range(513))
+    lengths = [0.]
+    for a, b in zip(points, points[1:]):
+        lengths.append(lengths[-1] + math.dist(a, b))
+    return points, tuple(lengths)
+
+
+def recognizing_pose(width, height, nodes, elapsed):
+    """Open infinity: straight grip leads the rope, with a travelling end gap."""
+    points, lengths = _infinity_track(width, height)
+    phase = elapsed / 2.4
+    def point(fraction):
+        distance = ((phase + fraction) % 1.) * lengths[-1]
+        index = min(511, bisect_right(lengths, distance)-1)
+        amount = (distance-lengths[index])/(lengths[index+1]-lengths[index])
+        a, b = points[index:index+2]
+        return tuple(x+(y-x)*amount for x,y in zip(a,b))
+    # Never close the tip onto the grip butt: 8% of the track stays empty.
+    return WhipPose(point(0), point(.065),
+                    tuple(point(.065 + i/max(1,nodes-1)*.855) for i in range(nodes)))
 
 
 def cord_rotation(source, target, previous=None):

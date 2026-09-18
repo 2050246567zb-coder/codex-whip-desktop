@@ -7,6 +7,7 @@ from typing import Callable
 from .disclosure import Disclosure
 from . import settings_style as style
 from .tick_slider import TickSlider
+from .whip_sensitivity import WhipSensitivity, scaled_profile
 
 from .calibration import (
     NEGATIVE_SAMPLE_COUNT,
@@ -97,6 +98,7 @@ class DetectorSettingsWindow:
     ) -> None:
         self._send_command = send_command
         self._apply_profile = apply_profile
+        self._sensitivity = WhipSensitivity(profile)
         self._positive_samples: list[LearningSample] = []
         self._negative_samples: list[LearningSample] = []
         self._motion_engine = motion_engine
@@ -232,7 +234,6 @@ class DetectorSettingsWindow:
             pady=4,
             font=("Microsoft YaHei UI", 8, "bold"),
         )
-        self.stage_badge.pack(side="right")
 
         self.learning_status = tk.StringVar(
             value=(
@@ -243,7 +244,7 @@ class DetectorSettingsWindow:
                 else "先挥鞭 15 次；推荐再做 5 次放到桌面动作，帮助排除当前误触发。"
             )
         )
-        tk.Label(
+        self._learning_status_label = tk.Label(
             learning,
             textvariable=self.learning_status,
             bg=self.CARD,
@@ -252,7 +253,7 @@ class DetectorSettingsWindow:
             anchor="w",
             wraplength=790,
             font=("Microsoft YaHei UI", 9),
-        ).pack(fill="x", pady=(9, 10))
+        )
 
         style = ttk.Style(self.window)
         style.configure(
@@ -283,14 +284,14 @@ class DetectorSettingsWindow:
         ).pack(side="right", padx=(12, 0))
 
         self.average_text = tk.StringVar(value="尚无样本")
-        tk.Label(
+        self._learning_average_label = tk.Label(
             learning,
             textvariable=self.average_text,
             bg=self.CARD,
             fg=self.BLUE,
             anchor="w",
             font=("Microsoft YaHei UI", 8),
-        ).pack(fill="x", pady=(8, 0))
+        )
 
         learning_buttons = self._learning_buttons = tk.Frame(learning, bg=self.CARD)
         learning_buttons.pack(fill="x", pady=(12, 0))
@@ -339,24 +340,21 @@ class DetectorSettingsWindow:
         self.undo_button.configure(state="disabled")
         self.undo_button.pack(side="right")
 
-        if self._use_raw_v3 and self._motion_engine is not None:
-            tuning = tk.Frame(learning, bg=self.CARD)
-            tuning.pack(fill="x", pady=(12, 0))
-            tk.Label(
-                tuning,
-                text="识别灵敏度 · 向右更灵敏",
-                bg=self.CARD,
-                fg=self.MUTED,
-                font=("Microsoft YaHei UI", 8),
-            ).pack(side="left")
-            self.tolerance_value = tk.DoubleVar(
-                value=self._motion_engine.tolerance_percent
-            )
-            self.tolerance_scale = TickSlider(tuning,minimum=60,maximum=180,
-                variable=self.tolerance_value,formatter=lambda value:f'{value:.0f}%',bg=self.CARD)
-            self.tolerance_scale.pack(side="left", padx=(10, 6))
-            self.tolerance_scale.bind("<ButtonRelease-1>", self._commit_tolerance, add="+")
-            self.tolerance_scale.bind("<KeyRelease>", self._commit_tolerance, add="+")
+        tuning = self._sensitivity_row = tk.Frame(learning, bg=self.CARD)
+        tuning.pack(fill="x", before=learning_buttons, pady=(24, 6))
+        percent = (self._motion_engine.tolerance_percent
+                   if self._motion_engine is not None and self._motion_engine.trained
+                   else self._sensitivity.percent)
+        self.tolerance_value = tk.DoubleVar(value=percent)
+        self.sensitivity_label = tk.StringVar(value=f"挥鞭灵敏度：{percent:.0f}%")
+        tk.Label(tuning, textvariable=self.sensitivity_label, bg=self.CARD,
+                 fg=self.TEXT, font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w", pady=(0,4))
+        self.tolerance_scale = TickSlider(tuning, minimum=60, maximum=180,
+            variable=self.tolerance_value, formatter=lambda value:f'{value:.0f}%',
+            command=lambda value:self.sensitivity_label.set(f"挥鞭灵敏度：{value:.0f}%"), bg=self.CARD)
+        self.tolerance_scale.pack(fill="x")
+        self.tolerance_scale.bind("<ButtonRelease-1>", self._commit_tolerance, add="+")
+        self.tolerance_scale.bind("<KeyRelease>", self._commit_tolerance, add="+")
         self.detector_advanced = Disclosure(self._detector_panel, "高级设置 · 检测阈值", bg=self.BG)
         self.detector_advanced.pack(fill="x")
         threshold = self._card(self.detector_advanced.body, padx=18, pady=15)
@@ -516,6 +514,14 @@ class DetectorSettingsWindow:
 
     def _sync_learning_controls(self):
         active = self._stage in {"positive", "negative"}
+        self._learning_status_label.pack_forget()
+        self._learning_average_label.pack_forget()
+        self.stage_badge.pack_forget()
+        if self._stage != "idle":
+            self.stage_badge.pack(side="right")
+            self._learning_status_label.pack(fill="x", before=self._sensitivity_row, pady=(18,12))
+            self._learning_average_label.pack(fill="x", before=self._sensitivity_row, pady=(0,12))
+        self.tolerance_scale.configure(state="disabled" if active else "normal")
         self._learning_progress_row.pack_forget()
         if active:
             self._learning_progress_row.pack(fill="x", before=self._learning_buttons)
@@ -557,53 +563,24 @@ class DetectorSettingsWindow:
             fg=self.TEXT,
             font=("Microsoft YaHei UI", 12, "bold"),
         ).pack(anchor="w")
-        tk.Label(
-            card,
-            text="选择抽打多少次后，露出一次电路板。",
-            bg=self.CARD,
-            fg=self.MUTED,
-            justify="left",
-            anchor="w",
-            font=("Microsoft YaHei UI", 9),
-        ).pack(fill="x", pady=(6, 14))
-
         row = tk.Frame(card, bg=self.CARD)
-        row.pack(fill="x")
-        tk.Label(
-            row,
-            text="每",
-            bg=self.CARD,
-            fg=self.TEXT,
-            font=("Microsoft YaHei UI", 10),
-        ).pack(side="left")
+        row.pack(fill="x", pady=(24,0))
         self.visual_strikes_per_wound = tk.StringVar(
             value=str(self._visual_store.settings.strikes_per_wound)
         )
-        self.visual_frequency_spinbox = tk.Spinbox(
-            row,
-            from_=MIN_STRIKES_PER_WOUND,
-            to=MAX_STRIKES_PER_WOUND,
-            textvariable=self.visual_strikes_per_wound,
-            width=6,
-            justify="center",
-            bg=self.CARD_ALT,
-            fg=self.TEXT,
-            insertbackground=self.TEXT,
-            buttonbackground=self.LINE,
-            relief="flat",
-            highlightthickness=1,
-            highlightbackground=self.LINE,
-            highlightcolor=self.ACCENT,
-            font=("Segoe UI", 10, "bold"),
-        )
-        self.visual_frequency_spinbox.pack(side="left", padx=8)
-        tk.Label(
-            row,
-            text="次抽打出现 1 次伤口",
-            bg=self.CARD,
-            fg=self.TEXT,
-            font=("Microsoft YaHei UI", 10),
-        ).pack(side="left")
+        self.visual_frequency_label = tk.StringVar()
+        self.visual_frequency_value = tk.DoubleVar(value=min(10, self._visual_store.settings.strikes_per_wound))
+        def frequency_changed(value):
+            count = round(value)
+            self.visual_strikes_per_wound.set(str(count))
+            self.visual_frequency_label.set('每次抽打都出现' if count <= 1 else f'每 {count} 次抽打出现一次')
+        frequency_changed(self.visual_frequency_value.get())
+        tk.Label(row, textvariable=self.visual_frequency_label, bg=self.CARD, fg=self.TEXT,
+                 font=('Microsoft YaHei UI',10,'bold')).pack(anchor='w')
+        self.visual_frequency_slider = TickSlider(row, minimum=0, maximum=10,
+            variable=self.visual_frequency_value, command=frequency_changed,
+            ticks=(0,2,5,8,10), formatter=lambda v:f'{v:.0f}', bg=self.CARD)
+        self.visual_frequency_slider.pack(fill='x')
 
         footer = tk.Frame(card, bg=self.CARD)
         footer.pack(fill="x", pady=(16, 0))
@@ -616,9 +593,8 @@ class DetectorSettingsWindow:
             anchor="w",
             font=("Microsoft YaHei UI", 8),
         ).pack(side="left", fill="x", expand=True)
-        self.visual_frequency_spinbox.configure(command=self._save_visual_settings)
-        self.visual_frequency_spinbox.bind("<FocusOut>", lambda _e: self._save_visual_settings())
-        self.visual_frequency_spinbox.bind("<Return>", lambda _e: self._save_visual_settings())
+        self.visual_frequency_slider.bind("<ButtonRelease-1>", lambda _e: self._save_visual_settings(), add='+')
+        self.visual_frequency_slider.bind("<KeyRelease>", lambda _e: self._save_visual_settings(), add='+')
 
     def _save_visual_settings(self) -> None:
         if self._apply_visual_settings is None:
@@ -662,6 +638,8 @@ class DetectorSettingsWindow:
             cursor="hand2",
         ).pack(side="right")
         self._button(enabled_card, '调整双敲识别…', lambda: self._select_section('calibration'), self.CARD_ALT,self.TEXT).pack(anchor='w',pady=(12,0))
+        from .speech_settings import SpeechServiceCard
+        self.speech_service = SpeechServiceCard(parent, self._voice_store, self._apply_voice_settings)
 
         self.voice_advanced = Disclosure(parent, "高级设置 · 录音参数", bg=self.BG)
         self.tap_advanced = Disclosure(self._content, '高级设置 · 双敲参数',bg=self.BG)
@@ -736,14 +714,8 @@ class DetectorSettingsWindow:
 
         self._button(tuning, "保存录音参数", self._save_voice_settings, self.BLUE, "#FFFFFF").pack(anchor="e",pady=(12,0))
         actions = self._card(parent, padx=18, pady=15)
-        actions.pack(fill="x")
-        self.voice_status = tk.StringVar(
-            value=(
-                "本地识别模型已就绪"
-                if self._voice_model_ready()
-                else "启用后会自动下载约 190 MB 的本地中文识别模型"
-            )
-        )
+        # Reuse the service card's status line instead of another status-only card.
+        self.voice_status = self.speech_service.status
         tk.Label(
             actions,
             textvariable=self.voice_status,
@@ -1513,14 +1485,36 @@ class DetectorSettingsWindow:
             self.apply_status.set("已保存，并已排队下发到设备")
         else:
             self.apply_status.set("已保存；设备重连后会自动下发")
+        from .calibration import load_profile
+        if load_profile() == profile:
+            self._sensitivity = WhipSensitivity(profile)
+            if not (self._motion_engine and self._motion_engine.trained):
+                self.tolerance_scale.set(self._sensitivity.percent)
 
     def restore_defaults(self) -> None:
         self._populate(DetectorProfile())
         self.apply_status.set("已载入默认值，尚未保存")
 
     def _commit_tolerance(self, _event=None):
+        if self._stage in {"positive", "negative"}:
+            return
         if self._motion_engine is not None and self._motion_engine.trained:
             self.save_v3_tolerance()
+            return
+        percent = float(self.tolerance_value.get())
+        profile = scaled_profile(self._sensitivity.base, percent)
+        from .calibration import load_profile
+        queued = self._apply_profile(profile)
+        if queued or load_profile() == profile:
+            self._populate(profile)
+            try:
+                self._sensitivity.save(percent)
+            except OSError as exc:
+                self.apply_status.set(f"阈值已保存；灵敏度位置保存失败：{exc}")
+                return
+            self.apply_status.set("已保存并等待手柄确认" if queued else "已保存；连接后自动同步")
+        else:
+            self.tolerance_scale.set(self._sensitivity.percent)
 
     def save_v3_tolerance(self) -> None:
         if self._motion_engine is None or not self._motion_engine.trained:

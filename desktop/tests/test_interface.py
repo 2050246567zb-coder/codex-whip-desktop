@@ -36,6 +36,20 @@ def test_clock_tilts_and_exits_when_pointer_is_far(app):
     assert all(hero.itemcget(i,'state')=='hidden' for i in hero._dial_edges)
 
 
+def test_target_switch_disarms_and_hides_previous_overlay(app):
+    app.armed.set()
+    app.arm_value.set(True)
+    generation = app._arm_generation
+    assert app.select_target_app('Claude')
+    assert app.settings.codex.target_app == 'Claude'
+    assert not app.armed.is_set()
+    assert not app.arm_value.get()
+    assert app._arm_generation > generation
+    app.effects.detach.assert_called()
+    assert not app.select_target_app('Unknown')
+    assert app.settings.codex.target_app == 'Claude'
+
+
 def test_hover_clock_is_local_interruptible_and_yields_to_recording(app):
     app.ui.hero.set_mode('whip')
     app.ui.hero._clock_started -= 1
@@ -268,7 +282,7 @@ def test_settings_sections_embed_all_existing_capabilities(app):
     assert window._embedded
     assert window.record_button.winfo_exists()
     assert window.voice_record_button.winfo_exists()
-    assert window.visual_frequency_spinbox.winfo_exists()
+    assert window.visual_frequency_slider.winfo_exists()
     assert window._message_widgets
     app.ui.hide_preferences()
     assert app.settings_window is None

@@ -104,6 +104,15 @@ class BleWhipClient:
             )
 
             while client.is_connected and not stop.is_set():
+                # Continuous IMU/audio notifications must not starve control
+                # writes (threshold sync, RAW mode, recording commands).
+                if self._command_queue is not None:
+                    try:
+                        command = self._command_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                    else:
+                        await self._write_command(client, command)
                 # Audio arrives in short bursts. Drain an existing burst before
                 # allocating another set of wait tasks so Windows notifications
                 # do not back up long enough to stall the peripheral TX queue.
@@ -141,17 +150,7 @@ class BleWhipClient:
                     and command_task in done
                     and client.is_connected
                 ):
-                    command = command_task.result().strip()
-                    if command:
-                        try:
-                            payload = (command + "\n").encode("ascii", errors="strict")
-                        except UnicodeEncodeError:
-                            self._log("[BLE] refused non-ASCII device command")
-                        else:
-                            await client.write_gatt_char(
-                                NUS_RX_CHARACTERISTIC, payload, response=False
-                            )
-                            await asyncio.sleep(0.025)
+                    await self._write_command(client, command_task.result())
                 if disconnect_task in done or stop_task in done:
                     break
 
@@ -160,6 +159,18 @@ class BleWhipClient:
                     await client.stop_notify(NUS_TX_CHARACTERISTIC)
         self._set_state("disconnected")
         self._log("[BLE] disconnected")
+
+    async def _write_command(self, client: BleakClient, command: str) -> None:
+        command = command.strip()
+        if not command:
+            return
+        try:
+            payload = (command + "\n").encode("ascii", errors="strict")
+        except UnicodeEncodeError:
+            self._log("[BLE] refused non-ASCII device command")
+            return
+        await client.write_gatt_char(NUS_RX_CHARACTERISTIC, payload, response=False)
+        await asyncio.sleep(0.025)
 
     @staticmethod
     async def _wait_or_stop(seconds: float, stop: asyncio.Event) -> None:

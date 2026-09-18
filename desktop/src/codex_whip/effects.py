@@ -1581,7 +1581,10 @@ class CodexWhipEffects:
         self._animation_idle_pose = self.IDLE
         self._animations_enabled = _client_animations_enabled()
         self._crack_sound = load_whip_strike_wav()
-        self._play_sound = play_sound or play_whip_crack
+        self.sound_enabled = True
+        self.wounds_enabled = True
+        sound_handler = play_sound or play_whip_crack
+        self._play_sound = lambda sound: sound_handler(sound) if self.sound_enabled else False
         self._manual_whip = manual_whip
         self._manual_armed = False
         self._manual_last_strike_at = 0.0
@@ -2006,10 +2009,19 @@ class CodexWhipEffects:
 
     def set_damage_interval(self, strikes_per_wound: int) -> None:
         value = int(strikes_per_wound)
-        if not 1 <= value <= 100:
-            raise ValueError("PCB 伤口间隔必须在 1–100 次之间")
+        if not 0 <= value <= 100:
+            raise ValueError("PCB 伤口间隔必须在 0–100 次之间")
         self._damage_interval = value
         self._damage_strike_count = 0
+
+    def set_feedback(self, *, wounds_enabled: bool, sound_enabled: bool) -> None:
+        self.wounds_enabled = wounds_enabled
+        self.sound_enabled = sound_enabled
+        if not wounds_enabled:
+            self._damage_items.clear()
+            self._damage_render_key = None
+            self.damage_canvas.delete('all')
+            self.damage_window.withdraw()
 
     def _maybe_record_damage(
         self,
@@ -2017,6 +2029,8 @@ class CodexWhipEffects:
         direction: Point = (1.0, 0.0),
     ) -> bool:
         """Reveal a wound on each configured Nth strike, deterministically."""
+        if not getattr(self, 'wounds_enabled', True):
+            return False
         interval = max(1, int(getattr(self, "_damage_interval", 1)))
         count = int(getattr(self, "_damage_strike_count", 0)) + 1
         self._damage_strike_count = count

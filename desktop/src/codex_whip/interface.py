@@ -27,7 +27,7 @@ from .whip_drawing import WhipDrawing
 from .gear_button import GearButton
 from .morphing_title import MorphingTitle
 from .sand_countdown import SandCountdownTitle
-from .hover_clock import clock_pose, morph, ease, near_whip, project, project_pose, pointer_tilt, loading_pose, cord_rotation
+from .hover_clock import clock_pose, morph, ease, near_whip, project, project_pose, pointer_tilt, loading_pose, recognizing_pose, cord_rotation
 
 BG, CARD, SOFT = "#F5F5F7", "#FFFFFF", "#EAEAED"
 TEXT, MUTED, LINE = "#1D1D1F", "#68686F", "#DEDEE3"
@@ -92,6 +92,7 @@ class Hero(tk.Canvas):
         self._clock_from_alpha = 0.
         self._clock_items = []
         self._loading_at = time.monotonic()
+        self._recognizing_at = time.monotonic()
         self._loading_alpha = self._loading_from = 0.
         self._loading_transition_at = -100.
         self._loading_dots = []
@@ -204,6 +205,14 @@ class Hero(tk.Canvas):
                 self._preview_key = None
             if mode != 'whip':
                 self._set_clock(False)
+            if mode == 'recognizing' or self.mode == 'recognizing':
+                self._clock_source = self._display_pose
+                self._cord_turn = None
+                self._clock_started = time.monotonic()
+                self._clock_from_alpha = self._clock_alpha
+                if mode == 'recognizing':
+                    self._recognizing_at = time.monotonic()
+                self._preview_key = None
             if mode == 'connecting' or self.mode == 'connecting':
                 self._set_clock(False)
                 self._clock_source = self._display_pose
@@ -253,7 +262,7 @@ class Hero(tk.Canvas):
         key = (pose, position, w, h)
         if not self.clock_enabled:
             self._set_clock(False)
-        animated = (self._clock_hover or self._clock_source is not None or self.mode == 'connecting'
+        animated = (self._clock_hover or self._clock_source is not None or self.mode in {'connecting', 'recognizing'}
                     or self._loading_alpha > 0 or self._voice_source is not None or self._voice_amount > 0)
         if key == self._preview_key and not animated:
             return
@@ -271,6 +280,9 @@ class Hero(tk.Canvas):
         target = project_pose(clock_pose(w,h,len(pose.cord)),w,h,self._tilt) if self._clock_hover else live
         if self.mode == 'connecting':
             target = loading_pose(w,h,len(pose.cord),0 if self.reduce_motion else time.monotonic()-self._loading_at)
+        elif self.mode == 'recognizing':
+            target = recognizing_pose(w,h,len(pose.cord),
+                                      0 if self.reduce_motion else time.monotonic()-self._recognizing_at)
         elapsed = (time.monotonic()-self._clock_started)/.28
         progress = ease(elapsed)
         if self.reduce_motion:
@@ -505,15 +517,25 @@ class Interface:
             return frame
 
         device = group("连接")
-        for text, value in (("手柄", a.ble_value), ("Codex", a.codex_value)):
+        for text, value in (("手柄", a.ble_value), ("目标", a.codex_value)):
             row = tk.Frame(device, bg=CARD)
             row.pack(fill="x", pady=4)
-            label(row, text).pack(side="left")
+            if text == '目标':
+                from tkinter import ttk
+                self.target_app = tk.StringVar(value=a.settings.codex.target_app)
+                self.target_selector = ttk.Combobox(row, textvariable=self.target_app,
+                    values=('Codex', 'Claude'), state='readonly', width=12)
+                self.target_selector.pack(side='left')
+                def choose_target(_event):
+                    if not a.select_target_app(self.target_app.get()):
+                        self.target_app.set(a.settings.codex.target_app)
+                self.target_selector.bind('<<ComboboxSelected>>', choose_target)
+            else:
+                label(row, text).pack(side="left")
             label(row, textvariable=value, color=MUTED, size=9).pack(side="right")
         row = tk.Frame(device, bg=CARD)
         row.pack(fill="x", pady=(12, 0))
         a.listen_button = button(row, "停止监听", a.stop_listening)
-        a.listen_button.pack(side="left")
         self._direction_card = style.RoundedCard(self.host, padx=24,pady=24)
         label(self._direction_card,'方向与归中',size=12,bold=True).pack(anchor='w',pady=(0,16))
         row = tk.Frame(self._direction_card,bg=CARD)
@@ -524,7 +546,7 @@ class Interface:
 
         sending = self._sending_card = style.RoundedCard(self.host, padx=24, pady=24)
         label(sending, "发送控制", size=12, bold=True).pack(anchor="w", pady=(0,12))
-        a.arm_check = style.Switch(sending, text="允许挥动后向 Codex 发送消息",
+        a.arm_check = style.Switch(sending, text=f"允许挥动后向 {a.settings.codex.target_app} 发送消息",
                                     variable=a.arm_value, command=a.toggle_arm,
                                     bg=CARD, activebackground=CARD, fg=TEXT, selectcolor=CARD,
                                     font=(FONT, 10), cursor="hand2", takefocus=True)
@@ -550,6 +572,19 @@ class Interface:
         style.Switch(experience, text="减少主界面动态效果", variable=self.reduce_motion,
                        command=self.set_reduced_motion, bg=CARD, fg=TEXT, selectcolor=CARD,
                        activebackground=CARD, font=(FONT, 10)).pack(anchor="w")
+        self.wounds_enabled = tk.BooleanVar(master=self.root, value=a.visual_store.settings.wounds_enabled)
+        self.sound_enabled = tk.BooleanVar(master=self.root, value=a.visual_store.settings.sound_enabled)
+        def save_feedback():
+            from dataclasses import replace
+            value = replace(a.visual_store.settings, wounds_enabled=self.wounds_enabled.get(),
+                            sound_enabled=self.sound_enabled.get())
+            if not a.apply_visual_settings(value):
+                self.wounds_enabled.set(a.visual_store.settings.wounds_enabled)
+                self.sound_enabled.set(a.visual_store.settings.sound_enabled)
+        for text, variable in (("显示 PCB 伤口", self.wounds_enabled), ("鞭子音效", self.sound_enabled)):
+            style.Switch(experience, text=text, variable=variable, command=save_feedback,
+                         bg=CARD, fg=TEXT, selectcolor=CARD, activebackground=CARD,
+                         font=(FONT, 10)).pack(anchor="w", pady=(12,0))
 
 
         from .disclosure import Disclosure
@@ -563,7 +598,7 @@ class Interface:
         row.pack(fill="x", pady=9)
         a.test_button = button(row, "模拟挥动", a.simulate_whip)
         a.test_button.pack(side="left")
-        a.check_button = button(row, "重新检查 Codex", a.check_codex)
+        a.check_button = button(row, f"重新检查 {a.settings.codex.target_app}", a.check_codex)
         a.check_button.pack(side="left", padx=8)
         a.log_text = tk.Text(diagnostics, height=8, bg=BG, fg=MUTED, wrap="word",
                              relief="flat", padx=10, pady=10, font=("Consolas", 9), state="disabled")

@@ -366,6 +366,12 @@ class CodexWhipWindow:
     def __init__(self, root: tk.Tk, settings: Settings, config_path: Path | None) -> None:
         self.root = root
         self.settings = settings
+        try:
+            target = json.loads((user_data_dir() / 'target-app.json').read_text(encoding='utf-8'))['target']
+            if target in ('Codex', 'Claude'):
+                self.settings = replace(settings, codex=replace(settings.codex, target_app=target))
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
         self.config_path = config_path
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.armed = threading.Event()
@@ -386,7 +392,8 @@ class CodexWhipWindow:
         self.message_store = MessageProfileStore(settings.messages)
         self.visual_store = VisualSettingsStore()
         self.voice_store = VoiceSettingsStore()
-        self.voice_transcriber = WhisperCppTranscriber()
+        from .cloud_speech import SpeechRouter
+        self.voice_transcriber = SpeechRouter(self.voice_store, WhisperCppTranscriber())
         self.voice_module = VoiceModule(
             self.voice_store, lambda kind, payload: self.emit(kind, payload),
             self.voice_transcriber,
@@ -429,6 +436,8 @@ class CodexWhipWindow:
             self.visual_store.settings.scare_blackout_ms,
             self.visual_store.settings.scare_eyes_ms,
         )
+        self.effects.set_feedback(wounds_enabled=self.visual_store.settings.wounds_enabled,
+                                  sound_enabled=self.visual_store.settings.sound_enabled)
         self._replace_scare_hotkey(self.visual_store.settings, log=True)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._drain_after = self.root.after(16, self._drain_events)
@@ -618,7 +627,7 @@ class CodexWhipWindow:
         if self.ble_connected and self.firmware_supports_voice:
             self.send_device_command("VOICE,1" if settings.enabled else "VOICE,0")
         if settings.enabled:
-            self.voice_status_value.set("正在准备本地识别模型")
+            self.voice_status_value.set("正在准备语音识别")
             self.prepare_voice_model()
         else:
             self.voice_status_value.set("已关闭（可在设置中启用）")
@@ -630,6 +639,8 @@ class CodexWhipWindow:
             settings = replace(settings, scare_enabled=False).validated()
             self.visual_store.update(settings)
             self.effects.set_damage_interval(settings.strikes_per_wound)
+            self.effects.set_feedback(wounds_enabled=settings.wounds_enabled,
+                                      sound_enabled=settings.sound_enabled)
         except (OSError, ValueError) as exc:
             messagebox.showerror("无法保存视觉设置", str(exc))
             return False
@@ -781,7 +792,7 @@ class CodexWhipWindow:
         self.arm_value.set(False)
         if not messagebox.askyesno(
             "武装实际发送",
-            "武装后，每次有效挥动都可能把 Codex 窗口置前并立即提交一条消息。\n\n"
+            f"武装后，每次有效挥动都可能把 {self.settings.codex.target_app} 窗口置前并立即提交一条消息。\n\n"
             "目标不明确或输入框已有草稿时，软件会拒绝发送。是否继续？",
         ):
             return
@@ -801,20 +812,53 @@ class CodexWhipWindow:
         self.codex_value.set("正在检查")
         self.check_button.configure(state="disabled")
 
+        selected = self.settings.codex
+        def target_emit(kind, payload):
+            self.emit('target_checked', (selected, kind, payload))
         def check() -> None:
             try:
-                sender = create_live_sender(self.settings.codex)
+                sender = create_live_sender(selected)
                 try:
                     target = sender.locate_window()
-                    self.emit("effect_target", (True, target))
+                    target_emit("effect_target", (True, target))
                 except Exception as exc:
-                    self.emit("effect_target", (False, str(exc)))
+                    target_emit("effect_target", (False, str(exc)))
                 result = sender.check_ready()
-                self.emit("codex_result", (True, result))
+                target_emit("codex_result", (True, result))
             except Exception as exc:
-                self.emit("codex_result", (False, str(exc)))
+                target_emit("codex_result", (False, str(exc)))
 
         threading.Thread(target=check, daemon=True).start()
+
+    def select_target_app(self, target: str) -> bool:
+        if target not in ('Codex', 'Claude'):
+            return False
+        try:
+            path = user_data_dir() / 'target-app.json'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix('.tmp')
+            temporary.write_text(json.dumps({'target': target}), encoding='utf-8')
+            temporary.replace(path)
+        except OSError as exc:
+            messagebox.showerror('无法保存目标', str(exc))
+            return False
+        self.armed.clear()
+        self.arm_value.set(False)
+        self._arm_generation += 1
+        self.settings = replace(self.settings, codex=replace(self.settings.codex, target_app=target))
+        self.mode_value.set('安全监听')
+        self.effects.detach()
+        self._effect_target_handle = None
+        if self.processor is not None and self.worker_loop is not None:
+            selected = self.settings.codex
+            def update_sender():
+                self.processor._codex_settings = selected
+                self.processor._live_sender = None
+            self.worker_loop.call_soon_threadsafe(update_sender)
+        self.arm_check.configure(text=f'允许挥动后向 {target} 发送消息')
+        self.check_button.configure(text=f'重新检查 {target}')
+        self.check_codex()
+        return True
 
     def _schedule_effect_target_refresh(self, delay_ms: int = 1500) -> None:
         if self.closing or self._effect_refresh_after is not None:
@@ -831,13 +875,13 @@ class CodexWhipWindow:
             self._schedule_effect_target_refresh()
             return
         self._effect_refresh_running = True
-
+        selected = self.settings.codex
         def locate() -> None:
             try:
-                target = create_live_sender(self.settings.codex).locate_window()
-                self.emit("effect_target_auto", (True, target))
+                target = create_live_sender(selected).locate_window()
+                self.emit("target_checked", (selected, "effect_target_auto", (True, target)))
             except Exception as exc:
-                self.emit("effect_target_auto", (False, str(exc)))
+                self.emit("target_checked", (selected, "effect_target_auto", (False, str(exc))))
 
         threading.Thread(
             target=locate, name="codex-whip-window-watch", daemon=True
@@ -855,18 +899,18 @@ class CodexWhipWindow:
                 self.effects.attach(handle)
                 self._effect_target_handle = handle
                 self._append_log(
-                    "Codex 窗口已出现，黑色鞭子已自动显示"
+                    f"{self.settings.codex.target_app} 窗口已出现，黑色鞭子已自动显示"
                     if automatic
-                    else "黑色鞭子覆盖层已定位到 Codex"
+                    else f"黑色鞭子覆盖层已定位到 {self.settings.codex.target_app}"
                 )
             return
 
         if self._effect_target_handle is not None:
             self.effects.detach()
             self._effect_target_handle = None
-            self._append_log("Codex 窗口已隐藏或关闭，黑色鞭子已同步隐藏")
+            self._append_log(f"{self.settings.codex.target_app} 窗口已隐藏或关闭，黑色鞭子已同步隐藏")
         elif not automatic:
-            self._append_log(f"鞭子覆盖层等待 Codex：{detail}")
+            self._append_log(f"鞭子覆盖层等待 {self.settings.codex.target_app}：{detail}")
 
     def _append_log(self, line: str) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")
@@ -885,6 +929,13 @@ class CodexWhipWindow:
         try:
             while True:
                 kind, payload = self.events.get_nowait()
+                if kind == 'target_checked':
+                    selected, kind, payload = payload
+                    if selected != self.settings.codex:
+                        if kind == 'effect_target_auto':
+                            self._effect_refresh_running = False
+                            self._schedule_effect_target_refresh()
+                        continue
                 if kind == "log":
                     self._append_log(str(payload))
                 elif kind == "scare_hotkey":
@@ -1094,10 +1145,10 @@ class CodexWhipWindow:
                     self.check_button.configure(state="normal")
                     if ok:
                         self.codex_value.set("已找到且输入框就绪")
-                        self._append_log(f"Codex 已就绪：PID {detail['pid']}")
+                        self._append_log(f"{self.settings.codex.target_app} 已就绪：PID {detail['pid']}")
                     else:
                         self.codex_value.set("暂不可发送")
-                        self._append_log(f"Codex 检查：{detail}")
+                        self._append_log(f"{self.settings.codex.target_app} 检查：{detail}")
                 elif kind == "effect_target":
                     ok, detail = payload
                     self._apply_effect_target(ok, detail, automatic=False)
@@ -1134,9 +1185,9 @@ class CodexWhipWindow:
                         self.voice_status_value.set("需要 0.5.0 固件")
                         self._append_log("双敲录音未启动：当前固件不支持麦克风传输")
                     elif not self.voice_transcriber.ready:
-                        self.voice_status_value.set("本地模型仍在准备")
+                        self.voice_status_value.set("识别服务尚未就绪")
                         self.prepare_voice_model()
-                        self._append_log("双敲录音未启动：本地识别模型尚未准备完成")
+                        self._append_log("双敲录音未启动：请检查语音识别服务配置")
                     else:
                         voice = self.voice_store.settings
                         if self.send_device_command(
@@ -1197,9 +1248,9 @@ class CodexWhipWindow:
                         if self.voice_store.settings.enabled
                         else "已关闭（可在设置中启用）"
                     )
-                    self._append_log("本地中文语音识别模型已就绪")
+                    self._append_log("语音识别服务已就绪")
                     if self.settings_window is not None and self.settings_window.window.winfo_exists():
-                        self.settings_window.set_voice_runtime_status("本地识别模型已就绪")
+                        self.settings_window.set_voice_runtime_status("语音识别服务已就绪")
                 elif kind == "voice_model_error":
                     self._voice_model_preparing = False
                     self.voice_status_value.set("模型准备失败")
@@ -1286,16 +1337,18 @@ def main() -> int:
 
     root = tk.Tk()
     window = CodexWhipWindow(root, settings, config_path)
-    # Opt-in CI evidence only: use the normal constructor, native overlays,
-    # discovery and BLE worker, without replacing any feature with mocks.
+    # Opt-in CI evidence: normal startup, without feature mocks.
     startup_report = os.environ.get('CODEX_WHIP_STARTUP_REPORT')
     if startup_report:
         def report_ready():
+            from .cloud_speech import SpeechKeys
+            vault = SpeechKeys()._backend()
             Path(startup_report).write_text(json.dumps({
                 'ready': True, 'version': __version__,
                 'root_visible': bool(root.winfo_viewable()),
                 'native_effects': type(window.effects).__name__,
                 'sending_enabled': window.armed.is_set(),
+                'credential_backend': type(vault).__module__,
             }), encoding='utf-8')
         root.after(1500, report_ready)
     if migration.imported:

@@ -7,7 +7,7 @@ from pathlib import Path
 from .paths import user_data_dir
 
 
-MIN_STRIKES_PER_WOUND = 1
+MIN_STRIKES_PER_WOUND = 0
 MAX_STRIKES_PER_WOUND = 100
 MIN_SCARE_BLACKOUT_MS = 200
 MAX_SCARE_BLACKOUT_MS = 5000
@@ -19,6 +19,8 @@ VISUAL_SETTINGS_SCHEMA_VERSION = 3
 @dataclass(frozen=True, slots=True)
 class VisualSettings:
     strikes_per_wound: int = 1
+    wounds_enabled: bool = True
+    sound_enabled: bool = True
     scare_enabled: bool = True
     scare_hotkey: str = "ctrl+alt+shift+x"
     scare_blackout_ms: int = 2000
@@ -48,6 +50,8 @@ class VisualSettings:
             raise ValueError("组合键不能为空")
         return VisualSettings(
             strikes_per_wound=value,
+            wounds_enabled=bool(self.wounds_enabled),
+            sound_enabled=bool(self.sound_enabled),
             scare_enabled=bool(self.scare_enabled),
             scare_hotkey=hotkey,
             scare_blackout_ms=blackout_ms,
@@ -68,6 +72,8 @@ def load_visual_settings(path: Path) -> VisualSettings:
         legacy_timing = data.get("schema_version") in (1, 2)
         return VisualSettings(
             strikes_per_wound=int(data.get("strikes_per_wound", 1)),
+            wounds_enabled=bool(data.get('wounds_enabled', True)),
+            sound_enabled=bool(data.get('sound_enabled', True)),
             scare_enabled=bool(data.get("scare_enabled", True)),
             scare_hotkey=str(data.get("scare_hotkey", "ctrl+alt+shift+x")),
             scare_blackout_ms=(
@@ -90,6 +96,8 @@ def save_visual_settings(path: Path, settings: VisualSettings) -> None:
             {
                 "schema_version": VISUAL_SETTINGS_SCHEMA_VERSION,
                 "strikes_per_wound": value.strikes_per_wound,
+                "wounds_enabled": value.wounds_enabled,
+                "sound_enabled": value.sound_enabled,
                 "scare_enabled": value.scare_enabled,
                 "scare_hotkey": value.scare_hotkey,
                 "scare_blackout_ms": value.scare_blackout_ms,

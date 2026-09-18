@@ -417,7 +417,7 @@ class MotionEngine:
                 self._quiet_since = None
             return None
         if self._active_since is None:
-            if now - self._last_trigger_ms >= 550 and gyro >= start_gyro and (
+            if now - self._last_trigger_ms >= 400 and gyro >= start_gyro and (
                 dynamic >= 0.08 or gyro >= start_gyro * 1.55
             ):
                 self._active_since = now

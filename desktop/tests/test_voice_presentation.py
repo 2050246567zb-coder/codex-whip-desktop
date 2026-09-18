@@ -25,9 +25,40 @@ def test_recording_morph_reverses_from_current_pose_and_keeps_overlay_read_only(
     hero._voice_at -= 1
     hero._draw()
     assert hero._voice_amount == 0
-    assert hero._display_pose == source
+    assert hero._display_pose != source  # Recognition now flows around an open infinity.
     assert not hero.find_withtag('voice_art')
     app.effects.set_sensor_pose.assert_not_called()
+
+
+def test_recognizing_flows_and_exits_from_current_pose(app):
+    connected(app)
+    hero = app.ui.hero
+    hero.set_mode('recognizing')
+    hero._clock_started -= 1
+    hero._draw()
+    first = hero._display_pose
+    hero._recognizing_at -= .3
+    hero._draw()
+    assert hero._display_pose != first
+    displayed = hero._display_pose
+    hero.set_mode('whip')
+    assert hero._clock_source == displayed
+    hero._clock_started -= 1
+    hero._draw()
+    assert hero._clock_source is None
+    app.effects.set_sensor_pose.assert_not_called()
+
+
+def test_recognizing_reduced_motion_is_static(app):
+    connected(app)
+    hero = app.ui.hero
+    hero.reduce_motion = True
+    hero.set_mode('recognizing')
+    hero._draw()
+    first = hero._display_pose
+    hero._recognizing_at -= .7
+    hero._draw()
+    assert hero._display_pose == first
 
 
 def test_recording_centers_head_hides_rope_and_reduced_motion_stops_ripples(app):

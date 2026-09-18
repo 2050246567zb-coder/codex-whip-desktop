@@ -97,6 +97,7 @@ IMA_INDEX_TABLE = (-1, -1, -1, -1, 2, 4, 6, 8)
 @dataclass(frozen=True, slots=True)
 class VoiceSettings:
     enabled: bool = False
+    speech_provider: str = 'local'
     impact_dynamic_accel_g: float = 1.25
     max_tap_gyro_dps: float = 700.0
     min_interval_ms: int = 150
@@ -111,6 +112,9 @@ class VoiceSettings:
     tap_heavy_g: float = 0.0
 
     def validated(self) -> "VoiceSettings":
+        from .cloud_speech import PRESETS
+        if self.speech_provider != 'local' and self.speech_provider not in PRESETS:
+            raise ValueError('未知语音识别服务')
         if (type(self.tap_force_calibrated) is not bool
                 or not all(math.isfinite(v) and 0 <= v <= 100
                            for v in (self.tap_light_g, self.tap_heavy_g))):
@@ -901,6 +905,7 @@ class VoiceModule:
         self.store = store
         self.emit = emit
         self.transcriber = transcriber or WhisperCppTranscriber()
+        self._recording_transcriber = self.transcriber
         self.double_tap_profile_path = (
             double_tap_profile_path
             or store.path.with_name(default_double_tap_profile_path().name)
@@ -1164,6 +1169,9 @@ class VoiceModule:
 
     async def handle_audio(self, message: AudioStart | AudioChunk | AudioEnd) -> None:
         if isinstance(message, AudioStart):
+            from .cloud_speech import SpeechRouter
+            self._recording_transcriber = (self.transcriber.snapshot()
+                if isinstance(self.transcriber, SpeechRouter) else self.transcriber)
             replacing = self.pending_text is not None
             if replacing:
                 # An accepted second double-tap means “discard and try again”.
@@ -1189,7 +1197,7 @@ class VoiceModule:
         self.emit("voice_state", {"state": "recognizing", "session": message.session})
         try:
             sample_rate, pcm = self.assembler.finish(message)
-            text = await asyncio.to_thread(self.transcriber.transcribe, sample_rate, pcm)
+            text = await asyncio.to_thread(self._recording_transcriber.transcribe, sample_rate, pcm)
         except Exception as exc:
             self.emit("voice_error", str(exc))
             return

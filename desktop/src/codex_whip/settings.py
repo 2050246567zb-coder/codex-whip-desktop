@@ -21,11 +21,12 @@ class BleSettings:
 
 @dataclass(frozen=True, slots=True)
 class EventSettings:
-    minimum_interval_seconds: float = 1.5
+    minimum_interval_seconds: float = 0.4
 
 
 @dataclass(frozen=True, slots=True)
 class CodexSettings:
+    target_app: str = "Codex"
     package_marker: str = "OpenAI.Codex_"
     composer_name_hints: tuple[str, ...] = ("message", "ask", "codex", "输入", "消息")
     send_button_name_hints: tuple[str, ...] = ("send", "发送")
@@ -72,7 +73,7 @@ def load_settings(path: Path | None = None) -> Settings:
             reconnect_seconds=float(ble.get("reconnect_seconds", 3.0)),
         ),
         events=EventSettings(
-            minimum_interval_seconds=float(events.get("minimum_interval_seconds", 1.5))
+            minimum_interval_seconds=float(events.get("minimum_interval_seconds", 0.4))
         ),
         codex=CodexSettings(
             package_marker=str(codex.get("package_marker", "OpenAI.Codex_")),
@@ -100,4 +101,3 @@ def load_settings(path: Path | None = None) -> Settings:
     if settings.events.minimum_interval_seconds < 0:
         raise ValueError("minimum_interval_seconds cannot be negative")
     return settings
-

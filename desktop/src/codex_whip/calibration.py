@@ -43,7 +43,7 @@ class DetectorProfile:
     maximum_peak_gap_ms: int = 180
     minimum_duration_ms: int = 40
     maximum_event_ms: int = 900
-    cooldown_ms: int = 700
+    cooldown_ms: int = 400
 
     def validated(self) -> DetectorProfile:
         limits: dict[str, tuple[float, float]] = {

@@ -64,7 +64,8 @@ def test_gui_applies_visual_damage_frequency_immediately(tmp_path) -> None:
     window.effects = type(
         "Effects",
         (),
-        {"set_damage_interval": lambda _self, value: applied.append(value)},
+        {"set_damage_interval": lambda _self, value: applied.append(value),
+         "set_feedback": lambda _self, **kwargs: None},
     )()
     window.emit = lambda kind, payload: emitted.append((kind, payload))
 

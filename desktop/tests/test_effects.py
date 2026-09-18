@@ -780,6 +780,20 @@ def test_changing_damage_frequency_restarts_the_strike_counter() -> None:
     assert effect._damage_strike_count == 0
 
 
+def test_disabled_wounds_and_zero_interval():
+    effect = object.__new__(CodexWhipEffects)
+    effect.set_damage_interval(0)
+    recorded = []
+    effect._record_damage = lambda *args: recorded.append(args)
+    effect.wounds_enabled = False
+    assert not effect._maybe_record_damage((0,0))
+    assert recorded == []
+    effect.wounds_enabled = True
+    assert effect._maybe_record_damage((0,0))
+    assert effect._maybe_record_damage((0,0))
+    assert len(recorded) == 2
+
+
 def test_generated_pcb_asset_is_bundled() -> None:
     pcb = Image.open(bundled_asset_path("visual/pcb-photoreal-v1.png"))
 

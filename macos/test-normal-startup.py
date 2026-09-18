@@ -28,6 +28,7 @@ with tempfile.TemporaryDirectory(prefix='whip-ci-data-') as data:
             ready = result.get('ready_report', {})
             result['passed'] = (proc.poll() is None and ready.get('root_visible') is True
                                 and ready.get('native_effects') == 'CodexWhipEffects'
+                                and ready.get('credential_backend') == 'keyring.backends.macOS'
                                 and ready.get('sending_enabled') is False)
             subprocess.run(['screencapture', '-x', str(output / 'desktop.png')], check=False)
         finally:
