@@ -405,6 +405,8 @@ def test_damage_direction_tracks_the_sensor_motion_axis(monkeypatch) -> None:
 
 def test_effect_target_reattaches_only_when_codex_window_changes() -> None:
     window = object.__new__(CodexWhipWindow)
+    from codex_whip.settings import Settings
+    window.settings = Settings()
     window._effect_target_handle = None
     window.effects = FakeEffects()
     logs: list[str] = []
