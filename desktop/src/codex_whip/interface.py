@@ -97,9 +97,15 @@ class Hero(tk.Canvas):
         self._dial_edges = []
         self._tilt = self._tilt_from = self._tilt_target = (0.,0.)
         self._tilt_at = 0.
+        self._voice_amount = self._voice_from = self._voice_target = 0.
+        self._voice_at = -100.
+        self._voice_source = None
+        self._voice_scale = 1.
         for key, file in (("microphone", "microphone.png"),):
             with Image.open(asset_path(file)) as source:
                 self._sources[key] = source.convert("RGBA")
+        # Reuse the generated grille artwork, not the old desk microphone body.
+        self._mic_head = self._sources['microphone'].crop((470, 225, 785, 540))
         self.bind("<Configure>", lambda _e: self._wake())
         self.bind("<Destroy>", lambda _e: self.close())
         self.bind("<Motion>", self._hover_motion)
@@ -190,6 +196,15 @@ class Hero(tk.Canvas):
 
     def set_mode(self, mode):
         if self.mode != mode:
+            voice_target = 1. if mode == 'recording' else 0.
+            if voice_target != self._voice_target:
+                self._voice_source = self._display_pose
+                self._voice_from = self._voice_amount
+                self._voice_target = voice_target
+                self._voice_at = time.monotonic()
+                self._preview_key = None
+            if mode != 'whip':
+                self._set_clock(False)
             if mode == 'connecting' or self.mode == 'connecting':
                 self._set_clock(False)
                 self._clock_source = self._display_pose
@@ -227,54 +242,8 @@ class Hero(tk.Canvas):
         self._timer = None
         if self._closed:
             return
-        if self.mode in {"whip", "connecting"}:
-            self._draw_live_whip()
-            self._timer = self.after(100 if self.reduce_motion else 16, self._draw)
-            return
-        self._whip_drawing.hide()
-        for item in self._loading_dots:
-            self.itemconfigure(item,state='hidden')
-        self._loading_alpha = 0.
-        self._set_clock(False)
-        self._clock_source = None
-        self._display_pose = None
-        self._clock_alpha = 0.
-        self._tilt = self._tilt_from = self._tilt_target = (0.,0.)
-        self._draw_dial(0,0,0)
-        self._preview_key = None
-        now = time.monotonic()
-        w, h = max(120, self.winfo_width()), max(120, self.winfo_height())
-        name = "microphone"
-        size = max(80, round(min(w, h) * 0.80))
-        transition = min(1.0, (now - self._transition_at) / 0.20)
-        if self.reduce_motion:
-            transition = 1.0
-        key = (name, size, round(transition, 2), w, h)
-        if key != self._image_key:
-            source = self._sources[name].resize((size, size), Image.Resampling.LANCZOS)
-            surface = Image.new("RGBA", (w, h))
-            surface.alpha_composite(source, (round((w - source.width) / 2),
-                                             round((h - source.height) / 2 - 12)))
-            if transition < 1 and self._from_surface is not None:
-                prior = self._from_surface.resize((w, h), Image.Resampling.BILINEAR)
-                surface = Image.blend(prior, surface, 1 - (1 - transition) ** 3)
-            self._surface = surface
-            self._photo = ImageTk.PhotoImage(surface, master=self)
-            self._image_key = key
-        self.delete("voice_art")
-        self.create_image(w / 2, h / 2, image=self._photo, tags="voice_art")
-        if self.mode == "recording":
-            if now - self._wave_at >= 0.06:
-                self._levels.append(self._level if now - self._audio_at < 0.25 else 0.0)
-                self._wave_at = now
-            for i, level in enumerate(self._levels):
-                height = 2 + level * 27
-                x = w / 2 + (i - 17) * 5
-                self.create_line(x, h - 26 - height / 2, x, h - 26 + height / 2,
-                                 width=2, fill=BLUE, capstyle="round", tags="voice_art")
-        if transition < 1 or self.mode == "recording":
-            self._timer = self.after(50 if self.reduce_motion else 33, self._draw)
-
+        self._draw_live_whip()
+        self._timer = self.after(100 if self.reduce_motion else 16, self._draw)
     def _draw_live_whip(self):
         self.delete("voice_art")
         frame = self._frame_provider() if self._frame_provider else None
@@ -285,7 +254,8 @@ class Hero(tk.Canvas):
         key = (pose, position, w, h)
         if not self.clock_enabled:
             self._set_clock(False)
-        animated = self._clock_hover or self._clock_source is not None or self.mode == 'connecting' or self._loading_alpha > 0
+        animated = (self._clock_hover or self._clock_source is not None or self.mode == 'connecting'
+                    or self._loading_alpha > 0 or self._voice_source is not None or self._voice_amount > 0)
         if key == self._preview_key and not animated:
             return
         self._preview_key = key
@@ -313,10 +283,49 @@ class Hero(tk.Canvas):
         self._clock_alpha = self._clock_from_alpha + ((1. if self._clock_hover else 0.)-self._clock_from_alpha)*progress
         if elapsed >= 1:
             self._clock_source = None
+        voice_progress = 1. if self.reduce_motion else ease((time.monotonic()-self._voice_at)/.28)
+        self._voice_amount = self._voice_from + (self._voice_target-self._voice_from)*voice_progress
+        if self._voice_source is not None or self._voice_amount > 0:
+            # The rope joint is the microphone head; it settles at canvas center.
+            mic = WhipPose((w/2,h/2+min(w,h)*.32), (w/2,h/2),
+                           tuple((w/2,h/2-i*.01) for i in range(len(pose.cord))))
+            destination = mic if self._voice_target else self._display_pose
+            if self._voice_source is not None and voice_progress < 1:
+                self._display_pose = morph(self._voice_source,destination,voice_progress)
+            else:
+                self._display_pose = destination
+                self._voice_source = None
+            self._clock_alpha *= 1-self._voice_amount
         self._draw_dial(w,h,self._clock_alpha)
         # Geometry is in screen pixels; retain the shared whip stroke scale.
-        self._whip_drawing._draw_pose(self._display_pose, scale)
+        self._whip_drawing._draw_pose(self._display_pose, scale*(1+2.5*self._voice_amount))
+        self._whip_drawing.fade_cord(1-self._voice_amount, self.cget('bg'))
+        self._draw_voice(w,h)
         self._draw_loading(w,h)
+
+    def _draw_voice(self,w,h):
+        alpha = self._voice_amount
+        if alpha < .001:
+            return
+        x,y = self._display_pose.handle_end
+        # Audio changes ring strength, never the hand or rope physics.
+        now = time.monotonic()
+        level = self._level if now-self._audio_at < .25 else 0.
+        if self.mode == 'recording' and not self.reduce_motion:
+            for index in range(3):
+                phase = ((now-self._voice_at)/1.5-index/3)%1
+                radius = 16+phase*min(w,h)*.35
+                opacity = alpha*(1-phase)**2*(.18+.25*level)
+                bg = self.winfo_rgb(self.cget('bg'))
+                color = '#' + ''.join(f'{round(v/257*(1-opacity)+35*opacity):02x}' for v in bg)
+                ring = self.create_oval(x-radius,y-radius,x+radius,y+radius,
+                                       outline=color,width=1.4,tags='voice_art')
+                self.tag_lower(ring)
+        size = max(1,round(min(w,h)*.14*(.9+.1*alpha)))
+        head = self._mic_head.resize((size,size),Image.Resampling.LANCZOS)
+        head.putalpha(head.getchannel('A').point(lambda value:round(value*alpha)))
+        self._photo = ImageTk.PhotoImage(head,master=self)
+        self.create_image(x,y-size*.3,image=self._photo,tags='voice_art')
 
     def _draw_loading(self,w,h):
         amount = ease((time.monotonic()-self._loading_transition_at)/.28)
@@ -403,7 +412,7 @@ class Interface:
         self.title = MorphingTitle(shell, lambda: self.preferences.reduce_motion)
         self.hero.clock_title_changed = self._clock_title_changed
         self.title.pack(pady=(0, 9))
-        self.subtitle = label(shell, color=MUTED, size=10, wraplength=440, justify="center")
+        self.subtitle = MorphingTitle(shell, lambda: self.preferences.reduce_motion,point_size=10,height=44)
         self.subtitle.pack(fill="x")
         self.choices = tk.Frame(shell, bg=BG)
         self.whip_choice = tk.BooleanVar(master=self.root, value=False)
@@ -764,7 +773,7 @@ class Interface:
             self._voice_state = ""
 
     def _clock_title_changed(self, active):
-        if self.stage == 'ready' and self.hero.mode == 'whip':
+        if self.stage == 'ready' and self.hero.mode == 'whip' and not self._pending and self._voice_state not in {'recording','recognizing'}:
             self.title.configure(text="Don't waste time on AI" if active else 'just beat it')
 
     def _refresh(self):
@@ -821,17 +830,16 @@ class Interface:
             if notice:
                 subtitle = notice
             if self._voice_state == "recording":
-                mode, title, subtitle = "recording", "正在听", "说完后停顿一下，就会自动识别"
+                mode, title, subtitle = "recording", "recording", ""
             elif self._voice_state == "recognizing":
-                mode, title, subtitle = "recognizing", "正在识别", "录音已接收，正在本地转成文字"
+                mode, title, subtitle = "recognizing", "recognizing voice", ""
             elif self._pending:
-                mode, title = "voice_ready", "留给下一鞭"
-                subtitle = ("挥动发送 · 再次双敲可重新录音" if a.armed.is_set()
-                            else "当前仅监听 · 在设置中开启发送")
+                mode, title = "whip", self._pending
+                subtitle = "beat it, then send"
         if not connected:
             mode = 'connecting'
             title = 'Connecting'
-        if self.stage == 'ready':
+        if self.stage == 'ready' and not (connected and self._pending and self._voice_state not in {'recording','recognizing'}):
             subtitle = ''
         key = (self.stage, title, subtitle, step, primary, progress, enabled,
                a.ble_value.get(), a.mode_value.get(), mode, self._pending)
@@ -845,14 +853,14 @@ class Interface:
             self.title.configure(text=title)
             self.subtitle.configure(text=subtitle)
             self.step_label.configure(text=step)
-            self.hero.clock_enabled = self.stage == "ready" and connected
+            self.hero.clock_enabled = self.stage == "ready" and connected and not self._pending and mode == 'whip'
             self.hero.set_mode(mode)
             # Reserve room for first-run choices/actions at the minimum window
             # size. The hero yields space before any primary action can clip.
             self.hero.configure(height=(150 if self.stage == "choices" else
                                         175 if self.stage == "learning" else
                                         210 if self.stage != "ready" else
-                                        215 if self._pending else 275))
+                                        275))
             self.primary.configure(text=primary, state="normal" if enabled else "disabled")
             self.progress.configure(text=progress)
             if self.stage == "choices":
@@ -871,8 +879,8 @@ class Interface:
             else:
                 self.skip.pack_forget()
             if self.stage == "ready" and self._pending:
-                self.pending.configure(text=self._pending[:160] + ("…" if len(self._pending) > 160 else ""))
-                self.pending.pack(before=self.footer, pady=(14, 0))
+                self.pending.configure(text=self._pending)
+                self.pending.pack_forget()
             else:
                 self.pending.pack_forget()
         self._timer = self.root.after(100, self._refresh)

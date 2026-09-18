@@ -67,6 +67,17 @@ class WhipDrawing:
             self.canvas.itemconfigure(item, **options)
             self._style_cache[item] = options
 
+    def fade_cord(self, opacity, background):
+        """Optional home-view fade; overlay rendering keeps its existing style."""
+        bg = self.canvas.winfo_rgb(background)
+        for items, color in ((self._cord_outline_segments, '#000103'),
+                             (self._cord_segments, '#090B0E'),
+                             (self._cord_highlight_segments, '#30343A')):
+            fg = self.canvas.winfo_rgb(color)
+            fill = '#' + ''.join(f'{round((a*opacity+b*(1-opacity))/257):02x}' for a,b in zip(fg,bg))
+            for item in items:
+                self.canvas.itemconfigure(item, fill=fill)
+
     @staticmethod
     def _flatten(points: tuple[Point, ...]) -> tuple[float, ...]:
         return tuple(coordinate for point in points for coordinate in point)

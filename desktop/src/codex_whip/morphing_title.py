@@ -29,11 +29,13 @@ def blend_masks(old,new,progress):
 
 
 class MorphingTitle(tk.Label):
-    def __init__(self,parent,reduce_motion=lambda:False):
+    def __init__(self,parent,reduce_motion=lambda:False,point_size=23,height=52):
         self._ready = False
         self._timer = None
         self._reduce_motion = reduce_motion
-        self._mask = Image.new('L',(880,104))
+        self._raster_size = (880,height*2)
+        self._output_size = (440,height)
+        self._mask = Image.new('L',self._raster_size)
         self._old = self._new = self._mask
         super().__init__(parent,text='',bg=parent.cget('bg'),bd=0,padx=0,pady=0)
         candidates = ['C:/Windows/Fonts/msyhbd.ttc',
@@ -41,22 +43,42 @@ class MorphingTitle(tk.Label):
                       '/System/Library/Fonts/STHeiti Medium.ttc',
                       '/System/Library/Fonts/Supplemental/Songti.ttc',
                       '/System/Library/Fonts/Supplemental/Arial Bold.ttf']
-        size = round(self.winfo_fpixels('23p')*2)
+        size = round(self.winfo_fpixels(f'{point_size}p')*2)
         path = next((p for p in candidates if Path(p).exists()),None)
         self._font = ImageFont.truetype(path,size) if path else ImageFont.load_default(size=size)
         self._ready = True
         self._show(self._mask)
 
     def _raster(self,text):
-        mask = Image.new('L',(880,104))
+        mask = Image.new('L',self._raster_size)
         draw = ImageDraw.Draw(mask)
         font = self._font
-        box = draw.textbbox((0,0),text,font=font)
-        if box[2]-box[0]>840:
-            font = font.font_variant(size=max(12,round(font.size*840/(box[2]-box[0]))))
-            box = draw.textbbox((0,0),text,font=font)
+        # Speech can be longer than a status label. Wrap by measured glyph width,
+        # reduce size only as needed; retain the full source string in cget(text).
+        def wrap(value, selected):
+            rows, line = [], ''
+            for char in value:
+                if char == '\n' or (line and draw.textlength(line+char,font=selected)>840):
+                    rows.append(line)
+                    line = ''
+                if char != '\n':
+                    line += char
+            return '\n'.join(rows+[line])
+        rendered = wrap(text,font)
+        box = draw.multiline_textbbox((0,0),rendered,font=font,spacing=4)
+        while box[3]-box[1] > self._raster_size[1]-8 and font.size > 24:
+            font = font.font_variant(size=max(24,font.size-2))
+            rendered = wrap(text,font)
+            box = draw.multiline_textbbox((0,0),rendered,font=font,spacing=4)
+        if box[3]-box[1] > self._raster_size[1]-8:
+            rows = rendered.split('\n')
+            while len(rows)>1 and draw.multiline_textbbox((0,0),'\n'.join(rows),font=font,spacing=4)[3] > self._raster_size[1]-8:
+                rows.pop()
+            rows[-1] = rows[-1][:-1]+'…'
+            rendered = '\n'.join(rows)
+            box = draw.multiline_textbbox((0,0),rendered,font=font,spacing=4)
         width,height = box[2]-box[0],box[3]-box[1]
-        draw.text(((880-width)/2-box[0],(104-height)/2-box[1]),text,font=font,fill=255)
+        draw.multiline_text(((880-width)/2-box[0],(self._raster_size[1]-height)/2-box[1]),rendered,font=font,fill=255,align='center',spacing=4)
         return mask
 
     def configure(self,cnf=None,**kwargs):
@@ -80,7 +102,7 @@ class MorphingTitle(tk.Label):
         self._mask = mask
         surface = Image.new('RGB',mask.size,self.cget('bg'))
         surface.paste('#1D1D1F',(0,0,*mask.size),mask)
-        self._photo = ImageTk.PhotoImage(surface.resize((440,52),Image.Resampling.LANCZOS),master=self)
+        self._photo = ImageTk.PhotoImage(surface.resize(self._output_size,Image.Resampling.LANCZOS),master=self)
         super().configure(image=self._photo)
 
     def _frame(self):

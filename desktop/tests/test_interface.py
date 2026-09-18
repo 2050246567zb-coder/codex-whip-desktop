@@ -291,7 +291,7 @@ def test_recording_pending_and_errors_render_without_changing_backend(app):
     assert ui.hero._levels[-1] == 0
     ui.observe("voice_state", {"state": "recognizing"})
     refresh(ui)
-    assert ui.title.cget("text") == "正在识别"
+    assert ui.title.cget("text") == "recognizing voice"
     ui.observe("voice_pending", "测试语音")
     ui.observe("voice_state", {"state": "ready"})
     refresh(ui)
@@ -323,7 +323,7 @@ def test_empty_voice_feedback_expires_and_new_recording_wins(app, monkeypatch):
     ui.observe("voice_state", {"state": "recording"})
     clock[0] += 4
     refresh(ui)
-    assert ui.title.cget("text") == "正在听"
+    assert ui.title.cget("text") == "recording"
     assert ui.hero.mode == "recording"
 
 

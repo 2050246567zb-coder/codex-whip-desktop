@@ -63,6 +63,11 @@ def main(argv=None) -> int:
             settle_and_capture("05-recording")
             app.ui._voice_state = "recognizing"
             settle_and_capture("06-recognizing")
+            app.ui.observe('voice_pending', '请继续完成界面和动画测试')
+            app.ui.observe('voice_state', {'state':'ready'})
+            settle_and_capture('07-voice-pending')
+            app.ui.observe('voice_pending', '')
+            settle_and_capture('08-after-send')
         finally:
             app.close()
             (args.output / "ui-smoke.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
