@@ -22,7 +22,10 @@ jobs:
       - name: Build product
         shell: pwsh
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --name "产品版-2.2.39" --paths desktop/src --add-data "desktop/assets;assets" --collect-all bleak --collect-all pywinauto --collect-all sounddevice --exclude-module pytest --distpath dist --workpath build/pyinstaller --specpath build/pyinstaller-spec desktop/codex_whip_gui.py
+          $source = (Resolve-Path desktop/src).Path
+          $assets = (Resolve-Path desktop/assets).Path
+          $entry = (Resolve-Path desktop/codex_whip_gui.py).Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name "产品版-2.2.39" --paths $source --add-data "${assets};assets" --collect-all bleak --collect-all pywinauto --collect-all sounddevice --exclude-module pytest --distpath dist --workpath build/pyinstaller --specpath build/pyinstaller-spec $entry
       - uses: actions/upload-artifact@v4
         with:
           name: CodexWhip-Windows-2.2.39
