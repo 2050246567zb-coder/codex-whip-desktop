@@ -87,6 +87,7 @@ cd "$DESKTOP_DIR"
   --collect-submodules AppKit \
   --collect-submodules Quartz \
   --collect-submodules Foundation \
+  --collect-all sounddevice \
   codex_whip_gui.py
 
 PLIST="$DESKTOP_DIR/dist/CodexWhip.app/Contents/Info.plist"

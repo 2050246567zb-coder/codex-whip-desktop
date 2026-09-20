@@ -46,6 +46,8 @@ from .senders.base import SendResult
 from .settings import Settings, load_settings
 from .settings_window import DetectorSettingsWindow
 from .sensor_pose import SensorPoseTracker
+from .sensor_bias import load_sensor_bias
+from .power_settings import PowerSettings, supports_power_saving
 from .mount_profile import default_mounting_path, load_mounting_profile, save_mounting_profile
 from .mount_calibration import DirectionCalibration
 from .mount_calibration_window import MountCalibrationWindow
@@ -57,6 +59,7 @@ from .voice import (
 )
 from .visual_settings import VisualSettings, VisualSettingsStore
 from .interface_state import audio_display_level
+from .virtual_microphone import VirtualMicrophoneBridge, VirtualMicrophoneError
 
 def find_config_path() -> Path | None:
     candidates: list[Path] = []
@@ -98,6 +101,15 @@ class GuiEventProcessor:
         self._mount_progress_at = 0.0
         self._last_sensor_batch_at = 0.0
         self._voice = voice_module
+
+    def select_sensor_device(self, identity: str) -> None:
+        path = (self._mounting_path.parent if self._mounting_path else user_data_dir()) / "sensor-bias-profiles.json"
+        bias = load_sensor_bias(path, identity)
+        self._sensor_pose.set_device_bias(bias)
+        self._last_sensor_batch_at = 0.0
+        if any(bias):
+            self._emit("log", "已加载当前手柄的静止零偏补偿："
+                       + ", ".join(f"{v:.3f}" for v in bias) + " °/秒")
 
     def _sender(self) -> Any:
         if self._live_sender is None:
@@ -148,6 +160,17 @@ class GuiEventProcessor:
             self._emit("learning_sample", message)
             return
         if isinstance(message, DeviceMessage):
+            if message.kind == 'POWER' and len(message.fields) >= 2:
+                state = message.fields[1]
+                if state in ('SLEEP', 'ACTIVE') and state != getattr(self, '_power_state', None):
+                    self._power_state = state
+                    self._sensor_pose.reset()
+                    self._last_sensor_batch_at = 0.0
+                    if self._motion_engine is not None:
+                        self._motion_engine.reset_stream()
+                    if self._voice is not None:
+                        self._voice.detector.reset()
+                    self._motion_resume_at = time.monotonic() + 0.5
             self._emit("device", message)
             return
 
@@ -179,7 +202,8 @@ class GuiEventProcessor:
             return
 
         voice_prompt = self._voice.pending_text if self._voice is not None else None
-        prompt = voice_prompt or self._prompts.choose(message)
+        native_draft = bool(self._voice is not None and self._voice.native_draft_pending)
+        prompt = voice_prompt or ("Codex 原生听写" if native_draft else self._prompts.choose(message))
         self._emit(
             "whip",
             {
@@ -194,7 +218,8 @@ class GuiEventProcessor:
                 "peak_jerk": message.peak_jerk_gps,
                 "prompt": prompt,
                 "source": source,
-                "voice_prompt": voice_prompt is not None,
+                "voice_prompt": voice_prompt is not None or native_draft,
+                "native_dictation": native_draft,
             },
         )
 
@@ -205,12 +230,16 @@ class GuiEventProcessor:
             )
         else:
             try:
-                result = await asyncio.to_thread(self._sender().send, prompt, message)
+                sender = self._sender()
+                operation = sender.submit_existing if native_draft else sender.send
+                result = await asyncio.to_thread(operation, message) if native_draft else await asyncio.to_thread(operation, prompt, message)
             except Exception as exc:
                 self._emit("send_error", str(exc))
                 return
         if result.sent and voice_prompt is not None and self._voice is not None:
             self._voice.mark_sent(prompt)
+        if result.sent and native_draft and self._voice is not None:
+            self._voice.clear_native_draft()
         self._emit("send_result", result)
 
     def calibrate_sensor_neutral(self) -> None:
@@ -366,6 +395,12 @@ class CodexWhipWindow:
     def __init__(self, root: tk.Tk, settings: Settings, config_path: Path | None) -> None:
         self.root = root
         self.settings = settings
+        try:
+            target = json.loads((user_data_dir() / 'target-app.json').read_text(encoding='utf-8'))['target']
+            if target in ('Codex', 'Claude'):
+                self.settings = replace(settings, codex=replace(settings.codex, target_app=target))
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
         self.config_path = config_path
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.armed = threading.Event()
@@ -380,16 +415,22 @@ class CodexWhipWindow:
         self.firmware_supports_raw = False
         self.firmware_supports_voice = False
         self.firmware_version = ""
+        self.power_store = PowerSettings(user_data_dir() / 'power-settings.json')
+        self.power_status = '连接手柄后同步'
         self.detector_profile_path = default_profile_path()
         self.detector_profile = load_profile(self.detector_profile_path)
         self.motion_engine = MotionEngine()
         self.message_store = MessageProfileStore(settings.messages)
         self.visual_store = VisualSettingsStore()
         self.voice_store = VoiceSettingsStore()
-        self.voice_transcriber = WhisperCppTranscriber()
+        self.virtual_microphone = VirtualMicrophoneBridge()
+        self._dictation_session: Any | None = None
+        from .cloud_speech import SpeechRouter
+        self.voice_transcriber = SpeechRouter(self.voice_store, WhisperCppTranscriber())
         self.voice_module = VoiceModule(
             self.voice_store, lambda kind, payload: self.emit(kind, payload),
             self.voice_transcriber,
+            virtual_microphone=self.virtual_microphone,
         )
         self._voice_model_preparing = False
         self.settings_window: DetectorSettingsWindow | None = None
@@ -429,6 +470,8 @@ class CodexWhipWindow:
             self.visual_store.settings.scare_blackout_ms,
             self.visual_store.settings.scare_eyes_ms,
         )
+        self.effects.set_feedback(wounds_enabled=self.visual_store.settings.wounds_enabled,
+                                  sound_enabled=self.visual_store.settings.sound_enabled)
         self._replace_scare_hotkey(self.visual_store.settings, log=True)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._drain_after = self.root.after(16, self._drain_events)
@@ -468,6 +511,7 @@ class CodexWhipWindow:
             log_handler=lambda line: self.emit("log", line),
             state_handler=lambda state: self.emit("ble", state),
             command_queue=command_queue,
+            device_handler=processor.select_sensor_device,
         )
         try:
             async def handle_with_meter(message: ProtocolMessage) -> None:
@@ -526,6 +570,28 @@ class CodexWhipWindow:
         if not self.firmware_supports_settings:
             return False
         return self.send_device_command(command)
+
+    def _set_power_status(self, value: str) -> None:
+        self.power_status = value
+        window = self.settings_window
+        if window is not None and window.window.winfo_exists():
+            window.power_status.set(value)
+
+    def apply_power_settings(self, enabled: bool) -> bool:
+        try:
+            self.power_store.save(enabled)
+        except OSError as exc:
+            messagebox.showerror('未能保存省电设置', str(exc))
+            return False
+        if not self.ble_connected:
+            self._set_power_status('已保存，连接后同步')
+        elif not supports_power_saving(self.firmware_version):
+            self._set_power_status('需要旧 XIAO 固件 0.6.1；当前尚未生效')
+        elif self.send_device_command(self.power_store.command()):
+            self._set_power_status('等待手柄确认…')
+        else:
+            self._set_power_status('已保存，等待重新连接')
+        return True
 
     def calibrate_sensor_neutral(self) -> None:
         if load_mounting_profile(self.mounting_path) is None:
@@ -609,17 +675,28 @@ class CodexWhipWindow:
         return queued
 
     def apply_voice_settings(self, settings: VoiceSettings) -> bool:
+        previous = self.voice_store.settings
         try:
             self.voice_store.update(settings)
             self.voice_module.update_settings()
         except (OSError, ValueError) as exc:
             messagebox.showerror("无法保存语音设置", str(exc))
             return False
+        if previous.input_mode != settings.input_mode:
+            self._stop_native_dictation(abort=True)
+            self.voice_module.clear_pending()
+            self.voice_module.clear_native_draft()
         if self.ble_connected and self.firmware_supports_voice:
             self.send_device_command("VOICE,1" if settings.enabled else "VOICE,0")
-        if settings.enabled:
-            self.voice_status_value.set("正在准备本地识别模型")
+        if settings.enabled and settings.input_mode == "transcription":
+            self.voice_status_value.set("正在准备语音识别")
             self.prepare_voice_model()
+        elif settings.enabled:
+            try:
+                device = self.virtual_microphone.detect()
+                self.voice_status_value.set(f"原生听写已就绪 · {device.name}")
+            except VirtualMicrophoneError as exc:
+                self.voice_status_value.set(str(exc))
         else:
             self.voice_status_value.set("已关闭（可在设置中启用）")
         self.emit("log", "语音双敲模块已开启" if settings.enabled else "语音双敲模块已关闭")
@@ -630,6 +707,8 @@ class CodexWhipWindow:
             settings = replace(settings, scare_enabled=False).validated()
             self.visual_store.update(settings)
             self.effects.set_damage_interval(settings.strikes_per_wound)
+            self.effects.set_feedback(wounds_enabled=settings.wounds_enabled,
+                                      sound_enabled=settings.sound_enabled)
         except (OSError, ValueError) as exc:
             messagebox.showerror("无法保存视觉设置", str(exc))
             return False
@@ -666,6 +745,21 @@ class CodexWhipWindow:
         threading.Thread(
             target=prepare, name="codex-whip-voice-model", daemon=True
         ).start()
+
+    def _stop_native_dictation(self, *, abort: bool) -> bool:
+        if abort:
+            self.virtual_microphone.abort()
+        session, self._dictation_session = self._dictation_session, None
+        if session is None:
+            return not abort
+        try:
+            if self.processor is None:
+                raise RuntimeError("监听已经停止")
+            self.processor._sender().stop_dictation(session)
+            return True
+        except Exception as exc:
+            self._append_log(f"Codex 原生听写结束失败：{exc}")
+            return False
 
     def start_voice_calibration(self) -> bool:
         if self.voice_module.assembler.start is not None:
@@ -741,7 +835,11 @@ class CodexWhipWindow:
             embedded_parent=self.ui.advanced_host,
             save_tap_calibration=self.save_tap_calibration,
             set_tap_interval=self.voice_module.set_tap_interval,
+            power_enabled=self.power_store.enabled,
+            apply_power_settings=self.apply_power_settings,
+            power_status=self.power_status,
         )
+        self.settings_window.speech_service.recording_active = lambda: self.voice_module.assembler.start is not None
 
     def simulate_whip(self) -> None:
         if self.worker_loop is None or self.processor is None:
@@ -781,7 +879,7 @@ class CodexWhipWindow:
         self.arm_value.set(False)
         if not messagebox.askyesno(
             "武装实际发送",
-            "武装后，每次有效挥动都可能把 Codex 窗口置前并立即提交一条消息。\n\n"
+            f"武装后，每次有效挥动都可能把 {self.settings.codex.target_app} 窗口置前并立即提交一条消息。\n\n"
             "目标不明确或输入框已有草稿时，软件会拒绝发送。是否继续？",
         ):
             return
@@ -801,20 +899,53 @@ class CodexWhipWindow:
         self.codex_value.set("正在检查")
         self.check_button.configure(state="disabled")
 
+        selected = self.settings.codex
+        def target_emit(kind, payload):
+            self.emit('target_checked', (selected, kind, payload))
         def check() -> None:
             try:
-                sender = create_live_sender(self.settings.codex)
+                sender = create_live_sender(selected)
                 try:
                     target = sender.locate_window()
-                    self.emit("effect_target", (True, target))
+                    target_emit("effect_target", (True, target))
                 except Exception as exc:
-                    self.emit("effect_target", (False, str(exc)))
+                    target_emit("effect_target", (False, str(exc)))
                 result = sender.check_ready()
-                self.emit("codex_result", (True, result))
+                target_emit("codex_result", (True, result))
             except Exception as exc:
-                self.emit("codex_result", (False, str(exc)))
+                target_emit("codex_result", (False, str(exc)))
 
         threading.Thread(target=check, daemon=True).start()
+
+    def select_target_app(self, target: str) -> bool:
+        if target not in ('Codex', 'Claude'):
+            return False
+        try:
+            path = user_data_dir() / 'target-app.json'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix('.tmp')
+            temporary.write_text(json.dumps({'target': target}), encoding='utf-8')
+            temporary.replace(path)
+        except OSError as exc:
+            messagebox.showerror('无法保存目标', str(exc))
+            return False
+        self.armed.clear()
+        self.arm_value.set(False)
+        self._arm_generation += 1
+        self.settings = replace(self.settings, codex=replace(self.settings.codex, target_app=target))
+        self.mode_value.set('安全监听')
+        self.effects.detach()
+        self._effect_target_handle = None
+        if self.processor is not None and self.worker_loop is not None:
+            selected = self.settings.codex
+            def update_sender():
+                self.processor._codex_settings = selected
+                self.processor._live_sender = None
+            self.worker_loop.call_soon_threadsafe(update_sender)
+        self.arm_check.configure(text=f'允许挥动后向 {target} 发送消息')
+        self.check_button.configure(text=f'重新检查 {target}')
+        self.check_codex()
+        return True
 
     def _schedule_effect_target_refresh(self, delay_ms: int = 1500) -> None:
         if self.closing or self._effect_refresh_after is not None:
@@ -823,21 +954,34 @@ class CodexWhipWindow:
             delay_ms, self._refresh_effect_target
         )
 
+    def _keep_awake_for_calibration(self) -> None:
+        # A lease refreshed only during calibration, so a crash/disconnect can
+        # never leave the board permanently inhibited from entering sleep.
+        window = self.settings_window
+        calibrating = (self.mount_window is not None or self.voice_module.calibration_active or
+                       (window is not None and window.window.winfo_exists() and
+                        window._stage in {'positive', 'negative'}))
+        if (calibrating and self.ble_connected and supports_power_saving(self.firmware_version)
+                and time.monotonic() - getattr(self, '_power_hold_at', 0) > 15):
+            self.send_device_command('POWERHOLD')
+            self._power_hold_at = time.monotonic()
+
     def _refresh_effect_target(self) -> None:
         self._effect_refresh_after = None
         if self.closing:
             return
+        self._keep_awake_for_calibration()
         if self._effect_refresh_running:
             self._schedule_effect_target_refresh()
             return
         self._effect_refresh_running = True
-
+        selected = self.settings.codex
         def locate() -> None:
             try:
-                target = create_live_sender(self.settings.codex).locate_window()
-                self.emit("effect_target_auto", (True, target))
+                target = create_live_sender(selected).locate_window()
+                self.emit("target_checked", (selected, "effect_target_auto", (True, target)))
             except Exception as exc:
-                self.emit("effect_target_auto", (False, str(exc)))
+                self.emit("target_checked", (selected, "effect_target_auto", (False, str(exc))))
 
         threading.Thread(
             target=locate, name="codex-whip-window-watch", daemon=True
@@ -855,18 +999,18 @@ class CodexWhipWindow:
                 self.effects.attach(handle)
                 self._effect_target_handle = handle
                 self._append_log(
-                    "Codex 窗口已出现，黑色鞭子已自动显示"
+                    f"{self.settings.codex.target_app} 窗口已出现，黑色鞭子已自动显示"
                     if automatic
-                    else "黑色鞭子覆盖层已定位到 Codex"
+                    else f"黑色鞭子覆盖层已定位到 {self.settings.codex.target_app}"
                 )
             return
 
         if self._effect_target_handle is not None:
             self.effects.detach()
             self._effect_target_handle = None
-            self._append_log("Codex 窗口已隐藏或关闭，黑色鞭子已同步隐藏")
+            self._append_log(f"{self.settings.codex.target_app} 窗口已隐藏或关闭，黑色鞭子已同步隐藏")
         elif not automatic:
-            self._append_log(f"鞭子覆盖层等待 Codex：{detail}")
+            self._append_log(f"鞭子覆盖层等待 {self.settings.codex.target_app}：{detail}")
 
     def _append_log(self, line: str) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")
@@ -885,6 +1029,13 @@ class CodexWhipWindow:
         try:
             while True:
                 kind, payload = self.events.get_nowait()
+                if kind == 'target_checked':
+                    selected, kind, payload = payload
+                    if selected != self.settings.codex:
+                        if kind == 'effect_target_auto':
+                            self._effect_refresh_running = False
+                            self._schedule_effect_target_refresh()
+                        continue
                 if kind == "log":
                     self._append_log(str(payload))
                 elif kind == "scare_hotkey":
@@ -892,6 +1043,8 @@ class CodexWhipWindow:
                 elif kind == "ble":
                     self.ble_connected = str(payload) == "connected"
                     if not self.ble_connected:
+                        self.firmware_version = ''
+                        self._set_power_status('连接手柄后同步')
                         self.voice_module.pause_force_calibration()
                         self._profile_ack_count = 0
                         if self.mount_window is not None:
@@ -914,6 +1067,11 @@ class CodexWhipWindow:
                     )
                     if message.kind == "PONG" and message.fields:
                         self.firmware_version = message.fields[0]
+                        if supports_power_saving(self.firmware_version):
+                            self.send_device_command(self.power_store.command())
+                            self._set_power_status('等待手柄确认…')
+                        else:
+                            self._set_power_status('需要旧 XIAO 固件 0.6.1；当前尚未生效')
                         self.firmware_supports_settings = self._version_at_least(
                             self.firmware_version, (0, 3, 1)
                         )
@@ -942,7 +1100,7 @@ class CodexWhipWindow:
                                 self.send_device_command(
                                     "VOICE,1" if voice_enabled else "VOICE,0"
                                 )
-                                if voice_enabled:
+                                if voice_enabled and self.voice_store.settings.input_mode == "transcription":
                                     self.prepare_voice_model()
                         else:
                             self._append_log(
@@ -958,6 +1116,16 @@ class CodexWhipWindow:
                             self.detector_profile.commands()
                         ):
                             self._append_log("开发板已应用全部检测阈值")
+                    elif message.kind == 'POWER' and len(message.fields) >= 2:
+                        enabled, state = message.fields[:2]
+                        confirmed = enabled == str(int(self.power_store.enabled))
+                        text = ('省电中 · 移动手柄即可唤醒' if state == 'SLEEP' else
+                                '已开启 · 静止 5 分钟后省电' if enabled == '1' else '已关闭')
+                        self._set_power_status(text if confirmed else '手柄设置未同步，请重试开关')
+                        self._append_log(f'省电模式：{text}')
+                    elif message.kind == 'POWERERR':
+                        self._set_power_status('省电设置或传感器恢复失败，请重启手柄并检查日志')
+                        self._append_log(f'设备：{display}')
                     elif message.kind == "CFGVAL":
                         pass
                     else:
@@ -983,6 +1151,7 @@ class CodexWhipWindow:
                 elif kind == "sensor_pose":
                     if payload.auto_centered:
                         self.effects.auto_center_sensor()
+                        self._append_log("静止三秒：已自动归中并更新手持零点")
                     self.effects.set_sensor_pose(payload)
                     if self.mount_window is not None:
                         if self.mount_window.stage == "review":
@@ -1013,7 +1182,11 @@ class CodexWhipWindow:
                     self._append_log(str(detail))
                 elif kind == "whip":
                     if payload.get("source") != "mouse":
-                        self.effects.play()
+                        try:
+                            self.effects.play()
+                        except Exception as exc:
+                            # Visual faults must not kill the BLE/UI event pump.
+                            self._append_log(f"抽打画面异常（继续处理手柄事件）：{type(exc).__name__}")
                     summary = (
                         f"#{payload['sequence']}  ·  {payload['gyro']:.0f} dps  ·  "
                         f"{payload['accel']:.2f} g  ·  {payload['duration']} ms"
@@ -1094,10 +1267,10 @@ class CodexWhipWindow:
                     self.check_button.configure(state="normal")
                     if ok:
                         self.codex_value.set("已找到且输入框就绪")
-                        self._append_log(f"Codex 已就绪：PID {detail['pid']}")
+                        self._append_log(f"{self.settings.codex.target_app} 已就绪：PID {detail['pid']}")
                     else:
                         self.codex_value.set("暂不可发送")
-                        self._append_log(f"Codex 检查：{detail}")
+                        self._append_log(f"{self.settings.codex.target_app} 检查：{detail}")
                 elif kind == "effect_target":
                     ok, detail = payload
                     self._apply_effect_target(ok, detail, automatic=False)
@@ -1133,18 +1306,36 @@ class CodexWhipWindow:
                     if not self.firmware_supports_voice:
                         self.voice_status_value.set("需要 0.5.0 固件")
                         self._append_log("双敲录音未启动：当前固件不支持麦克风传输")
-                    elif not self.voice_transcriber.ready:
-                        self.voice_status_value.set("本地模型仍在准备")
+                    elif (self.voice_store.settings.input_mode == "transcription"
+                          and not self.voice_transcriber.ready):
+                        self.voice_status_value.set("识别服务尚未就绪")
                         self.prepare_voice_model()
-                        self._append_log("双敲录音未启动：本地识别模型尚未准备完成")
+                        self._append_log("双敲录音未启动：请检查语音识别服务配置")
                     else:
                         voice = self.voice_store.settings
-                        if self.send_device_command(
-                            f"VOICE,START,{voice.silence_ms},{voice.max_recording_ms}"
-                        ):
+                        if voice.input_mode == "virtual_microphone":
+                            try:
+                                if self.processor is None:
+                                    raise VirtualMicrophoneError("监听尚未启动")
+                                device = self.virtual_microphone.start(voice.recording_gain)
+                                self._dictation_session = self.processor._sender().start_dictation()
+                                self._append_log(f"Codex 原生听写已启动：{device.name}")
+                            except Exception as exc:
+                                self.virtual_microphone.abort()
+                                self._dictation_session = None
+                                self.voice_status_value.set("原生听写启动失败")
+                                self._append_log(f"原生听写：{exc}")
+                                continue
+                        if self.send_device_command(f"VOICE,START,{voice.silence_ms},{voice.max_recording_ms}"):
                             self.voice_status_value.set("正在启动录音")
+                        elif voice.input_mode == "virtual_microphone":
+                            self._stop_native_dictation(abort=True)
                 elif kind == "voice_state":
                     state = str(payload.get("state", ""))
+                    if self.settings_window is not None:
+                        card = getattr(self.settings_window, 'speech_service', None)
+                        if card is not None and card.card.winfo_exists():
+                            card.set_recording(state == 'recording')
                     if state == "recording":
                         system_beep("start")
                         replacing = bool(payload.get("replacing"))
@@ -1162,6 +1353,11 @@ class CodexWhipWindow:
                         self._append_log("录音接收完成，正在本地识别中文")
                     elif state == "ready":
                         self.voice_status_value.set("文字已就绪，等待下一鞭")
+                    elif state == "dictation_ready":
+                        if self._stop_native_dictation(abort=False):
+                            self.voice_module.mark_native_draft_ready()
+                            self.voice_status_value.set("文字已在 Codex，等待下一鞭")
+                            self._append_log("Codex 原生听写已结束；下一鞭会发送输入框草稿")
                     elif state == "empty":
                         self.voice_status_value.set("未检测到真实说话，内容为空")
                         self._append_log(
@@ -1177,6 +1373,7 @@ class CodexWhipWindow:
                     elif self.voice_store.settings.enabled:
                         self.voice_status_value.set("等待双敲手柄")
                 elif kind == "voice_error":
+                    self._stop_native_dictation(abort=True)
                     system_beep("error")
                     self.voice_status_value.set("录音或识别失败")
                     self._append_log(f"语音模块：{payload}")
@@ -1192,14 +1389,15 @@ class CodexWhipWindow:
                         )
                 elif kind == "voice_model_ready":
                     self._voice_model_preparing = False
-                    self.voice_status_value.set(
-                        "等待双敲手柄"
-                        if self.voice_store.settings.enabled
-                        else "已关闭（可在设置中启用）"
-                    )
-                    self._append_log("本地中文语音识别模型已就绪")
+                    if self.voice_store.settings.input_mode == "transcription":
+                        self.voice_status_value.set(
+                            "等待双敲手柄"
+                            if self.voice_store.settings.enabled
+                            else "已关闭（可在设置中启用）"
+                        )
+                    self._append_log("语音识别服务已就绪")
                     if self.settings_window is not None and self.settings_window.window.winfo_exists():
-                        self.settings_window.set_voice_runtime_status("本地识别模型已就绪")
+                        self.settings_window.set_voice_runtime_status("语音识别服务已就绪")
                 elif kind == "voice_model_error":
                     self._voice_model_preparing = False
                     self.voice_status_value.set("模型准备失败")
@@ -1242,6 +1440,7 @@ class CodexWhipWindow:
 
     def close(self) -> None:
         self.closing = True
+        self._stop_native_dictation(abort=True)
         for callback in (self._drain_after, self._listen_after, self._check_after):
             if callback is not None:
                 self.root.after_cancel(callback)

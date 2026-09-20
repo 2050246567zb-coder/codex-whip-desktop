@@ -56,6 +56,27 @@ def sample(sequence: int) -> LearningSample:
     )
 
 
+def test_power_switch_is_in_handle_group_and_reverts_failed_save(root, tmp_path):
+    values=[]
+    window=DetectorSettingsWindow(root, DetectorProfile(), lambda _:True, lambda _:True,
+        message_store=MessageProfileStore(('test',),path=tmp_path/'messages.json'),
+        voice_store=VoiceSettingsStore(tmp_path/'voice.json'),
+        visual_store=VisualSettingsStore(tmp_path/'visual.json'),
+        apply_power_settings=lambda value: values.append(value) or False)
+    try:
+        window.show_group('calibration')
+        assert window._power_panel.winfo_manager()=='pack'
+        window.power_enabled.set(True)
+        window._toggle_power()
+        assert values==[True] and not window.power_enabled.get()
+        window.show_group('input')
+        assert not window._power_panel.winfo_manager()
+        window.show_group('general')
+        assert not window._power_panel.winfo_manager()
+    finally:
+        window.close()
+
+
 @pytest.fixture(scope="module")
 def root() -> tk.Tk:
     value = tk.Tk()
@@ -178,7 +199,7 @@ def test_visual_settings_adjust_and_save_wound_frequency(root: tk.Tk, tmp_path) 
         apply_visual_settings=apply,
     )
     try:
-        assert window.visual_frequency_spinbox.winfo_exists()
+        assert window.visual_frequency_slider.winfo_exists()
         assert not hasattr(window, "visual_scare_hotkey_entry")
         window.visual_strikes_per_wound.set("5")
         window._save_visual_settings()
@@ -233,3 +254,30 @@ def test_tap_calibration_auto_steps_test_and_cancel(root: tk.Tk, tmp_path) -> No
     finally:
         window.close()
     assert cancels == [True]
+
+
+def test_untrained_sensitivity_updates_real_thresholds_and_reopens(root, tmp_path, monkeypatch):
+    from codex_whip.calibration import save_profile, load_profile
+    monkeypatch.setenv('CODEX_WHIP_DATA_DIR', str(tmp_path))
+    applied = []
+    def apply(profile):
+        save_profile(profile)
+        applied.append(profile)
+        return False  # disconnected: saved now, sync later
+    window = DetectorSettingsWindow(root, DetectorProfile(), lambda _: False, apply)
+    try:
+        window.tolerance_scale.set(150)
+        window._commit_tolerance()
+        assert applied[-1].confirm_gyro_dps < DetectorProfile().confirm_gyro_dps
+        assert not window._learning_status_label.winfo_manager()
+        assert window.tolerance_scale.pack_info()['fill'] == 'x'
+    finally:
+        window.close()
+    window = DetectorSettingsWindow(root, load_profile(), lambda _: False, apply)
+    try:
+        assert window.tolerance_value.get() == 150
+        window.tolerance_scale.set(100)
+        window._commit_tolerance()
+        assert applied[-1] == DetectorProfile()
+    finally:
+        window.close()

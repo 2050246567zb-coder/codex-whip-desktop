@@ -97,6 +97,9 @@ IMA_INDEX_TABLE = (-1, -1, -1, -1, 2, 4, 6, 8)
 @dataclass(frozen=True, slots=True)
 class VoiceSettings:
     enabled: bool = False
+    input_mode: str = "transcription"
+    speech_provider: str = 'local'
+    recording_gain: float = 2.0
     impact_dynamic_accel_g: float = 1.25
     max_tap_gyro_dps: float = 700.0
     min_interval_ms: int = 150
@@ -111,6 +114,13 @@ class VoiceSettings:
     tap_heavy_g: float = 0.0
 
     def validated(self) -> "VoiceSettings":
+        from .cloud_speech import PRESETS
+        if self.input_mode not in {"transcription", "virtual_microphone"}:
+            raise ValueError("未知语音输入方式")
+        if self.speech_provider != 'local' and self.speech_provider not in PRESETS:
+            raise ValueError('未知语音识别服务')
+        if type(self.recording_gain) not in (int, float) or not math.isfinite(self.recording_gain) or not 1 <= self.recording_gain <= 8:
+            raise ValueError('录音增益必须在 1–8 倍')
         if (type(self.tap_force_calibrated) is not bool
                 or not all(math.isfinite(v) and 0 <= v <= 100
                            for v in (self.tap_light_g, self.tap_heavy_g))):
@@ -630,7 +640,7 @@ class VoiceAudioAssembler:
         self.pcm.clear()
         self.error = None
 
-    def add(self, chunk: AudioChunk) -> None:
+    def add(self, chunk: AudioChunk) -> bytes:
         if self.start is None or chunk.session != self.start.session:
             raise ValueError("audio chunk has no matching session")
         if chunk.sequence != self.expected_sequence:
@@ -641,6 +651,7 @@ class VoiceAudioAssembler:
         decoded = decode_ima_adpcm_chunk(chunk)
         self.pcm.extend(decoded)
         self.samples += chunk.sample_count
+        return decoded
 
     def finish(self, end: AudioEnd) -> tuple[int, bytes]:
         if self.start is None or end.session != self.start.session:
@@ -814,7 +825,7 @@ class WhisperCppTranscriber:
                 pass
             raise
 
-    def transcribe(self, sample_rate: int, pcm: bytes) -> str:
+    def transcribe(self, sample_rate: int, pcm: bytes, *, on_started=None) -> str:
         if not self.ready:
             raise RuntimeError("本地语音模型尚未准备完成")
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -828,6 +839,8 @@ class WhisperCppTranscriber:
                 output.setframerate(sample_rate)
                 output.writeframes(pcm)
             creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            if on_started is not None:
+                on_started()
             completed = subprocess.run(
                 [
                     str(self.executable_path),
@@ -897,10 +910,15 @@ class VoiceModule:
         emit: Callable[[str, Any], None],
         transcriber: WhisperCppTranscriber | None = None,
         double_tap_profile_path: Path | None = None,
+        virtual_microphone: Any | None = None,
     ) -> None:
         self.store = store
         self.emit = emit
         self.transcriber = transcriber or WhisperCppTranscriber()
+        self._recording_transcriber = self.transcriber
+        self._recording_gain = store.settings.recording_gain
+        self.virtual_microphone = virtual_microphone
+        self._recording_mode = store.settings.input_mode
         self.double_tap_profile_path = (
             double_tap_profile_path
             or store.path.with_name(default_double_tap_profile_path().name)
@@ -913,6 +931,7 @@ class VoiceModule:
         self._pending_text: str | None = None
         self._pending_until = 0.0
         self._pending_lock = threading.Lock()
+        self._native_draft_pending = False
         self._calibration_remaining = 0
         self._calibration_events: list[DoubleTapEvent] = []
         self._calibration_templates: list[DoubleTapTemplate] = []
@@ -1003,11 +1022,27 @@ class VoiceModule:
             self._pending_until = 0.0
         self.emit("voice_pending", None)
 
+    @property
+    def native_draft_pending(self) -> bool:
+        with self._pending_lock:
+            return self._native_draft_pending
+
+    def mark_native_draft_ready(self) -> None:
+        with self._pending_lock:
+            self._native_draft_pending = True
+        self.emit("voice_native_pending", True)
+
+    def clear_native_draft(self) -> None:
+        with self._pending_lock:
+            self._native_draft_pending = False
+        self.emit("voice_native_pending", False)
+
     def update_settings(self) -> None:
         self._install_tap_detector()
         if not self.store.settings.enabled:
             self.cancel_calibration()
             self.clear_pending()
+            self.clear_native_draft()
 
     @property
     def double_tap_template_ready(self) -> bool:
@@ -1164,6 +1199,12 @@ class VoiceModule:
 
     async def handle_audio(self, message: AudioStart | AudioChunk | AudioEnd) -> None:
         if isinstance(message, AudioStart):
+            from .cloud_speech import SpeechRouter
+            current = self.store.settings
+            self._recording_gain = current.recording_gain
+            self._recording_mode = current.input_mode
+            self._recording_transcriber = (self.transcriber.snapshot()
+                if isinstance(self.transcriber, SpeechRouter) else self.transcriber)
             replacing = self.pending_text is not None
             if replacing:
                 # An accepted second double-tap means “discard and try again”.
@@ -1182,15 +1223,58 @@ class VoiceModule:
             return
         if isinstance(message, AudioChunk):
             try:
-                self.assembler.add(message)
-            except ValueError as exc:
+                decoded = self.assembler.add(message)
+                if self._recording_mode == "virtual_microphone":
+                    if self.virtual_microphone is None:
+                        raise ValueError("虚拟麦克风尚未初始化")
+                    self.virtual_microphone.write(decoded)
+            except Exception as exc:
+                if self._recording_mode == "virtual_microphone" and self.virtual_microphone is not None:
+                    self.virtual_microphone.abort()
                 self.emit("voice_error", str(exc))
             return
-        self.emit("voice_state", {"state": "recognizing", "session": message.session})
         try:
             sample_rate, pcm = self.assembler.finish(message)
-            text = await asyncio.to_thread(self.transcriber.transcribe, sample_rate, pcm)
+            from .voice_gain import apply_recording_gain
+            pcm = await asyncio.to_thread(apply_recording_gain, pcm, self._recording_gain)
+            from .voice_replay import recording_path, save_recording
+            try:
+                await asyncio.to_thread(save_recording, recording_path(self.store.path), sample_rate, pcm)
+            except (OSError, ValueError) as exc:
+                # Playback storage must not prevent transcription or sending.
+                self.emit('log', f'上次录音保存失败，识别继续：{exc}')
+            if self._recording_mode == "virtual_microphone":
+                if self.virtual_microphone is None:
+                    raise ValueError("虚拟麦克风尚未初始化")
+                await asyncio.to_thread(self.virtual_microphone.finish)
+                self.clear_pending()
+                self.emit("voice_state", {"state": "dictation_ready", "session": message.session})
+                return
+            from threading import Event
+            from .cloud_speech import SpeechRouter
+            started = Event()
+            transcriber = self._recording_transcriber
+            def transcribe():
+                if isinstance(transcriber, (SpeechRouter, WhisperCppTranscriber)):
+                    return transcriber.transcribe(sample_rate, pcm, on_started=started.set)
+                started.set()
+                return transcriber.transcribe(sample_rate, pcm)
+            task = asyncio.create_task(asyncio.to_thread(transcribe))
+            announced = False
+            try:
+                # Do not flash a loading shape for immediate rejection/empty results.
+                while not task.done():
+                    done, _ = await asyncio.wait({task}, timeout=.2)
+                    if not done and started.is_set() and not announced:
+                        self.emit("voice_state", {"state": "recognizing", "session": message.session})
+                        announced = True
+                text = task.result()
+            finally:
+                if not task.done():
+                    task.cancel()
         except Exception as exc:
+            if self._recording_mode == "virtual_microphone" and self.virtual_microphone is not None:
+                self.virtual_microphone.abort()
             self.emit("voice_error", str(exc))
             return
         if not text:

@@ -46,14 +46,26 @@ class ControlCandidate:
     class_name: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class WindowsDictationSession:
+    hwnd: int
+    pid: int
+    button: Any
+
+
 def score_composer_candidate(
-    candidate: ControlCandidate, window: Rectangle, name_hints: tuple[str, ...]
+    candidate: ControlCandidate, window: Rectangle, name_hints: tuple[str, ...],
+    *, target_app: str = 'Codex',
 ) -> float | None:
     if not candidate.enabled or not candidate.visible:
         return None
     if candidate.control_type not in {"Edit", "Document"}:
         return None
+    claude_editor = (target_app == 'Claude' and candidate.control_type == 'Edit'
+                     and candidate.name.casefold() == 'write your prompt to claude')
     if candidate.rectangle.width < max(240, int(window.width * 0.25)):
+        return None
+    if target_app == 'Claude' and not claude_editor:
         return None
     if candidate.rectangle.height < 24:
         return None
@@ -61,7 +73,7 @@ def score_composer_candidate(
         return None
 
     center_y = (candidate.rectangle.top + candidate.rectangle.bottom) / 2
-    if center_y < window.top + window.height * 0.55:
+    if center_y < window.top + window.height * (0.15 if claude_editor else 0.55):
         return None
 
     normalized_name = candidate.name.casefold()
@@ -100,12 +112,28 @@ def _rect(value: Any) -> Rectangle:
     )
 
 
+def composer_identity(control: Any, target_app: str) -> str:
+    # UIA rich_text can contain placeholder/draft text. Claude's accessible
+    # Name is the stable editor identity, independent of its contents.
+    if target_app == 'Claude':
+        return control.element_info.name or ''
+    return control.window_text() or control.element_info.name or ''
+
+
 def _is_codex_executable(executable: str, package_marker: str) -> bool:
     normalized = executable.casefold()
     return (
         Path(executable).name.casefold() == "chatgpt.exe"
         and package_marker.casefold() in normalized
     )
+
+
+def is_target_executable(executable: str, settings: CodexSettings) -> bool:
+    if settings.target_app == 'Claude':
+        return Path(executable).name.casefold() == 'claude.exe'
+    if settings.target_app != 'Codex':
+        return False
+    return _is_codex_executable(executable, settings.package_marker)
 
 
 if sys.platform == "win32":
@@ -226,9 +254,7 @@ class WindowsCodexSender:
                 pid = window.process_id()
                 executable = psutil.Process(pid).exe()
                 title = window.window_text().strip()
-                if title and _is_codex_executable(
-                    executable, self._settings.package_marker
-                ):
+                if title and is_target_executable(executable, self._settings):
                     candidates.append(window)
             except (psutil.Error, RuntimeError, OSError):
                 continue
@@ -278,28 +304,37 @@ class WindowsCodexSender:
         windows = self._codex_windows()
         if len(windows) != 1:
             raise CodexTargetError(
-                f"expected exactly one visible Codex window, found {len(windows)}"
+                f"expected exactly one visible {self._settings.target_app} window, found {len(windows)}"
             )
         return windows[0]
 
     def _find_composer(self, window: Any) -> Any:
         window_rect = _rect(window.rectangle())
         ranked: list[tuple[float, Any]] = []
+        diagnostics: list[str] = []
         controls = window.descendants(control_type="Edit")
         controls += window.descendants(control_type="Document")
         for control in controls:
             try:
                 candidate = ControlCandidate(
                     control_type=control.element_info.control_type,
-                    name=control.window_text() or control.element_info.name or "",
+                    name=composer_identity(control, self._settings.target_app),
                     rectangle=_rect(control.rectangle()),
                     enabled=control.is_enabled(),
                     visible=control.is_visible(),
                     class_name=control.element_info.class_name or "",
                 )
                 score = score_composer_candidate(
-                    candidate, window_rect, self._settings.composer_name_hints
+                    candidate, window_rect, self._settings.composer_name_hints,
+                    target_app=self._settings.target_app,
                 )
+                if self._settings.target_app == 'Claude':
+                    diagnostics.append(
+                        f'{candidate.control_type}:{candidate.rectangle.width}x{candidate.rectangle.height}'
+                        f'@{candidate.rectangle.top-window_rect.top}'
+                        f',enabled={candidate.enabled},visible={candidate.visible}'
+                        f',known={candidate.name.casefold() == "write your prompt to claude"}'
+                    )
                 if score is not None:
                     ranked.append((score, control))
             except (RuntimeError, OSError):
@@ -307,9 +342,11 @@ class WindowsCodexSender:
 
         ranked.sort(key=lambda item: item[0], reverse=True)
         if not ranked:
-            raise CodexTargetError("could not identify the Codex message composer")
+            detail = '; '.join(diagnostics[:8])
+            raise CodexTargetError(f"could not identify the {self._settings.target_app} message composer"
+                                   + (f' ({detail}; window={window_rect.width}x{window_rect.height})' if detail else ''))
         if len(ranked) > 1 and abs(ranked[0][0] - ranked[1][0]) < 1:
-            raise CodexTargetError("Codex message composer is ambiguous")
+            raise CodexTargetError(f"{self._settings.target_app} message composer is ambiguous")
         return ranked[0][1]
 
     def _composer_value(self, composer: Any) -> str | None:
@@ -319,6 +356,8 @@ class WindowsCodexSender:
             class_name = composer.element_info.class_name or ""
         except (AttributeError, RuntimeError, OSError):
             return None
+        if self._settings.target_app == 'Claude':
+            return str(value or '').strip()
         return normalize_composer_value(str(value or ""), str(name), str(class_name))
 
     def _find_send_button(self, window: Any) -> Any | None:
@@ -338,6 +377,88 @@ class WindowsCodexSender:
             except (RuntimeError, OSError):
                 continue
         return matches[0] if len(matches) == 1 else None
+
+    def _find_dictation_button(self, window: Any) -> Any:
+        window_rect = _rect(window.rectangle())
+        accepted = {"听写", "dictate", "dictation", "voice input", "语音输入"}
+        matches: list[Any] = []
+        for button in window.descendants(control_type="Button"):
+            try:
+                name = (button.window_text() or button.element_info.name or "").strip().casefold()
+                rect = _rect(button.rectangle())
+                if (
+                    name in accepted
+                    and button.is_visible()
+                    and button.is_enabled()
+                    and rect.top >= window_rect.top + window_rect.height * 0.52
+                ):
+                    matches.append(button)
+            except (RuntimeError, OSError):
+                continue
+        if len(matches) != 1:
+            raise CodexTargetError(f"expected one Codex dictation control, found {len(matches)}")
+        return matches[0]
+
+    @staticmethod
+    def _invoke(button: Any, detail: str) -> None:
+        try:
+            button.invoke()
+        except (AttributeError, RuntimeError, OSError) as exc:
+            raise CodexTargetError(detail) from exc
+
+    def start_dictation(self) -> WindowsDictationSession:
+        if self._settings.target_app != "Codex":
+            raise CodexTargetError("原生听写模式目前只支持 Codex 桌面端")
+        window = self._single_codex_window()
+        composer = self._find_composer(window)
+        existing = self._composer_value(composer)
+        if existing is None:
+            raise CodexTargetError("could not verify that the Codex composer is empty")
+        if existing:
+            raise CodexTargetError("Codex composer already contains unsent text")
+        button = self._find_dictation_button(window)
+        hwnd = int(window.handle)
+        _user32.ShowWindow(hwnd, SW_RESTORE)
+        if not _user32.SetForegroundWindow(hwnd):
+            raise CodexTargetError("Windows refused to foreground the Codex window")
+        time.sleep(0.12)
+        self._invoke(button, "无法启动 Codex 听写")
+        return WindowsDictationSession(hwnd, int(window.process_id()), button)
+
+    def stop_dictation(self, session: WindowsDictationSession) -> None:
+        windows = [window for window in self._codex_windows()
+                   if int(window.handle) == session.hwnd and int(window.process_id()) == session.pid]
+        if len(windows) != 1:
+            raise CodexTargetError("Codex 听写窗口已经关闭或改变")
+        # Invoke the exact element that started this session. Never search for a
+        # generic “停止” button because that could stop a running Codex task.
+        self._invoke(session.button, "无法安全停止 Codex 听写")
+
+    def submit_existing(self, event: WhipEvent) -> SendResult:
+        del event
+        window = self._single_codex_window()
+        composer = self._find_composer(window)
+        existing = self._composer_value(composer)
+        if existing is None:
+            raise CodexTargetError("could not verify the Codex dictation draft")
+        if not existing:
+            raise CodexTargetError("Codex 听写尚未生成可发送文字")
+        hwnd = int(window.handle)
+        _user32.ShowWindow(hwnd, SW_RESTORE)
+        if not _user32.SetForegroundWindow(hwnd):
+            raise CodexTargetError("Windows refused to foreground the Codex window")
+        time.sleep(0.12)
+        composer.set_focus()
+        time.sleep(0.06)
+        send_button = self._find_send_button(window)
+        if send_button is not None:
+            try:
+                send_button.invoke()
+            except (AttributeError, RuntimeError, OSError):
+                _send_key(VK_RETURN)
+        else:
+            _send_key(VK_RETURN)
+        return SendResult(True, "Codex 听写草稿已发送")
 
     def send(self, prompt: str, event: WhipEvent) -> SendResult:
         del event

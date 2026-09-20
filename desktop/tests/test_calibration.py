@@ -41,7 +41,7 @@ def test_profile_commands_are_short_and_complete() -> None:
 
     assert len(commands) == 14
     assert commands[0] == "CFG,SG,546"
-    assert commands[-1] == "CFG,CD,700"
+    assert commands[-1] == "CFG,CD,400"
     assert all(len(command.encode("ascii")) < 20 for command in commands)
 
 

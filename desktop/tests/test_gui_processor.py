@@ -64,7 +64,8 @@ def test_gui_applies_visual_damage_frequency_immediately(tmp_path) -> None:
     window.effects = type(
         "Effects",
         (),
-        {"set_damage_interval": lambda _self, value: applied.append(value)},
+        {"set_damage_interval": lambda _self, value: applied.append(value),
+         "set_feedback": lambda _self, **kwargs: None},
     )()
     window.emit = lambda kind, payload: emitted.append((kind, payload))
 
@@ -216,6 +217,28 @@ def test_pending_voice_text_has_priority_and_clears_only_after_send(tmp_path) ->
     whip_payload = next(payload for kind, payload in emitted if kind == "whip")
     assert whip_payload["voice_prompt"] is True
     assert voice.pending_text is None
+
+
+def test_native_dictation_draft_is_submitted_without_inserting_prompt(tmp_path) -> None:
+    emitted = []
+    voice = VoiceModule(VoiceSettingsStore(tmp_path / "voice.json"), lambda *event: emitted.append(event))
+    voice.mark_native_draft_ready()
+    armed = threading.Event()
+    armed.set()
+    processor = GuiEventProcessor(Settings(), armed, lambda *event: emitted.append(event), voice_module=voice)
+
+    class Sender:
+        def send(self, *_args):
+            raise AssertionError("native dictation must not insert a configured prompt")
+        def submit_existing(self, event):
+            assert event.sequence == 45
+            return SendResult(True, "sent native draft")
+
+    processor._live_sender = Sender()
+    asyncio.run(processor.handle(WhipEvent(45, 900, 3.0, 120)))
+    assert voice.native_draft_pending is False
+    payload = next(payload for kind, payload in emitted if kind == "whip")
+    assert payload["native_dictation"] is True
 
 
 def test_retired_shortcut_never_registers():

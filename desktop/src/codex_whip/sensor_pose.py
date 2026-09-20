@@ -146,7 +146,16 @@ class SensorPoseTracker:
         self._batch_auto_centered = False
 
     def reset(self) -> None:
+        bias = self._bias
         self.__init__(self.mounting)
+        self._bias = bias
+
+    def set_device_bias(self, bias: Vector) -> None:
+        """Install an explicitly measured bias and discard old-device attitude."""
+        if len(bias) != 3 or not all(math.isfinite(v) for v in bias) or math.sqrt(_dot(bias, bias)) > 15:
+            raise ValueError("Invalid stationary gyro bias")
+        self.__init__(self.mounting)
+        self._bias = tuple(float(v) for v in bias)
 
     @property
     def orientation(self) -> Quaternion:

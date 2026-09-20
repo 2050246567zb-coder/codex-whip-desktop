@@ -28,6 +28,12 @@ class _Candidate:
     height: float
 
 
+@dataclass(frozen=True, slots=True)
+class MacDictationSession:
+    pid: int
+    element: Any
+
+
 class MacOSCodexSender:
     """Fail-closed Accessibility adapter for the visible macOS Codex window."""
 
@@ -194,6 +200,78 @@ class MacOSCodexSender:
             if any(hint.casefold() in name for hint in self._settings.send_button_name_hints):
                 matches.append(element)
         return matches[0] if len(matches) == 1 else None
+
+    def _dictation_button(self, window: macos_api.MacWindow) -> Any:
+        _appkit, quartz = macos_api._frameworks()
+        accepted = {"听写", "dictate", "dictation", "voice input", "语音输入"}
+        matches: list[Any] = []
+        for element in macos_api.ax_descendants(window.element):
+            if str(macos_api.ax_copy(element, quartz.kAXRoleAttribute) or "") != "AXButton":
+                continue
+            name = " ".join(
+                str(macos_api.ax_copy(element, attribute) or "")
+                for attribute in (quartz.kAXTitleAttribute, quartz.kAXDescriptionAttribute,
+                                  quartz.kAXHelpAttribute)
+            ).strip().casefold()
+            frame = self._frame(element)
+            if frame is not None and frame[1] >= window.top + window.height * 0.52 and name in accepted:
+                matches.append(element)
+        if len(matches) != 1:
+            raise CodexTargetError(f"需要唯一的 Codex 听写按钮，当前找到 {len(matches)} 个")
+        return matches[0]
+
+    @staticmethod
+    def _press(element: Any, detail: str) -> None:
+        _appkit, quartz = macos_api._frameworks()
+        error = quartz.AXUIElementPerformAction(element, quartz.kAXPressAction)
+        if int(error) != int(quartz.kAXErrorSuccess):
+            raise CodexTargetError(detail)
+
+    def start_dictation(self) -> MacDictationSession:
+        window = self._single_window()
+        composer = self._composer(window)
+        existing = self._normalized_value(composer)
+        if existing is None:
+            raise CodexTargetError("无法确认 Codex 输入框是否为空")
+        if existing:
+            raise CodexTargetError("Codex 输入框已有未发送草稿")
+        button = self._dictation_button(window)
+        if not macos_api.activate_application(window.pid):
+            raise CodexTargetError("macOS 拒绝激活 Codex 窗口")
+        time.sleep(0.12)
+        self._press(button, "无法启动 Codex 听写")
+        return MacDictationSession(window.pid, button)
+
+    def stop_dictation(self, session: MacDictationSession) -> None:
+        if macos_api.window_for_pid(session.pid) is None:
+            raise CodexTargetError("Codex 听写窗口已经关闭")
+        # Reuse the exact AX element that opened dictation; never press an
+        # unrelated generic Stop button.
+        self._press(session.element, "无法安全停止 Codex 听写")
+
+    def submit_existing(self, event: WhipEvent) -> SendResult:
+        del event
+        window = self._single_window()
+        composer = self._composer(window)
+        existing = self._normalized_value(composer)
+        if existing is None:
+            raise CodexTargetError("无法确认 Codex 听写草稿")
+        if not existing:
+            raise CodexTargetError("Codex 听写尚未生成可发送文字")
+        _appkit, quartz = macos_api._frameworks()
+        if not macos_api.activate_application(window.pid):
+            raise CodexTargetError("macOS 拒绝激活 Codex 窗口")
+        time.sleep(0.12)
+        if not macos_api.ax_set(composer.element, quartz.kAXFocusedAttribute, True):
+            raise CodexTargetError("无法聚焦 Codex 输入框")
+        button = self._send_button(window)
+        if button is not None:
+            error = quartz.AXUIElementPerformAction(button, quartz.kAXPressAction)
+            if int(error) != int(quartz.kAXErrorSuccess):
+                macos_api.post_return()
+        else:
+            macos_api.post_return()
+        return SendResult(True, "Codex 听写草稿已发送")
 
     def send(self, prompt: str, event: WhipEvent) -> SendResult:
         del event

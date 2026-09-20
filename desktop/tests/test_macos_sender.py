@@ -92,3 +92,24 @@ def test_macos_target_requires_an_openai_bundle_identifier() -> None:
     assert macos_api.is_official_codex_identity("ChatGPT", "com.openai.chat")
     assert not macos_api.is_official_codex_identity("Codex", "com.example.codex")
     assert not macos_api.is_official_codex_identity("Notes", "com.openai.notes")
+
+
+def test_macos_dictation_stops_the_exact_button_that_started_it(monkeypatch) -> None:
+    attributes, composer, window = _fake_accessibility(monkeypatch, value="Message Codex")
+    button = object()
+    attributes[button] = {
+        "role": "AXButton", "position": (980.0, 760.0), "size": (36.0, 36.0),
+        "title": "", "description": "Dictate", "help": "",
+    }
+    monkeypatch.setattr(macos_api, "ax_descendants", lambda _root: [composer, button])
+    monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
+    monkeypatch.setattr(macos_api, "window_for_pid", lambda _pid: window)
+    pressed = []
+    _appkit, quartz = macos_api._frameworks()
+    quartz.AXUIElementPerformAction = lambda element, action: pressed.append((element, action)) or 0
+    sender = macos_ax.MacOSCodexSender(CodexSettings())
+
+    session = sender.start_dictation()
+    sender.stop_dictation(session)
+
+    assert pressed == [(button, "press"), (button, "press")]

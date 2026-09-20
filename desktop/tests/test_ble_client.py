@@ -36,3 +36,59 @@ def test_drain_message_queue_honors_burst_limit() -> None:
 
     assert drained == 2
     assert queue.qsize() == 1
+
+
+def test_continuous_notifications_do_not_starve_commands(monkeypatch) -> None:
+    from codex_whip import ble_client
+    from codex_whip.settings import BleSettings
+
+    async def exercise():
+        stop = asyncio.Event()
+        commands = asyncio.Queue()
+        writes = []
+        received = 0
+
+        class Peripheral:
+            is_connected = True
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def start_notify(self, uuid, callback):
+                self.notify = callback
+                self.notify(None, b'PONG,0.6.0\n' * 64)
+
+            async def stop_notify(self, uuid):
+                pass
+
+            async def write_gatt_char(self, uuid, payload, **kwargs):
+                writes.append(payload)
+                if payload == b'RAW,1\n':
+                    stop.set()
+
+        peripheral = Peripheral()
+        monkeypatch.setattr(ble_client, 'BleakClient', lambda *a, **k: peripheral)
+
+        async def handler(item):
+            nonlocal received
+            received += 1
+            if received == 1:
+                commands.put_nowait('CFG,CG,150')
+                commands.put_nowait('RAW,1')
+            peripheral.notify(None, b'PONG,0.6.0\n')
+            if received >= 256:
+                stop.set()  # bounded failure on the old starvation loop
+
+        client = ble_client.BleWhipClient(BleSettings(), command_queue=commands)
+        await client._run_connection(object(), handler, stop)
+        assert b'CFG,CG,150\n' in writes
+        assert b'RAW,1\n' in writes
+        assert received < 256
+
+    asyncio.run(exercise())

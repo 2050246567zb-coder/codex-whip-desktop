@@ -57,6 +57,27 @@ class FakeEffects:
         self.detached += 1
 
 
+def test_delayed_animation_frame_still_fires_hit_exactly_once(monkeypatch):
+    from unittest.mock import Mock
+    effect=object.__new__(CodexWhipEffects)
+    effect._animation_started_at=1.
+    effect._impact_fired=False
+    effect._animation_strike_pose=CodexWhipEffects.STRIKE
+    effect._animation_idle_pose=CodexWhipEffects.IDLE
+    effect._pending_impact_screen=(400,300)
+    effect._pending_damage_direction=(1,0)
+    effect._crack_sound=b'test'
+    for name in ('_show_impact','_play_sound','_maybe_record_damage','_start_shake',
+                 '_draw_pose','_hide_impact','_sync_position','_show_idle_hitbox'):
+        setattr(effect,name,Mock())
+    monkeypatch.setattr('codex_whip.effects.time.perf_counter',lambda:1.5)
+    effect._animate_whip()
+    effect._animate_whip()
+    effect._play_sound.assert_called_once_with(b'test')
+    effect._maybe_record_damage.assert_called_once_with((400,300),(1,0))
+    effect._start_shake.assert_called_once()
+
+
 def test_animation_curve_has_exact_endpoints_and_is_monotonic() -> None:
     values = [cubic_bezier_ease_in_out(index / 20) for index in range(21)]
     assert values[0] == pytest.approx(0.0, abs=0.00001)
@@ -322,7 +343,7 @@ def test_display_return_transport_finishes_even_if_real_target_keeps_moving(monk
     assert effect._sensor_pose_current.offset_x > 90
 
 
-def test_sensor_pose_is_limited_to_the_center_third_of_codex() -> None:
+def test_sensor_pose_covers_the_entire_codex_window() -> None:
     rectangle = WindowRectangle(100, 50, 1100, 750)
     handle = (200.0, 100.0)
     parked_origin = (400.0, 300.0)
@@ -342,8 +363,8 @@ def test_sensor_pose_is_limited_to_the_center_third_of_codex() -> None:
 
     assert (left_top[0] + handle[0], left_top[1] + handle[1]) == pytest.approx(
         (
-            rectangle.left + rectangle.width / 3.0,
-            rectangle.top + rectangle.height / 3.0,
+            rectangle.left,
+            rectangle.top,
         )
     )
     assert (
@@ -351,13 +372,13 @@ def test_sensor_pose_is_limited_to_the_center_third_of_codex() -> None:
         right_bottom[1] + handle[1],
     ) == pytest.approx(
         (
-            rectangle.left + rectangle.width * 2.0 / 3.0,
-            rectangle.top + rectangle.height * 2.0 / 3.0,
+            rectangle.right,
+            rectangle.bottom,
         )
     )
 
 
-def test_saved_parking_position_is_clamped_inside_the_center_third() -> None:
+def test_saved_parking_position_is_clamped_inside_the_window() -> None:
     rectangle = WindowRectangle(100, 50, 1100, 750)
     handle = (200.0, 100.0)
 
@@ -370,10 +391,53 @@ def test_saved_parking_position_is_clamped_inside_the_center_third() -> None:
 
     assert (origin[0] + handle[0], origin[1] + handle[1]) == pytest.approx(
         (
-            rectangle.left + rectangle.width * 2.0 / 3.0,
-            rectangle.top + rectangle.height * 2.0 / 3.0,
+            rectangle.right,
+            rectangle.bottom,
         )
     )
+
+
+@pytest.mark.parametrize("offset_x,offset_y,relative_x,relative_y", [
+    (0, 0, .5, .5),
+    (95, 65, .75, .25),
+    (-95, -65, .25, .75),
+    (190, -130, 1, 1),
+    (-190, 130, 0, 0),
+    (1000, -1000, 1, 1),
+])
+def test_sensor_position_uses_live_window_size_after_resize_and_fullscreen(
+    monkeypatch, offset_x, offset_y, relative_x, relative_y,
+) -> None:
+    from unittest.mock import Mock
+
+    effect = object.__new__(CodexWhipEffects)
+    effect._target_hwnd = 123
+    effect._manual_armed = False
+    effect._animations_enabled = False
+    effect._sensor_pose_current = SensorPose(offset_x, offset_y, 0, 1, True)
+    effect._parking_position = WhipParkingPosition(.5, .5)
+    effect._sync_damage_overlay = Mock()
+    effect._move_visual = Mock()
+    effect._draw_pose = Mock()
+    # Same attached effect, no calibration/reconnect between normal, maximized,
+    # fullscreen, and restored windows (including a left-hand monitor).
+    for rectangle in (
+        WindowRectangle(100, 80, 900, 680),
+        WindowRectangle(0, 0, 1920, 1040),
+        WindowRectangle(0, 0, 1920, 1080),
+        WindowRectangle(-1600, 40, -600, 740),
+        WindowRectangle(100, 80, 900, 680),
+    ):
+        monkeypatch.setattr('codex_whip.effects._window_rectangle', lambda _: rectangle)
+        assert effect._sync_position()
+        origin = effect._move_visual.call_args.args[0]
+        anchor = tuple(origin[i] + effect.IDLE.handle_start[i] for i in (0, 1))
+        expected = (rectangle.left + rectangle.width * relative_x,
+                    rectangle.top + rectangle.height * relative_y)
+        assert anchor == pytest.approx(expected)
+        # Gesture direction and displayed handle share the same coordinate map.
+        assert effect._sensor_motion_screen_point(effect._sensor_pose_current) == pytest.approx(expected)
+        effect._sync_damage_overlay.assert_called_with(rectangle)
 
 
 def test_damage_direction_tracks_the_sensor_motion_axis(monkeypatch) -> None:
@@ -405,6 +469,8 @@ def test_damage_direction_tracks_the_sensor_motion_axis(monkeypatch) -> None:
 
 def test_effect_target_reattaches_only_when_codex_window_changes() -> None:
     window = object.__new__(CodexWhipWindow)
+    from codex_whip.settings import Settings
+    window.settings = Settings()
     window._effect_target_handle = None
     window.effects = FakeEffects()
     logs: list[str] = []
@@ -780,6 +846,20 @@ def test_changing_damage_frequency_restarts_the_strike_counter() -> None:
     assert effect._damage_strike_count == 0
 
 
+def test_disabled_wounds_and_zero_interval():
+    effect = object.__new__(CodexWhipEffects)
+    effect.set_damage_interval(0)
+    recorded = []
+    effect._record_damage = lambda *args: recorded.append(args)
+    effect.wounds_enabled = False
+    assert not effect._maybe_record_damage((0,0))
+    assert recorded == []
+    effect.wounds_enabled = True
+    assert effect._maybe_record_damage((0,0))
+    assert effect._maybe_record_damage((0,0))
+    assert len(recorded) == 2
+
+
 def test_generated_pcb_asset_is_bundled() -> None:
     pcb = Image.open(bundled_asset_path("visual/pcb-photoreal-v1.png"))
 
@@ -856,6 +936,54 @@ def test_stationary_sensor_update_keeps_final_attitude_target(monkeypatch) -> No
     effect.set_sensor_pose(SensorPose(41, 22, 13, 0.01, False))
 
     assert effect._sensor_pose_target == SensorPose(41, 22, 13, 0.01, False)
+
+
+def test_sensor_notification_burst_only_updates_target(monkeypatch):
+    from codex_whip import effects as module
+    from unittest.mock import Mock
+    effect = object.__new__(CodexWhipEffects)
+    effect._sensor_pose_current = original = SensorPose(0, 0, 0, 0)
+    effect._track_sensor_motion_axis = Mock()
+    effect._advance_sensor_pose = Mock()
+    effect._sync_position = Mock()
+    effect._show_idle_hitbox = Mock()
+    monkeypatch.setattr(module.time, 'perf_counter', lambda: 100.)
+    for x in (10, 20, 30, 40):
+        effect.set_sensor_pose(SensorPose(x, x/2, 3, .2, True))
+    assert effect._sensor_pose_current is original
+    assert effect._sensor_pose_target.offset_x == 40
+    assert effect._sensor_pose_updated_at == 100.
+    assert effect._track_sensor_motion_axis.call_count == 4
+    effect._advance_sensor_pose.assert_not_called()
+    effect._sync_position.assert_not_called()
+    effect._show_idle_hitbox.assert_not_called()
+
+
+def test_sync_frame_advances_pose_once_without_duplicate_draw(monkeypatch):
+    from codex_whip import effects as module
+    from unittest.mock import Mock
+    effect = object.__new__(CodexWhipEffects)
+    effect._sync_started_at = 100.
+    effect._target_hwnd = 1
+    effect._target_available = lambda: True
+    effect._scare_active = effect._manual_armed = effect._dragging = False
+    effect._animation_after = None
+    effect._advance_sensor_pose = Mock()
+    effect._sync_position = Mock()
+    effect._show_idle_hitbox = Mock()
+    effect._schedule_sync = Mock()
+    effect.window = Mock()
+    effect.window.winfo_viewable.return_value = True
+    effect._whip_drawing = Mock()
+    effect._presentation = Mock(owns_geometry=False)
+    monkeypatch.setattr(module.time, 'perf_counter', lambda: 100.016)
+    monkeypatch.setattr(module, '_cursor_position', lambda: (0, 0))
+    effect._sync_tick()
+    effect._advance_sensor_pose.assert_called_once()
+    assert effect._advance_sensor_pose.call_args.args[0] == pytest.approx(1-math.exp(-.016/.060))
+    effect._sync_position.assert_called_once()
+    effect._whip_drawing.draw.assert_not_called()
+    effect._presentation.render.assert_called_once()
 
 
 def test_kinematic_grip_stops_exactly_while_rope_keeps_settling():

@@ -146,7 +146,7 @@ class Switch(tk.Checkbutton):
 def restyle_fields(parent):
     """Consistent quiet field surfaces, readable fonts and semantic colors."""
     for child in parent.winfo_children():
-        if isinstance(child, (tk.Entry, tk.Spinbox, tk.Text)):
+        if isinstance(child, (tk.Entry, tk.Spinbox, tk.Text)) and 'bg' in child.keys():
             child.configure(bg=FIELD, fg=TEXT, insertbackground=TEXT,
                             relief="flat", highlightthickness=1,
                             highlightbackground=LINE, highlightcolor=BLUE,

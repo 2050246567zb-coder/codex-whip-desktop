@@ -23,6 +23,16 @@ from codex_whip.voice import (
 )
 
 
+def test_voice_settings_supports_two_exclusive_input_modes(tmp_path):
+    from dataclasses import replace
+    from codex_whip.voice import VoiceSettings, VoiceSettingsStore
+    store = VoiceSettingsStore(tmp_path / "voice.json")
+    store.update(replace(VoiceSettings(), input_mode="virtual_microphone"))
+    assert VoiceSettingsStore(tmp_path / "voice.json").settings.input_mode == "virtual_microphone"
+    with pytest.raises(ValueError, match="输入方式"):
+        replace(VoiceSettings(), input_mode="both").validated()
+
+
 def _frame(timestamp: int, dynamic: float = 0.0, gyro: float = 0.0) -> RawMotionFrame:
     return RawMotionFrame(timestamp, gyro, 0, 0, 0, 0, 1 + dynamic)
 
@@ -173,6 +183,62 @@ class _EmptyTranscriber:
 
     def transcribe(self, _sample_rate: int, _pcm: bytes) -> str:
         return ""
+
+
+@pytest.mark.parametrize('result', ['', '继续', RuntimeError('not ready')])
+def test_immediate_transcription_never_flashes_recognizing(tmp_path, result):
+    from unittest.mock import Mock
+    emitted = []
+    transcriber = Mock()
+    if isinstance(result, Exception):
+        transcriber.transcribe.side_effect = result
+    else:
+        transcriber.transcribe.return_value = result
+    module = VoiceModule(VoiceSettingsStore(tmp_path/'voice.json'),
+                         lambda kind,payload: emitted.append((kind,payload)), transcriber)
+    module.assembler.begin(AudioStart(4,16000,'IMA_ADPCM4'))
+    for sequence in range(25):
+        module.assembler.add(AudioChunk(4,sequence,320,0,0,bytes(160)))
+    asyncio.run(module.handle_audio(AudioEnd(4,8000,'SILENCE')))
+    assert not any(k=='voice_state' and p['state']=='recognizing' for k,p in emitted)
+
+
+@pytest.mark.parametrize('notify', [False, True])
+def test_only_started_pending_model_shows_recognition(tmp_path, notify):
+    import time
+    from codex_whip.voice import WhisperCppTranscriber
+    class Delayed(WhisperCppTranscriber):
+        def transcribe(self, rate, pcm, *, on_started=None):
+            if notify:
+                on_started()
+            time.sleep(.35)
+            return ''
+    emitted = []
+    module = VoiceModule(VoiceSettingsStore(tmp_path/'voice.json'),
+                         lambda k,p: emitted.append((k,p)), Delayed())
+    module.assembler.begin(AudioStart(4,16000,'IMA_ADPCM4'))
+    for sequence in range(25):
+        module.assembler.add(AudioChunk(4,sequence,320,0,0,bytes(160)))
+    asyncio.run(module.handle_audio(AudioEnd(4,8000,'SILENCE')))
+    states = [p['state'] for k,p in emitted if k=='voice_state']
+    assert ('recognizing' in states) is notify
+    assert states[-1] == 'empty'
+
+
+@pytest.mark.parametrize('reason,samples', [('TX_FAILED',8000), ('SILENCE',320), ('SILENCE',8001)])
+def test_invalid_recording_never_enters_recognizing(tmp_path, reason, samples):
+    from unittest.mock import Mock
+    emitted = []
+    transcriber = Mock()
+    module = VoiceModule(VoiceSettingsStore(tmp_path/'voice.json'),
+                         lambda kind,payload: emitted.append((kind,payload)), transcriber)
+    asyncio.run(module.handle_audio(AudioStart(4,16000,'IMA_ADPCM4')))
+    for sequence in range(25 if samples >= 8000 else 1):
+        module.assembler.add(AudioChunk(4,sequence,320,0,0,bytes(160)))
+    asyncio.run(module.handle_audio(AudioEnd(4,samples,reason)))
+    assert not any(kind=='voice_state' and payload['state']=='recognizing' for kind,payload in emitted)
+    assert any(kind=='voice_error' for kind,payload in emitted)
+    transcriber.transcribe.assert_not_called()
 
 
 def test_voice_transcript_is_kept_until_successful_send(tmp_path: Path) -> None:

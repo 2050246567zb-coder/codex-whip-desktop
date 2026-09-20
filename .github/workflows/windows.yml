@@ -1,0 +1,30 @@
+name: Windows product build
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/product-windows]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install and test
+        shell: pwsh
+        run: |
+          python -m pip install -e "desktop[dev,build]"
+          python -m pytest desktop/tests -q
+      - name: Build product
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name "产品版-2.2.39" --paths desktop/src --add-data "desktop/assets;assets" --collect-all bleak --collect-all pywinauto --collect-all sounddevice --exclude-module pytest --distpath dist --workpath build/pyinstaller --specpath build/pyinstaller-spec desktop/codex_whip_gui.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CodexWhip-Windows-2.2.39
+          path: dist/产品版-2.2.39.exe
+          retention-days: 14

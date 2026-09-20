@@ -315,6 +315,17 @@ class MotionEngine:
                 self._quiet_since = None
                 self._await_quiet = False
 
+    def reset_stream(self) -> None:
+        """Drop stale motion after device sleep; preserve templates and pause state."""
+        with self._lock:
+            self._frames.clear()
+            self._active_since = self._peak_time = self._quiet_since = None
+            self._last_frame_ms = None
+            self._last_trigger_ms = -10000
+            self._await_quiet = False
+            self.last_score = None
+            self.last_rejection = None
+
     def train(
         self, positives: Sequence[MotionTemplate], negatives: Sequence[MotionTemplate]
     ) -> MotionProfile:
@@ -417,7 +428,7 @@ class MotionEngine:
                 self._quiet_since = None
             return None
         if self._active_since is None:
-            if now - self._last_trigger_ms >= 550 and gyro >= start_gyro and (
+            if now - self._last_trigger_ms >= 400 and gyro >= start_gyro and (
                 dynamic >= 0.08 or gyro >= start_gyro * 1.55
             ):
                 self._active_since = now

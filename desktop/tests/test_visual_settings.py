@@ -2,6 +2,17 @@ import json
 
 import pytest
 
+
+def test_feedback_switches_and_zero_interval_roundtrip(tmp_path):
+    from codex_whip.visual_settings import VisualSettingsStore, VisualSettings
+    path = tmp_path/'visual.json'
+    store = VisualSettingsStore(path)
+    store.update(VisualSettings(strikes_per_wound=0, wounds_enabled=False, sound_enabled=False))
+    restored = VisualSettingsStore(path).settings
+    assert restored.strikes_per_wound == 0
+    assert not restored.wounds_enabled
+    assert not restored.sound_enabled
+
 from codex_whip.visual_settings import (
     VisualSettings,
     VisualSettingsStore,
@@ -76,7 +87,7 @@ def test_visual_settings_migrates_old_red_eye_timing(tmp_path) -> None:
     assert loaded.scare_eyes_ms == 3000
 
 
-@pytest.mark.parametrize("value", (0, 101))
+@pytest.mark.parametrize("value", (-1, 101))
 def test_visual_settings_reject_invalid_wound_intervals(value: int) -> None:
     with pytest.raises(ValueError):
         VisualSettings(strikes_per_wound=value).validated()
