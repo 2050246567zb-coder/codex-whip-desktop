@@ -425,6 +425,7 @@ class CodexWhipWindow:
         self.voice_store = VoiceSettingsStore()
         self.virtual_microphone = VirtualMicrophoneBridge()
         self._dictation_session: Any | None = None
+        self._dictation_watchdog: str | None = None
         from .cloud_speech import SpeechRouter
         self.voice_transcriber = SpeechRouter(self.voice_store, WhisperCppTranscriber())
         self.voice_module = VoiceModule(
@@ -747,6 +748,12 @@ class CodexWhipWindow:
         ).start()
 
     def _stop_native_dictation(self, *, abort: bool) -> bool:
+        if self._dictation_watchdog is not None:
+            try:
+                self.root.after_cancel(self._dictation_watchdog)
+            except tk.TclError:
+                pass
+            self._dictation_watchdog = None
         if abort:
             self.virtual_microphone.abort()
         session, self._dictation_session = self._dictation_session, None
@@ -760,6 +767,14 @@ class CodexWhipWindow:
         except Exception as exc:
             self._append_log(f"Codex 原生听写结束失败：{exc}")
             return False
+
+    def _native_dictation_start_timeout(self) -> None:
+        self._dictation_watchdog = None
+        if self._dictation_session is None or self.voice_module.assembler.start is not None:
+            return
+        self._stop_native_dictation(abort=True)
+        self.voice_status_value.set("手柄录音未响应")
+        self._append_log("原生听写已取消：2.5 秒内没有收到手柄录音起始包")
 
     def start_voice_calibration(self) -> bool:
         if self.voice_module.assembler.start is not None:
@@ -1314,6 +1329,10 @@ class CodexWhipWindow:
                     else:
                         voice = self.voice_store.settings
                         if voice.input_mode == "virtual_microphone":
+                            if self.voice_module.native_draft_pending:
+                                self.voice_status_value.set("已有听写草稿，挥鞭发送或手动清空")
+                                self._append_log("忽略双敲：Codex 输入框仍有待发送听写草稿")
+                                continue
                             try:
                                 if self.processor is None:
                                     raise VirtualMicrophoneError("监听尚未启动")
@@ -1328,6 +1347,9 @@ class CodexWhipWindow:
                                 continue
                         if self.send_device_command(f"VOICE,START,{voice.silence_ms},{voice.max_recording_ms}"):
                             self.voice_status_value.set("正在启动录音")
+                            if voice.input_mode == "virtual_microphone":
+                                self._dictation_watchdog = self.root.after(
+                                    2500, self._native_dictation_start_timeout)
                         elif voice.input_mode == "virtual_microphone":
                             self._stop_native_dictation(abort=True)
                 elif kind == "voice_state":
@@ -1337,6 +1359,9 @@ class CodexWhipWindow:
                         if card is not None and card.card.winfo_exists():
                             card.set_recording(state == 'recording')
                     if state == "recording":
+                        if self._dictation_watchdog is not None:
+                            self.root.after_cancel(self._dictation_watchdog)
+                            self._dictation_watchdog = None
                         system_beep("start")
                         replacing = bool(payload.get("replacing"))
                         self.voice_status_value.set(
