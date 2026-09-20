@@ -25,6 +25,7 @@ bash macos/build-macos.sh
   在设置 > 输入 > 语音输入中选择该模式。双敲后，产品版把手柄的 16 kHz 音频
   实时转换成 48 kHz 并送入 BlackHole，同时通过 macOS Accessibility 启停
   Codex 的听写按钮；下一鞭只提交 Codex 已生成的草稿，不再重复插入文字。
+  使用前还需在 Codex 或 macOS 输入设置中把 `BlackHole 2ch` 选为麦克风输入。
 
 程序只接受明确命名为 `BlackHole` 或 `Codex Whip` 的输出端点，找不到时会拒绝
 启动，不会回退到扬声器。BlackHole 的安装与许可独立于本项目，安装包不内置驱动。

@@ -174,11 +174,12 @@ class SpeechServiceCard:
             self.app_id_row.pack_forget()
             self.key_row.pack_forget()
             self.delete_button.pack_forget()
-            platform_device = 'BlackHole 2ch' if __import__('sys').platform == 'darwin' else 'Virtual Audio Driver / VB-CABLE'
-            self.notice.configure(text=(
-                f'双敲后把手柄声音送入 Codex 自带听写；需要先安装 {platform_device}，'
-                '软件只连接明确识别的虚拟设备，不会把声音播放到扬声器。'
-            ))
+            if __import__('sys').platform == 'darwin':
+                setup = '安装 BlackHole 2ch，并在 Codex/系统中把 BlackHole 2ch 设为麦克风输入'
+            else:
+                setup = '安装 Virtual Audio Driver 或 VB-CABLE，并在 Codex/系统中把对应 Output 端设为麦克风输入'
+            self.notice.configure(text=(f'双敲后把手柄声音送入 Codex 自带听写；需要先{setup}。'
+                '软件只连接明确识别的虚拟设备，不会把声音播放到扬声器。'))
             self.status.set('保存后，下一次双敲改用 Codex 原生听写')
         else:
             self.changed()
