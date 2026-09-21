@@ -35,6 +35,7 @@ class ForceTapDetector(DoubleTapDetector):
         super().reset()
         self._gravity = None
         self._timestamp = None
+        self._clock = 0
         self._turn_ms = 0
         self._accels.clear()
 
@@ -42,12 +43,26 @@ class ForceTapDetector(DoubleTapDetector):
         accel = (frame.accel_x_g, frame.accel_y_g, frame.accel_z_g)
         if self._gravity is None:
             self._gravity = accel
-        dynamic = math.dist(accel, self._gravity)
         gyro = math.hypot(frame.gyro_x_dps, frame.gyro_y_dps, frame.gyro_z_dps)
-        if dynamic < .25 and gyro < self.STILL_GYRO_DPS:
+        radial = abs(math.hypot(*accel) - 1.0)
+        vector_change = math.dist(accel, self._gravity)
+        if radial < .18 and vector_change < .35:
+            # A pure change of orientation rotates the gravity vector but does
+            # not change its magnitude.  Re-anchor immediately so the next
+            # real impact works from any grip and a completed pulse releases
+            # as soon as the handle returns to 1 g.
+            self._gravity = accel
+            dynamic = radial
+        else:
+            dynamic = vector_change
+            # Follow sustained translation gradually; a 10–30 ms impact keeps
+            # nearly all of its peak while a broad movement times out.
             self._gravity = tuple(a*.08+b*.92 for a, b in zip(accel, self._gravity))
         self.last_strength = dynamic
-        return dynamic, gyro
+        # Impact direction must not be a hidden constraint.  A sharp bottom
+        # strike can momentarily saturate the gyro even though its acceleration
+        # pulse is valid; pulse width still rejects a prolonged wrist swing.
+        return dynamic, min(gyro, self.settings.max_tap_gyro_dps)
 
     def _feed_frame(self, frame):
         values = (frame.accel_x_g, frame.accel_y_g, frame.accel_z_g,
@@ -69,18 +84,12 @@ class ForceTapDetector(DoubleTapDetector):
             self._timestamp = frame.timestamp_ms
             self._gravity = values[:3]
             return None
-        # A prolonged wrist swing is not a tap; brief impact-induced rotation is.
-        gyro = math.hypot(*values[3:])
         self._accels.append(values[:3])
+        gyro = math.hypot(*values[3:])
         if len(self._accels) == 16 and gyro < self.STILL_GYRO_DPS:
             mean = tuple(sum(a[i] for a in self._accels)/16 for i in range(3))
             if max(math.dist(a, mean) for a in self._accels) < .08:
                 self._gravity = mean
-        self._turn_ms = self._turn_ms+delta if gyro > 180 else 0
-        if self._turn_ms >= 100:
-            super().reset()
-            self._cooldown_until_ms = self._clock+250
-            return None
         return super()._feed_frame(replace(frame, timestamp_ms=self._clock))
 
     def _force_range(self):

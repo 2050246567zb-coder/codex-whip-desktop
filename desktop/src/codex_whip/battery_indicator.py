@@ -4,23 +4,23 @@ import tkinter as tk
 
 
 class BatteryIndicator(tk.Canvas):
-    """Compact capsule battery with a percentage-only hover label."""
+    """iOS-style status battery; exact percentage is available on hover."""
 
     NORMAL = "#1D1D1F"
     CHARGING = "#237C4B"
     LOW = "#BC3434"
+    UNKNOWN = "#8E8E93"
 
     def __init__(self, parent: tk.Misc, *, font: str) -> None:
         super().__init__(
             parent,
-            width=70,
-            height=28,
+            width=32,
+            height=18,
             bg=parent.cget("bg"),
             highlightthickness=0,
             bd=0,
             takefocus=0,
         )
-        self._font = font
         self.percent: int | None = None
         self.charging = False
         self._tooltip: tk.Toplevel | None = None
@@ -31,7 +31,7 @@ class BatteryIndicator(tk.Canvas):
 
     @staticmethod
     def _capsule_points(x1: float, y1: float, x2: float, y2: float) -> tuple[float, ...]:
-        radius = (y2 - y1) / 2
+        radius = min((y2 - y1) / 2, (x2 - x1) / 2)
         return (
             x1 + radius, y1,
             x2 - radius, y1,
@@ -72,35 +72,39 @@ class BatteryIndicator(tk.Canvas):
 
     def _draw(self) -> None:
         self.delete("all")
-        color = self.color
+        color = self.color if self.percent is not None else self.UNKNOWN
         self.create_polygon(
-            self._capsule_points(1.5, 3.5, 61.5, 24.5),
+            self._capsule_points(1.5, 3, 26.5, 15),
             smooth=True,
             splinesteps=24,
             fill="",
             outline=color,
-            width=2,
+            width=1.4,
             tags="body",
         )
-        self.create_rectangle(63, 9, 67, 19, fill=color, outline="", tags="terminal")
-        if self.charging:
+        self.create_oval(28, 6.5, 31, 11.5, fill=color, outline="", tags="terminal")
+
+        if self.percent is not None and self.percent > 0:
+            fill_left = 3.6
+            fill_right = fill_left + (24.4 - fill_left) * self.percent / 100
             self.create_polygon(
-                34, 6.5, 27.5, 15, 32.5, 15, 29.5, 22,
-                40, 12, 34.5, 12,
+                self._capsule_points(fill_left, 5.1, fill_right, 12.9),
+                smooth=True,
+                splinesteps=24,
                 fill=color,
+                outline="",
+                tags="level",
+            )
+
+        if self.charging:
+            background = self.cget("bg")
+            self.create_polygon(
+                15.5, 4.6, 11.7, 9.3, 14.5, 9.3,
+                12.8, 13.6, 19, 7.9, 15.8, 7.9,
+                fill=background,
                 outline="",
                 tags="bolt",
             )
-            return
-        text = "--%" if self.percent is None else f"{self.percent}%"
-        self.create_text(
-            31.5,
-            14,
-            text=text,
-            fill=color,
-            font=(self._font, 9, "bold"),
-            tags="percentage",
-        )
 
     def _tooltip_label(self) -> tk.Label:
         assert self._tooltip is not None

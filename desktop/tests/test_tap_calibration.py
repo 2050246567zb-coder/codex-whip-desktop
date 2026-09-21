@@ -56,6 +56,29 @@ def test_two_impacts_inside_force_range_trigger_in_any_direction(axis, strength)
     assert detector.feed_batch(batch(pair(strength=strength, axis=axis))) is not None
 
 
+def test_detector_reanchors_after_handle_orientation_changes():
+    frames = []
+    timestamp = 0
+    # Rotate from Z-up to X-up, then hold the new grip briefly.
+    for index in range(40):
+        angle = math.pi / 2 * index / 39
+        frames.append(RawMotionFrame(
+            timestamp, 70, 20, 10, math.sin(angle), 0, math.cos(angle)))
+        timestamp += 10
+    for _ in range(40):
+        frames.append(RawMotionFrame(timestamp, 0, 0, 0, 1, 0, 0))
+        timestamp += 10
+    # Two short handle-bottom impacts in the new orientation, including a
+    # gyro spike that must not make direction an implicit rejection rule.
+    for offset in range(0, 700, 10):
+        pulse = 2.0 if offset in (100, 110, 400, 410) else 0.0
+        spike = 2600 if pulse else 0
+        frames.append(RawMotionFrame(timestamp, spike, 0, 0, 1 + pulse, 0, 0))
+        timestamp += 10
+    detector = ForceTapDetector(ranged_settings())
+    assert detector.feed_batch(batch(frames)) is not None
+
+
 @pytest.mark.parametrize('strength', [.4, 4.5, 8.0])
 def test_both_impacts_must_be_inside_selected_force_range(strength):
     detector = ForceTapDetector(ranged_settings())
