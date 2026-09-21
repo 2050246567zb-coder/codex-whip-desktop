@@ -30,6 +30,11 @@ from .morphing_title import MorphingTitle
 from .sand_countdown import SandCountdownTitle
 from .hover_clock import clock_pose, morph, ease, near_whip, project, project_pose, pointer_tilt, loading_pose, recognizing_pose, sleep_pose, cord_rotation
 
+
+def sleep_dot_count(elapsed: float) -> int:
+    """Return a calm 1→2→3→2 ellipsis cycle for the sleeping title."""
+    return (1, 2, 3, 2)[int(max(0.0, elapsed) / .9) % 4]
+
 BG, CARD, SOFT = "#F5F5F7", "#FFFFFF", "#EAEAED"
 TEXT, MUTED, LINE = "#1D1D1F", "#68686F", "#DEDEE3"
 BLUE, GREEN, RED = "#0066CC", "#237C4B", "#BC3434"
@@ -922,7 +927,7 @@ class Interface:
                 subtitle = "beat it, then send"
             if connected and self._power_state == "SLEEP":
                 mode = "sleep"
-                dots = 1 + int((time.monotonic() - self._sleep_at) / .9) % 3
+                dots = sleep_dot_count(time.monotonic() - self._sleep_at)
                 title, subtitle = "deep sleep" + "." * dots, ""
         if not connected:
             mode = 'connecting'

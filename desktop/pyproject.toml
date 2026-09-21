@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-whip"
-version = "2.2.51"
+version = "2.2.52"
 description = "Receive BLE whip gestures and send a configurable nudge to Codex on Windows or macOS."
 readme = "README.md"
 requires-python = ">=3.11"

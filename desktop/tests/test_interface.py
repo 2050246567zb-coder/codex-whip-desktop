@@ -6,7 +6,7 @@ import pytest
 from PIL import Image
 
 from codex_whip.gui import CodexWhipWindow
-from codex_whip.interface import asset_path
+from codex_whip.interface import asset_path, sleep_dot_count
 from codex_whip.mount_profile import MountingProfile, save_mounting_profile
 from codex_whip.sensor_pose import SensorPose
 from codex_whip.settings import Settings
@@ -161,6 +161,18 @@ def test_power_setting_round_trip_and_disconnect_status(app):
     assert '连接手柄后同步' == app.settings_window.power_status.get()
 
 
+def test_sleep_title_animates_only_the_ellipsis(app):
+    assert [sleep_dot_count(value) for value in (0, .9, 1.8, 2.7, 3.6)] == [1, 2, 3, 2, 1]
+    title = app.ui.title
+    title.configure(text='deep sleep.')
+    title._at -= 1
+    title._frame()
+    assert title._timer is None
+    title.configure(text='deep sleep..')
+    assert title.cget('text') == 'deep sleep..'
+    assert title._timer is None
+
+
 def test_disconnected_loader_returns_to_whip(app):
     ui = app.ui
     ui.stage = 'ready'
@@ -197,6 +209,8 @@ def test_home_battery_indicator_tracks_device_and_disconnect(app):
     app._drain_events()
     assert app.ui.battery_indicator.percent == 74
     assert app.ui.battery_indicator.color == app.ui.battery_indicator.NORMAL
+    assert app.ui.battery_indicator.itemcget('body', 'outline') == app.ui.battery_indicator.OUTLINE
+    assert app.ui.battery_indicator.itemcget('level', 'fill') == app.ui.battery_indicator.NORMAL
     assert app.ui.battery_indicator.find_withtag('percentage') == ()
     assert app.ui.battery_indicator.find_withtag('level')
     assert int(float(app.ui.battery_indicator.cget('width'))) == 32
@@ -211,6 +225,9 @@ def test_home_battery_indicator_tracks_device_and_disconnect(app):
     app._drain_events()
     assert app.ui.battery_indicator.charging
     assert app.ui.battery_indicator.color == app.ui.battery_indicator.CHARGING
+    assert app.ui.battery_indicator.itemcget('body', 'outline') == app.ui.battery_indicator.OUTLINE
+    assert app.ui.battery_indicator.itemcget('terminal', 'fill') == app.ui.battery_indicator.OUTLINE
+    assert app.ui.battery_indicator.itemcget('level', 'fill') == app.ui.battery_indicator.CHARGING
     assert app.ui.battery_indicator.find_withtag('bolt')
     assert app.ui.battery_indicator.find_withtag('percentage') == ()
     assert app.ui.battery_indicator.tooltip_text == '剩余电量 55%'

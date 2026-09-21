@@ -6,10 +6,11 @@ import tkinter as tk
 class BatteryIndicator(tk.Canvas):
     """iOS-style status battery; exact percentage is available on hover."""
 
-    NORMAL = "#1D1D1F"
-    CHARGING = "#237C4B"
-    LOW = "#BC3434"
-    UNKNOWN = "#8E8E93"
+    OUTLINE = "#9A9A9E"
+    NORMAL = "#8E8E93"
+    CHARGING = "#34C759"
+    LOW = "#FF3B30"
+    UNKNOWN = "#C7C7CC"
 
     def __init__(self, parent: tk.Misc, *, font: str) -> None:
         super().__init__(
@@ -21,6 +22,7 @@ class BatteryIndicator(tk.Canvas):
             bd=0,
             takefocus=0,
         )
+        self._font = font
         self.percent: int | None = None
         self.charging = False
         self._tooltip: tk.Toplevel | None = None
@@ -30,8 +32,10 @@ class BatteryIndicator(tk.Canvas):
         self._draw()
 
     @staticmethod
-    def _capsule_points(x1: float, y1: float, x2: float, y2: float) -> tuple[float, ...]:
-        radius = min((y2 - y1) / 2, (x2 - x1) / 2)
+    def _rounded_points(
+        x1: float, y1: float, x2: float, y2: float, radius: float,
+    ) -> tuple[float, ...]:
+        radius = min(radius, (y2 - y1) / 2, (x2 - x1) / 2)
         return (
             x1 + radius, y1,
             x2 - radius, y1,
@@ -72,37 +76,38 @@ class BatteryIndicator(tk.Canvas):
 
     def _draw(self) -> None:
         self.delete("all")
-        color = self.color if self.percent is not None else self.UNKNOWN
+        level_color = self.color if self.percent is not None else self.UNKNOWN
+        outline = self.OUTLINE if self.percent is not None else self.UNKNOWN
         self.create_polygon(
-            self._capsule_points(1.5, 3, 26.5, 15),
+            self._rounded_points(1.5, 2.5, 26.5, 15.5, 3.2),
             smooth=True,
             splinesteps=24,
             fill="",
-            outline=color,
+            outline=outline,
             width=1.4,
             tags="body",
         )
-        self.create_oval(28, 6.5, 31, 11.5, fill=color, outline="", tags="terminal")
+        self.create_oval(28, 6.3, 31, 11.7, fill=outline, outline="", tags="terminal")
 
         if self.percent is not None and self.percent > 0:
-            fill_left = 3.6
-            fill_right = fill_left + (24.4 - fill_left) * self.percent / 100
+            fill_left = 3.5
+            fill_right = fill_left + (24.5 - fill_left) * self.percent / 100
             self.create_polygon(
-                self._capsule_points(fill_left, 5.1, fill_right, 12.9),
+                self._rounded_points(fill_left, 4.6, fill_right, 13.4, 2.2),
                 smooth=True,
                 splinesteps=24,
-                fill=color,
+                fill=level_color,
                 outline="",
                 tags="level",
             )
 
         if self.charging:
-            background = self.cget("bg")
             self.create_polygon(
-                15.5, 4.6, 11.7, 9.3, 14.5, 9.3,
-                12.8, 13.6, 19, 7.9, 15.8, 7.9,
-                fill=background,
-                outline="",
+                15.4, 2.1, 9.8, 9.0, 13.5, 9.0,
+                11.8, 15.8, 19.5, 7.1, 15.7, 7.1,
+                fill="#FFFFFF",
+                outline=self.OUTLINE,
+                width=1.1,
                 tags="bolt",
             )
 
