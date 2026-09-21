@@ -85,13 +85,27 @@ class MorphingTitle(tk.Label):
         if isinstance(cnf,dict):
             kwargs = {**cnf,**kwargs}
             cnf = None
-        changed = self._ready and 'text' in kwargs and kwargs['text'] != self.cget('text')
+        old_text = str(self.cget('text'))
+        new_text = str(kwargs.get('text', old_text))
+        changed = self._ready and 'text' in kwargs and new_text != old_text
+        sleep_dots_only = (
+            changed
+            and old_text.rstrip('.') == new_text.rstrip('.') == 'deep sleep'
+            and old_text[len('deep sleep'):] == '.' * len(old_text[len('deep sleep'):])
+            and new_text[len('deep sleep'):] == '.' * len(new_text[len('deep sleep'):])
+        )
         result = super().configure(cnf,**kwargs)
         if changed:
             if self._timer:
                 self.after_cancel(self._timer)
                 self._timer = None
-            self._old,self._new = self._mask.copy(),self._raster(str(kwargs['text']))
+            self._old,self._new = self._mask.copy(),self._raster(new_text)
+            if sleep_dots_only:
+                # The sleeping state is persistent; only its ellipsis ticks.
+                # Re-morphing the entire phrase every cycle looks like loading.
+                self._old = self._new
+                self._show(self._new)
+                return result
             self._at = time.monotonic()
             self._frame()
         return result
