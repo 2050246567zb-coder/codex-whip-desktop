@@ -138,40 +138,34 @@ def test_voice_capture_emits_readings_and_does_not_trigger_recording(tmp_path):
     assert not voice.calibration_active
 
 
-def test_runtime_uses_updated_slider_range(tmp_path):
+def test_runtime_raw_motion_never_runs_custom_double_tap_detector(tmp_path):
     voice, _ = module(tmp_path, ranged_settings(1.4, 2.6))
-    assert voice.feed_motion(batch(pair(strength=2)))[0]
+    assert voice.feed_motion(batch(pair(strength=2))) == (False, False)
     assert not voice.feed_motion(batch(pair(2000, strength=1.0)))[0]
     assert not voice.feed_motion(batch(pair(4000, strength=3.0)))[0]
 
 
-def test_hardware_double_tap_assist_uses_recent_raw_force_data(tmp_path):
+def test_hardware_double_tap_is_the_only_runtime_trigger(tmp_path):
     voice, emitted = module(tmp_path, ranged_settings(1.4, 2.6))
-    voice._remember_motion(batch(pair(strength=2.0)))
 
     assert voice.handle_hardware_double_tap(670)
     event = next(payload for kind, payload in emitted if kind == 'voice_trigger')
-    assert event.first_peak_dynamic_accel_g == pytest.approx(2.0)
-    assert event.second_peak_dynamic_accel_g == pytest.approx(2.0)
-    assert event.interval_ms == 300
-    assert any(kind == 'log' and '硬件双敲通过' in str(payload)
+    assert event.first_peak_dynamic_accel_g == 0.0
+    assert event.second_at_ms == 670
+    assert any(kind == 'log' and 'ST 状态机' in str(payload)
                for kind, payload in emitted)
 
 
-def test_hardware_double_tap_assist_still_obeys_force_sliders(tmp_path):
+def test_hardware_event_needs_no_desktop_force_or_interval_validation(tmp_path):
     voice, emitted = module(tmp_path, ranged_settings(2.5, 4.0))
-    voice._remember_motion(batch(pair(strength=2.0)))
 
-    assert not voice.handle_hardware_double_tap(670)
-    assert not any(kind == 'voice_trigger' for kind, _payload in emitted)
-    assert any(kind == 'log' and '不在 2.50–4.00 g' in str(payload)
-               for kind, payload in emitted)
+    assert voice.handle_hardware_double_tap(670)
+    assert any(kind == 'voice_trigger' for kind, _payload in emitted)
 
 
-def test_hardware_assist_does_not_duplicate_software_trigger(tmp_path):
+def test_hardware_event_deduplicates_repeated_notification(tmp_path):
     voice, emitted = module(tmp_path, ranged_settings(1.4, 2.6))
-    frames = batch(pair(strength=2.0))
-    assert voice.feed_motion(frames)[0]
+    assert voice.handle_hardware_double_tap(670)
     triggers_before = sum(kind == 'voice_trigger' for kind, _ in emitted)
 
     assert not voice.handle_hardware_double_tap(670)
@@ -205,8 +199,9 @@ def test_transport_gap_duplicates_and_invalid_samples_cannot_join_impacts():
 
 def test_force_range_validation():
     with pytest.raises(ValueError):
-        ranged_settings(2, 2).validated()
-    with pytest.raises(ValueError):
         ranged_settings(.2, 2).validated()
+    # Maximum is a legacy storage field and no longer constrains hardware.
+    assert ranged_settings(2, 2).validated().tap_light_g == 2
     with pytest.raises(ValueError):
-        ranged_settings(2, 12.1).validated()
+        ranged_settings(13, 2).validated()
+    assert ranged_settings(2, 12.1).validated().tap_heavy_g == 12.1

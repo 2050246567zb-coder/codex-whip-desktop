@@ -210,9 +210,7 @@ def test_visual_settings_adjust_and_save_wound_frequency(root: tk.Tk, tmp_path) 
         window.close()
 
 
-def test_tap_force_sliders_and_one_pair_auto_setting(root: tk.Tk, tmp_path) -> None:
-    starts: list[bool] = []
-    cancels: list[bool] = []
+def test_hardware_tap_minimum_slider_is_the_only_tap_control(root: tk.Tk, tmp_path) -> None:
     applied = []
     store = VoiceSettingsStore(tmp_path / "voice.json")
     def apply(settings):
@@ -226,36 +224,21 @@ def test_tap_force_sliders_and_one_pair_auto_setting(root: tk.Tk, tmp_path) -> N
         lambda _profile: True,
         voice_store=store,
         apply_voice_settings=apply,
-        start_voice_calibration=lambda: starts.append(True) or True,
-        cancel_voice_calibration=lambda: cancels.append(True),
         voice_model_ready=lambda: True,
     )
     try:
         window.tap_minimum_slider.set(1.2)
-        window.tap_maximum_slider.set(3.8)
-        assert window._commit_tap_range()
+        assert window._commit_tap_minimum()
         assert applied[-1].tap_light_g == 1.2
-        assert applied[-1].tap_heavy_g == 3.8
+        assert applied[-1].tap_heavy_g == 12.0
         assert applied[-1].impact_dynamic_accel_g == 1.2
-        assert '1.20–3.80 g' in window.tap_range_status.get()
-        window._begin_voice_calibration()
-        assert starts == [True]
-        assert window._voice_calibrating
-        window.handle_tap_range_capture(dict(stage='capture', live_strengths=(2.0,)))
-        assert '第一下 2.00 g' in window.tap_range_status.get()
-        saved = window.handle_tap_range_capture(dict(
-            stage='done', live_strengths=(2.0, 2.0), average_g=2.0,
-            suggested_min_g=1.4, suggested_max_g=2.6))
-        assert saved
-        assert window.tap_minimum.get() == 1.4
-        assert window.tap_maximum.get() == 2.6
-        assert applied[-1].tap_light_g == 1.4
-        assert applied[-1].tap_heavy_g == 2.6
-        window._select_section('voice')
-        assert not window._voice_calibrating
+        assert applied[-1].min_interval_ms == 80
+        assert applied[-1].max_interval_ms == 1000
+        assert '1.5 g' in window.tap_range_status.get()
+        assert not hasattr(window, 'tap_maximum_slider')
+        assert not hasattr(window, 'tap_auto_button')
     finally:
         window.close()
-    assert cancels == []
 
 
 def test_untrained_sensitivity_updates_real_thresholds_and_reopens(root, tmp_path, monkeypatch):

@@ -955,6 +955,10 @@ class CodexWhipWindow:
             self.voice_module.clear_pending()
             self.voice_module.clear_native_draft()
         if self.ble_connected and self.firmware_supports_voice:
+            if self._version_at_least(self.firmware_version, (0, 7, 3)):
+                self.send_device_command(
+                    f"TAPCFG,{self._hardware_tap_minimum(settings):.2f}"
+                )
             self.send_device_command("VOICE,1" if settings.enabled else "VOICE,0")
         if settings.enabled and settings.input_mode == "transcription":
             self.voice_status_value.set("正在准备语音识别")
@@ -969,6 +973,14 @@ class CodexWhipWindow:
             self.voice_status_value.set("已关闭（可在设置中启用）")
         self.emit("log", "语音双敲模块已开启" if settings.enabled else "语音双敲模块已关闭")
         return True
+
+    @staticmethod
+    def _hardware_tap_minimum(settings: VoiceSettings) -> float:
+        return (
+            settings.tap_light_g
+            if settings.tap_force_calibrated and settings.tap_light_g >= 0.5
+            else settings.impact_dynamic_accel_g
+        )
 
     def apply_visual_settings(self, settings: VisualSettings) -> bool:
         try:
@@ -1398,8 +1410,13 @@ class CodexWhipWindow:
                         self._append_log(f"设备：{display}")
                         if not self._version_at_least(self.firmware_version, (0, 6, 0)):
                             self._append_log("体感角度模式建议烧录固件 0.6.0：旧 RAW4 数据会丢失微小转动。")
-                        if self._version_at_least(self.firmware_version, (0, 7, 2)):
-                            self._append_log("LSM6DS3 硬件双敲辅助已启用")
+                        if self._version_at_least(self.firmware_version, (0, 7, 3)):
+                            self._append_log("LSM6DS3 ST 硬件双敲已启用（固定 1 秒窗口）")
+                            self.send_device_command(
+                                f"TAPCFG,{self._hardware_tap_minimum(self.voice_store.settings):.2f}"
+                            )
+                        elif self.firmware_supports_voice:
+                            self._append_log("双敲需要固件 0.7.3；桌面端不会启用旧自研识别作为后备")
                         if self.firmware_supports_settings:
                             if self.firmware_supports_raw:
                                 raw_mode = "RAW,2" if self.motion_engine.trained else "RAW,1"
@@ -1450,6 +1467,18 @@ class CodexWhipWindow:
                                 'percent': battery.percent,
                                 'charging': battery.charging,
                             })
+                    elif message.kind == 'TAPCFG' and len(message.fields) >= 2:
+                        if message.fields[0] == 'OK':
+                            try:
+                                effective = float(message.fields[1])
+                            except ValueError:
+                                self._append_log(f'设备：{display}')
+                            else:
+                                self._append_log(f'双敲最低冲击已由芯片应用：{effective:.1f} g')
+                                if self.settings_window is not None and self.settings_window.window.winfo_exists():
+                                    self.settings_window.set_hardware_tap_threshold(effective)
+                        else:
+                            self._append_log('双敲最低冲击未能写入芯片')
                     elif message.kind in {'TAP2', 'TAPENGINE'}:
                         pass
                     elif message.kind == "CFGVAL":
@@ -1780,14 +1809,9 @@ class CodexWhipWindow:
                     if self.settings_window is not None and self.settings_window.window.winfo_exists():
                         self.settings_window.set_voice_runtime_status(f"模型准备失败：{payload}")
                 elif kind == 'tap_range_capture':
-                    if self.settings_window is not None and self.settings_window.window.winfo_exists():
-                        saved = self.settings_window.handle_tap_range_capture(payload)
-                        if saved:
-                            self.ui.observe('tap_calibration_saved', self.voice_store.settings)
+                    pass  # Retired: ST hardware double-tap is the only runtime path.
                 elif kind == 'tap_calibration_saved':
-                    self._append_log('双敲力度范围已保存；不再使用旧轨迹匹配。')
-                    if self.settings_window is not None and self.settings_window.window.winfo_exists():
-                        self.settings_window.refresh_voice_settings(payload)
+                    pass
                 elif kind == "voice_calibration":
                     done = int(payload.get("done", 0))
                     total = int(payload.get("total", 5))

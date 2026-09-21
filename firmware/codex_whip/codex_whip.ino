@@ -11,7 +11,7 @@
 
 namespace {
 
-constexpr char kFirmwareVersion[] = "0.7.2";
+constexpr char kFirmwareVersion[] = "0.7.3";
 constexpr char kDeviceName[] = "CodexWhip";
 constexpr uint32_t kSampleRateHz = 416;
 constexpr uint32_t kSamplePeriodUs = 1000000UL / kSampleRateHz;
@@ -52,7 +52,8 @@ constexpr uint8_t kWakeThresholdRegister = 0x5B;
 constexpr uint8_t kMd1ConfigRegister = 0x5E;
 constexpr uint8_t kDoubleTapSourceMask = 0x50;  // TAP_IA | DOUBLE_TAP.
 constexpr uint32_t kTapPollPeriodMs = 8;
-constexpr uint32_t kTapRawTailMs = 70;
+constexpr float kTapThresholdStepG = 0.5f;  // FS_XL / 32 at +/-16 g.
+constexpr uint8_t kTapThresholdMaximumCode = 24;  // Product UI caps at 12 g.
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
 BLEDis deviceInfo;
@@ -140,9 +141,7 @@ bool chargingState = false;
 bool chargingCandidate = false;
 uint32_t chargingCandidateSince = 0;
 bool hardwareTapReady = false;
-bool hardwareTapPending = false;
-uint8_t hardwareTapSource = 0;
-uint32_t hardwareTapDetectedAt = 0;
+uint8_t hardwareTapThresholdCode = 2;
 uint32_t nextHardwareTapPollAt = 0;
 
 void sendLine(const String& line);
@@ -151,6 +150,32 @@ bool writeImuRegisterVerified(uint8_t reg, uint8_t value) {
   uint8_t actual = 0;
   return imu.writeRegister(reg, value) == IMU_SUCCESS &&
          imu.readRegister(&actual, reg) == IMU_SUCCESS && actual == value;
+}
+
+float hardwareTapThresholdG() {
+  return hardwareTapThresholdCode * kTapThresholdStepG;
+}
+
+bool setHardwareTapThreshold(float minimumG) {
+  if (!isfinite(minimumG) || minimumG < kTapThresholdStepG || minimumG > 12.0f) {
+    return false;
+  }
+  const uint8_t code = static_cast<uint8_t>(constrain(
+      static_cast<int>(ceilf(minimumG / kTapThresholdStepG)),
+      1, kTapThresholdMaximumCode));
+  uint8_t tapThreshold = 0;
+  if (imu.readRegister(&tapThreshold, kTapThresholdRegister) != IMU_SUCCESS) {
+    return false;
+  }
+  if (!writeImuRegisterVerified(
+          kTapThresholdRegister,
+          static_cast<uint8_t>((tapThreshold & 0xE0) | code))) {
+    return false;
+  }
+  hardwareTapThresholdCode = code;
+  uint8_t ignored = 0;
+  imu.readRegister(&ignored, kTapSourceRegister);  // Clear stale latched tap.
+  return true;
 }
 
 bool configureHardwareDoubleTap() {
@@ -165,10 +190,12 @@ bool configureHardwareDoubleTap() {
   bool ok = writeImuRegisterVerified(kTapConfigRegister, 0x8E);
   ok = writeImuRegisterVerified(
            kTapThresholdRegister,
-           static_cast<uint8_t>((tapThreshold & 0xE0) | 0x02)) && ok;
-  // SHOCK=3 (~57.7 ms), QUIET=3 (~28.8 ms), DUR=15 (~1.15 s)
-  // at 416 Hz. Desktop settings still enforce the user's chosen interval.
-  ok = writeImuRegisterVerified(kTapDurationRegister, 0xFF) && ok;
+           static_cast<uint8_t>((tapThreshold & 0xE0) |
+                                hardwareTapThresholdCode)) && ok;
+  // ST AN5130 double-tap state machine: SHOCK=3 (~57.7 ms),
+  // QUIET=3 (~28.8 ms) rejects contact bounce, and DUR=13 gives a fixed
+  // 1.0-second window at 416 Hz. There is no desktop interval detector.
+  ok = writeImuRegisterVerified(kTapDurationRegister, 0xDF) && ok;
   ok = writeImuRegisterVerified(
            kWakeThresholdRegister,
            static_cast<uint8_t>(wakeThreshold | 0x80)) && ok;
@@ -177,7 +204,6 @@ bool configureHardwareDoubleTap() {
            static_cast<uint8_t>(md1 | 0x08)) && ok;
   uint8_t ignored = 0;
   imu.readRegister(&ignored, kTapSourceRegister);  // Clear a stale source.
-  hardwareTapPending = false;
   nextHardwareTapPollAt = millis();
   return ok;
 }
@@ -276,28 +302,14 @@ bool readMotion(MotionSample& sample) {
 }
 
 void pollHardwareDoubleTap(uint32_t now) {
-  if (!hardwareTapReady || !voiceEnabled || !rawStreaming || voiceRecording) {
-    hardwareTapPending = false;
-    return;
-  }
-
-  // Delay the event briefly so RAW5 has already delivered the second impact.
-  // The desktop can then enforce the user's precise min/max force range rather
-  // than trusting the hardware's deliberately broad candidate threshold.
-  if (hardwareTapPending && now - hardwareTapDetectedAt >= kTapRawTailMs) {
-    sendLine("TAP2," + String(hardwareTapDetectedAt) + "," +
-             String(hardwareTapSource));
-    hardwareTapPending = false;
-  }
+  if (!hardwareTapReady || !voiceEnabled || voiceRecording) return;
   if (static_cast<int32_t>(now - nextHardwareTapPollAt) < 0) return;
   nextHardwareTapPollAt = now + kTapPollPeriodMs;
 
   uint8_t source = 0;
   if (imu.readRegister(&source, kTapSourceRegister) == IMU_SUCCESS &&
       (source & kDoubleTapSourceMask) == kDoubleTapSourceMask) {
-    hardwareTapSource = source;
-    hardwareTapDetectedAt = now;
-    hardwareTapPending = true;
+    sendLine("TAP2," + String(now) + "," + String(source));
   }
 }
 
@@ -1014,7 +1026,6 @@ bool wakePower() {
   clearPowerMotion();
   powerResumeAt = millis() + 300; // Gyro settling; pickup must not become a strike.
   powerSettling = true;
-  hardwareTapPending = false;
   nextHardwareTapPollAt = millis();
   uint8_t ignoredTapSource = 0;
   imu.readRegister(&ignoredTapSource, kTapSourceRegister);
@@ -1130,7 +1141,8 @@ void handleCommand(String command) {
   }
   if (command == "PING") {
     sendLine("PONG," + String(kFirmwareVersion));
-    sendLine("TAPENGINE," + String(hardwareTapReady ? 1 : 0) + ",ST_AN5130");
+    sendLine("TAPENGINE," + String(hardwareTapReady ? 1 : 0) +
+             ",ST_AN5130," + String(hardwareTapThresholdG(), 2) + ",1000");
     reportBattery();
   } else if (command == "BATTERY") {
     reportBattery();
@@ -1180,8 +1192,14 @@ void handleCommand(String command) {
   } else if (command == "VOICE,0") {
     if (voiceRecording) stopVoiceRecording("DISABLED");
     voiceEnabled = false;
-    hardwareTapPending = false;
     sendLine("VOICE,ENABLED,0");
+  } else if (command.startsWith("TAPCFG,")) {
+    const float requested = command.substring(7).toFloat();
+    if (!setHardwareTapThreshold(requested)) {
+      sendLine("TAPCFG,ERROR,RANGE");
+    } else {
+      sendLine("TAPCFG,OK," + String(hardwareTapThresholdG(), 2));
+    }
   } else if (command.startsWith("VOICE,START,")) {
     unsigned int silenceMs = 0;
     unsigned int maximumMs = 0;

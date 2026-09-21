@@ -209,6 +209,7 @@ def test_home_battery_indicator_tracks_device_and_disconnect(app):
     app._drain_events()
     assert app.ui.battery_indicator.percent == 74
     assert app.ui.battery_indicator.color == app.ui.battery_indicator.NORMAL
+    assert app.ui.battery_indicator.NORMAL == '#111111'
     assert app.ui.battery_indicator.find_withtag('glyph')
     assert app.ui.battery_indicator.find_withtag('percentage') == ()
     assert int(float(app.ui.battery_indicator.cget('width'))) == 32
@@ -254,7 +255,7 @@ def test_three_settings_groups_preserve_controls_and_reopen(app):
         assert bool(ui._general_body.winfo_manager()) == (section=='general')
         assert bool(ui._direction_card.winfo_manager()) == (section=='calibration')
         assert bool(ui._speech_panel.winfo_manager()) == (section=='input')
-        assert bool(window.tap_advanced.winfo_manager()) == (section=='calibration')
+        assert bool(window._calibration_panel.winfo_manager()) == (section=='calibration')
         assert bool(window.voice_feature_card.winfo_manager()) == (section=='input')
         assert app.voice_text.get('1.0','end-1c') == '未保存的语音文字'
     ui.hide_preferences()
@@ -448,8 +449,7 @@ def test_advanced_settings_collapsed_and_preserve_values(app):
     connected(app)
     app.ui.open_preferences("detector")
     window = app.settings_window
-    sections = (window.detector_advanced, window.voice_advanced,
-                window.tap_advanced, app.ui.diagnostics)
+    sections = (window.detector_advanced, window.voice_advanced, app.ui.diagnostics)
     original = {key: value.get() for key, value in window._variables.items()}
     original_voice = window._read_voice_settings()
     for section in sections:
@@ -490,7 +490,7 @@ def test_reduced_motion_and_callbacks_close_cleanly(app):
     assert app.ui.hero._timer is None
 
 
-def test_tap_opt_in_opens_auto_calibration_without_manual_capture(app):
+def test_tap_opt_in_enables_hardware_voice_without_calibration(app):
     connected(app)
     app.processor = Mock(_last_sensor_batch_at=time.monotonic())
     app.prepare_voice_model = Mock()  # No network in UI tests.
@@ -499,19 +499,6 @@ def test_tap_opt_in_opens_auto_calibration_without_manual_capture(app):
     ui.tap_choice.set(True)
     ui.advance()
     assert app.voice_store.settings.enabled
-    assert app.voice_module.calibration_active
-    assert ui._tap_count == 0
-    app.settings_window._record_voice_calibration = Mock(return_value=True)
-    ui.advance()
-    app.settings_window._record_voice_calibration.assert_not_called()
-    assert ui._tap_count == 0
-    refresh(ui)
-    assert ui._advanced_section == 'calibration'
-    assert app.settings_window.page_title.cget('text') == '手柄'
-    ui.observe("tap_calibration_saved", app.voice_store.settings)
-    refresh(ui)
-    assert ui.primary.cget("text") == "完成并继续"
-    ui.advance()
     assert ui.stage == "ready"
     assert not app.voice_module.calibration_active
     assert not app.armed.is_set()
@@ -679,8 +666,9 @@ def test_settings_layout_stacking_and_group_ownership(app):
     assert win.voice_feature_card.winfo_manager() == "pack"
     assert int(win._message_canvas.cget("height")) == max(80, win._message_list.winfo_reqheight())
     ui.open_preferences("calibration")
-    assert win.tap_advanced.pack_info()["in"] == win._calibration_panel
+    assert win._calibration_panel.winfo_manager() == 'pack'
     assert not win.record_button.winfo_manager()
-    assert win.tap_auto_button.winfo_manager()
+    assert win.tap_minimum_slider.winfo_manager()
+    assert not hasattr(win, 'tap_auto_button')
     ui.hide_preferences()
     app.effects.set_settings_open.assert_called_with(False)

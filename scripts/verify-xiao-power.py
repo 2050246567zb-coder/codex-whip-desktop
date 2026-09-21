@@ -54,7 +54,7 @@ async def main():
             await client.start_notify(TX,receive)
             await send('PING')
             pong=await wait('PONG')
-            assert pong.fields[0]=='0.7.2',pong
+            assert pong.fields[0]=='0.7.3',pong
             await send('POWERTEST')
             checks=await wait('POWERTEST')
             assert checks.fields==('12','12'),checks
