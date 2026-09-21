@@ -940,6 +940,10 @@ class VoiceModule:
         self._motion_lock = threading.Lock()
         self._force_lock = threading.RLock()
         self._force_calibration = None
+        # A single hard motion is only a *candidate* first tap.  It must not
+        # mask a genuine whip reported by the firmware.  We block firmware
+        # whip events only after a complete double tap has actually fired.
+        self._device_whip_block_until = 0.0
         self._install_tap_detector()
 
     def _install_tap_detector(self) -> None:
@@ -1071,6 +1075,11 @@ class VoiceModule:
     def suppress_whip(self) -> bool:
         return self.calibration_active or self.detector.suppress_whip
 
+    @property
+    def blocks_device_whip(self) -> bool:
+        """Whether a completed voice gesture should own the current motion."""
+        return self.calibration_active or time.monotonic() < self._device_whip_block_until
+
     def cancel_calibration(self) -> None:
         with self._force_lock:
             self._force_calibration = None
@@ -1194,6 +1203,12 @@ class VoiceModule:
             )
             if not accepted:
                 return False, True
+        # Cover the tail of the accepted second impact.  Unlike
+        # ``detector.suppress_whip``, this never activates for a lone first
+        # impact, which may actually be the acceleration peak of a whip.
+        self._device_whip_block_until = time.monotonic() + max(
+            0.35, min(1.20, settings.settle_ms / 1000.0 + 0.30)
+        )
         self.emit("voice_trigger", event)
         return True, True
 

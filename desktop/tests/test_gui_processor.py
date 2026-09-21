@@ -1,5 +1,7 @@
 import asyncio
 import threading
+from dataclasses import replace
+from unittest.mock import Mock
 
 from codex_whip.calibration import LearningSample
 from codex_whip.gui import CodexWhipWindow, GuiEventProcessor
@@ -239,6 +241,81 @@ def test_native_dictation_draft_is_submitted_without_inserting_prompt(tmp_path) 
     assert voice.native_draft_pending is False
     payload = next(payload for kind, payload in emitted if kind == "whip")
     assert payload["native_dictation"] is True
+
+
+def _voice_motion_frames(*, second_tap: bool) -> tuple[RawMotionFrame, ...]:
+    frames = [RawMotionFrame(time, 0, 0, 0, 0, 0, 1) for time in range(0, 310, 10)]
+    frames.extend((
+        RawMotionFrame(310, 120, 0, 0, 0, 0, 3.2),
+        RawMotionFrame(320, 160, 0, 0, 0, 0, 3.8),
+        RawMotionFrame(330, 0, 0, 0, 0, 0, 1),
+    ))
+    if second_tap:
+        frames.extend(RawMotionFrame(time, 0, 0, 0, 0, 0, 1)
+                      for time in range(340, 550, 10))
+        frames.extend((
+            RawMotionFrame(550, 140, 0, 0, 0, 0, 3.4),
+            RawMotionFrame(560, 180, 0, 0, 0, 0, 4.0),
+            RawMotionFrame(570, 0, 0, 0, 0, 0, 1),
+        ))
+    return tuple(frames)
+
+
+def _enabled_voice(tmp_path, emitted):
+    store = VoiceSettingsStore(tmp_path / "voice.json")
+    store.update(replace(store.settings, enabled=True))
+    return VoiceModule(store, lambda *event: emitted.append(event))
+
+
+def test_first_tap_candidate_does_not_swallow_firmware_whip(tmp_path) -> None:
+    emitted: list[tuple[str, object]] = []
+    voice = _enabled_voice(tmp_path, emitted)
+    processor = GuiEventProcessor(
+        Settings(), threading.Event(), lambda *event: emitted.append(event),
+        voice_module=voice,
+    )
+    batch = RawMotionBatch(1, 0, _voice_motion_frames(second_tap=False))
+
+    asyncio.run(processor.handle(batch))
+    assert voice.detector.suppress_whip  # a possible first tap is pending
+    asyncio.run(processor.handle(WhipEvent(46, 900, 3.0, 120)))
+
+    assert any(kind == "whip" for kind, _payload in emitted)
+
+
+def test_completed_double_tap_owns_its_firmware_motion_tail(tmp_path) -> None:
+    emitted: list[tuple[str, object]] = []
+    voice = _enabled_voice(tmp_path, emitted)
+    processor = GuiEventProcessor(
+        Settings(), threading.Event(), lambda *event: emitted.append(event),
+        voice_module=voice,
+    )
+
+    asyncio.run(processor.handle(
+        RawMotionBatch(1, 0, _voice_motion_frames(second_tap=True))
+    ))
+    assert voice.blocks_device_whip
+    asyncio.run(processor.handle(WhipEvent(47, 900, 3.0, 120)))
+
+    assert not any(kind == "whip" for kind, _payload in emitted)
+    assert any(kind == "log" and "已完成双敲" in str(payload)
+               for kind, payload in emitted)
+
+
+def test_v3_still_sees_a_lone_first_tap_candidate(tmp_path) -> None:
+    emitted: list[tuple[str, object]] = []
+    voice = _enabled_voice(tmp_path, emitted)
+    engine = Mock()
+    engine.feed_batch.return_value = None
+    processor = GuiEventProcessor(
+        Settings(), threading.Event(), lambda *event: emitted.append(event),
+        motion_engine=engine, voice_module=voice,
+    )
+    batch = RawMotionBatch(1, 0, _voice_motion_frames(second_tap=False))
+
+    asyncio.run(processor.handle(batch))
+
+    engine.feed_batch.assert_called_once_with(batch)
 
 
 def test_retired_shortcut_never_registers():
