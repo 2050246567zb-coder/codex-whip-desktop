@@ -841,6 +841,12 @@ class DetectorSettingsWindow:
         row.pack(fill='x')
         self.tap_start = self._button(row, '开始校准', self._begin_voice_calibration, self.BLUE, '#FFFFFF')
         self.tap_start.pack(side='left')
+        self.tap_record = self._button(
+            row, '录入本次', self._record_voice_calibration_sample,
+            self.BLUE, '#FFFFFF'
+        )
+        self.tap_record.pack(side='left', padx=(8, 0))
+        self.tap_record.pack_forget()
         self.tap_save = self._button(row, '保存并完成', self._save_tap, self.BLUE, '#FFFFFF')
         self.tap_save.configure(state='disabled')
         self.tap_save.pack(side='right')
@@ -871,20 +877,35 @@ class DetectorSettingsWindow:
         self.tap_cancel.pack(side='right',padx=8)
         self._tap_stage = state['stage']
         self._voice_calibrating = True
-        titles = {'light': '1 / 2 · 轻轻双敲一次', 'heavy': '2 / 2 · 较重双敲一次', 'test': '自由测试'}
-        hints = {'light': '用你希望识别的最轻力度，以手柄底部敲桌面两下。',
-                 'heavy': '换成日常较重力度，底部敲两下；无需猛砸。',
+        titles = {'light': '1 / 2 · 录入最轻力度', 'heavy': '2 / 2 · 录入较重力度', 'test': '自由测试'}
+        hints = {'light': '用手柄底部敲桌面两下。确认下方力度后，点击“录入本次”。',
+                 'heavy': '换成日常较重力度敲两下，确认数值后点击“录入本次”。',
                  'test': '随意试试轻敲和重敲。满意后保存，不合适可重新校准。'}
         self.tap_step.set(titles[self._tap_stage])
         self.tap_detail.set(state.get('detail') or hints[self._tap_stage])
         self.tap_start.configure(text='重新校准')
         self.tap_save.configure(state='normal' if self._tap_stage == 'test' else 'disabled')
+        if self._tap_stage in {'light', 'heavy'}:
+            if not self.tap_record.winfo_manager():
+                self.tap_record.pack(side='left', padx=(8, 0), after=self.tap_start)
+            self.tap_record.configure(state='normal')
+        else:
+            self.tap_record.pack_forget()
         if state.get('threshold') is not None:
             self.tap_result.set(f"轻敲 {state['light']:.2f} g · 重敲 {state['heavy']:.2f} g · "
                                 f"触发下限 {state['threshold']:.2f} g\n"
                                 f"测试通过 {state.get('accepted', 0)} 次；重敲值不是力度上限。")
         else:
-            self.tap_result.set('自动采集，不必点击录入。校准和测试期间不录音、不发送。')
+            strengths = tuple(state.get('live_strengths') or ())
+            if len(strengths) >= 2:
+                reading = f'本次力度：第一下 {strengths[-2]:.2f} g · 第二下 {strengths[-1]:.2f} g'
+            elif strengths:
+                reading = f'当前力度：第一下 {strengths[-1]:.2f} g · 等待第二下'
+            else:
+                reading = '等待敲击；这里会实时显示每一下的力度。'
+            if self._tap_stage == 'heavy' and state.get('light') is not None:
+                reading += f"\n已录入最轻力度 {state['light']:.2f} g"
+            self.tap_result.set(reading)
 
     def _cancel_tap_calibration(self):
         if self._cancel_voice_calibration:
@@ -895,6 +916,7 @@ class DetectorSettingsWindow:
             self.tap_interval_slider.set(self._voice_store.settings.max_interval_ms/1000)
         self.tap_feedback.pack_forget()
         self.tap_cancel.pack_forget()
+        self.tap_record.pack_forget()
         self.tap_save.pack_forget()
         self.tap_step.set('')
         self.tap_detail.set('已退出校准，原来的参数保持不变。')
@@ -908,6 +930,7 @@ class DetectorSettingsWindow:
             self.tap_step.set('校准已保存')
             self.tap_detail.set('新力度设置已生效。')
             self.tap_save.configure(state='disabled')
+            self.tap_record.pack_forget()
 
     def _record_voice_calibration_sample(self) -> None:
         if not self._voice_calibrating or self._record_voice_calibration is None:
@@ -926,6 +949,8 @@ class DetectorSettingsWindow:
         self.voice_status.set(f"本次未计数：{text}。请重新双敲后立即录入。")
         if self._voice_calibrating:
             self.voice_record_button.configure(state="normal")
+            self.tap_detail.set(f'未录入：{text}')
+            self.tap_record.configure(state='normal')
 
     def refresh_voice_settings(self, settings: VoiceSettings) -> None:
         self.voice_enabled.set(settings.enabled)
@@ -937,6 +962,7 @@ class DetectorSettingsWindow:
         self._voice_calibrating = False
         self.voice_calibrate_button.configure(text="重新学习", state="normal")
         self.voice_record_button.configure(state="disabled")
+        self.tap_record.pack_forget()
         self.voice_tap_model_status.set(
             "双敲力度识别已启用，不限制为旧轨迹或固定方向。"
             if settings.tap_force_calibrated else "旧版双敲轨迹模板已启用。"

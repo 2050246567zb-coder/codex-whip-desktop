@@ -30,12 +30,17 @@ def module(tmp_path, enabled=True):
 def calibrate(voice):
     voice.start_force_calibration()
     assert voice.feed_motion(batch(pair(strength=.8))) == (False, True)
+    assert voice._force_calibration.stage == 'light'
+    assert voice._force_calibration.meter.strengths == pytest.approx((.8, .8))
+    voice.record_force_calibration_sample()
     assert voice._force_calibration.stage == 'heavy'
     assert voice.feed_motion(batch(pair(2200, 4))) == (False, True)
+    assert voice._force_calibration.stage == 'heavy'
+    voice.record_force_calibration_sample()
     assert voice._force_calibration.stage == 'test'
 
 
-def test_two_pairs_auto_advance_without_old_threshold_and_save_only_on_confirm(tmp_path):
+def test_two_pairs_advance_only_after_manual_record_and_save_only_on_confirm(tmp_path):
     voice, emitted = module(tmp_path)
     old = voice.store.path.read_bytes()
     calibrate(voice)
@@ -150,8 +155,12 @@ def test_interval_slider_limits_apply_to_capture_test_and_saved_runtime(tmp_path
     voice, _ = module(tmp_path)
     voice.start_force_calibration(limit)
     voice.feed_motion(batch(pair(strength=.8, spacing=limit)))
+    assert voice._force_calibration.stage == 'light'
+    voice.record_force_calibration_sample()
     assert voice._force_calibration.stage == 'heavy'
     voice.feed_motion(batch(pair(3200, 4, spacing=limit)))
+    assert voice._force_calibration.stage == 'heavy'
+    voice.record_force_calibration_sample()
     assert voice._force_calibration.stage == 'test'
     voice.feed_motion(batch(pair(6400, 2, spacing=limit)))
     assert voice._force_calibration.accepted == 1
