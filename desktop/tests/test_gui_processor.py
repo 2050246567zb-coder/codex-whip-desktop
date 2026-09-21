@@ -4,7 +4,7 @@ from dataclasses import replace
 from unittest.mock import Mock
 
 from codex_whip.calibration import LearningSample
-from codex_whip.gui import CodexWhipWindow, GuiEventProcessor
+from codex_whip.gui import CodexWhipWindow, GuiEventProcessor, UiEventBuffer
 from codex_whip.models import DeviceMessage, RawMotionBatch, RawMotionFrame, WhipEvent
 from codex_whip.senders.base import SendResult
 from codex_whip.settings import Settings
@@ -24,6 +24,19 @@ def test_safe_gui_mode_records_whip_without_sending() -> None:
     assert emitted[0][1]["sequence"] == 7  # type: ignore[index]
     assert emitted[1][0] == "send_result"
     assert emitted[1][1].sent is False  # type: ignore[union-attr]
+
+
+def test_ui_event_buffer_coalesces_motion_and_audio_without_losing_actions() -> None:
+    events = UiEventBuffer()
+    for value in range(10_000):
+        events.put(("sensor_pose", value))
+        events.put(("ui_audio_level", value / 10_000))
+    events.put(("voice_state", {"state": "recording"}))
+
+    assert events.get_nowait() == ("sensor_pose", 9_999)
+    assert events.get_nowait() == ("ui_audio_level", 0.9999)
+    assert events.get_nowait() == ("voice_state", {"state": "recording"})
+    assert events.empty()
 
 
 def test_gui_processor_reports_device_messages() -> None:

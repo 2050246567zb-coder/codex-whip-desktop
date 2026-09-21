@@ -61,6 +61,51 @@ from .visual_settings import VisualSettings, VisualSettingsStore
 from .interface_state import audio_display_level
 from .virtual_microphone import VirtualMicrophoneBridge, VirtualMicrophoneError
 
+
+class UiEventBuffer:
+    """Thread-safe UI queue that keeps only the newest high-rate frame.
+
+    RAW motion and audio-level notifications can arrive faster than Tk can
+    redraw them.  Queueing every intermediate frame makes ``_drain_events``
+    chase a queue that never becomes empty and the native window stops
+    responding.  State transitions and actions remain lossless; only display
+    telemetry is coalesced.
+    """
+
+    COALESCED_KINDS = frozenset({"sensor_pose", "ui_audio_level"})
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self._latest: dict[str, Any] = {}
+        self._pending: set[str] = set()
+        self._lock = threading.Lock()
+
+    def put(self, item: tuple[str, Any]) -> None:
+        kind, payload = item
+        if kind not in self.COALESCED_KINDS:
+            self._queue.put(item)
+            return
+        with self._lock:
+            self._latest[kind] = payload
+            if kind in self._pending:
+                return
+            self._pending.add(kind)
+            # Payload is resolved atomically when the UI consumes this token.
+            self._queue.put((kind, None))
+
+    def get_nowait(self) -> tuple[str, Any]:
+        kind, payload = self._queue.get_nowait()
+        if kind not in self.COALESCED_KINDS:
+            return kind, payload
+        with self._lock:
+            payload = self._latest.pop(kind)
+            self._pending.remove(kind)
+        return kind, payload
+
+    def empty(self) -> bool:
+        return self._queue.empty()
+
+
 def find_config_path() -> Path | None:
     candidates: list[Path] = []
     if getattr(sys, "frozen", False):
@@ -409,7 +454,7 @@ class CodexWhipWindow:
         except (OSError, ValueError, KeyError, TypeError):
             pass
         self.config_path = config_path
-        self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self.events = UiEventBuffer()
         self.armed = threading.Event()
         self.worker_thread: threading.Thread | None = None
         self.worker_loop: asyncio.AbstractEventLoop | None = None
@@ -1062,7 +1107,10 @@ class CodexWhipWindow:
             self.root.after_cancel(self._drain_after)
             self._drain_after = None
         try:
-            while True:
+            # Never let a continuous producer monopolize Tk's event loop.
+            # Coalesced telemetry normally keeps this well below the limit;
+            # the cap is a final guard for bursts of lossless state events.
+            for _event_index in range(96):
                 kind, payload = self.events.get_nowait()
                 if kind == 'target_checked':
                     selected, kind, payload = payload
@@ -1482,7 +1530,8 @@ class CodexWhipWindow:
         except queue.Empty:
             pass
         if not self.closing:
-            self._drain_after = self.root.after(16, self._drain_events)
+            delay_ms = 1 if not self.events.empty() else 16
+            self._drain_after = self.root.after(delay_ms, self._drain_events)
 
     def close(self) -> None:
         self.closing = True

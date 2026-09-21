@@ -19,11 +19,13 @@ def main(argv=None) -> int:
     args.output.mkdir(parents=True, exist_ok=True)
     from .gui import CodexWhipWindow
     from .effects import CodexWhipEffects
+    from .sensor_pose import SensorPose
     from .settings import Settings
     from PIL import ImageGrab
 
     report = {"synthetic": True, "native_overlay_tested": False,
-              "screenshots": [], "capture_errors": [], "callback_errors": []}
+              "screenshots": [], "capture_errors": [], "callback_errors": [],
+              "high_rate_event_buffer_drained": False}
     with tempfile.TemporaryDirectory(prefix="codex-whip-ui-") as data, ExitStack() as stack:
         stack.enter_context(patch.dict(os.environ, {"CODEX_WHIP_DATA_DIR": data}))
         fake_effects = Mock()
@@ -59,8 +61,17 @@ def main(argv=None) -> int:
             settle_and_capture("03-clock")
             app.ui.hero._set_clock(False)
             settle_and_capture("04-return-to-whip")
-            app.ui._voice_state = "recording"
+            # Reproduce the live recording load: RAW pose and audio meter
+            # notifications arrive concurrently and used to keep Tk's drain
+            # loop busy forever.  Only the newest display frames should remain.
+            for value in range(10_000):
+                app.emit("sensor_pose", SensorPose(0.1, -0.1, 5.0, 0.4, True))
+                app.emit("ui_audio_level", value / 10_000)
+            app.emit("voice_state", {"state": "recording"})
             settle_and_capture("05-recording")
+            report["high_rate_event_buffer_drained"] = app.events.empty()
+            if not report["high_rate_event_buffer_drained"]:
+                report["callback_errors"].append("high-rate UI event buffer did not drain")
             app.ui._voice_state = "recognizing"
             settle_and_capture("06-recognizing")
             app.ui.observe('voice_pending', '请继续完成界面和动画测试')
