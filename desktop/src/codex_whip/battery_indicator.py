@@ -8,8 +8,8 @@ from PIL import Image, ImageDraw, ImageTk
 class BatteryIndicator(tk.Canvas):
     """iOS-style status battery; exact percentage is available on hover."""
 
-    OUTLINE = "#8E8E93"
-    NORMAL = "#8E8E93"
+    OUTLINE = "#111111"
+    NORMAL = "#111111"
     CHARGING = "#34C759"
     LOW = "#FF3B30"
     UNKNOWN = "#C7C7CC"

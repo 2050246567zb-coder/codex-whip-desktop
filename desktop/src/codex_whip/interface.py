@@ -466,7 +466,7 @@ class Interface:
         self.whip_choice = tk.BooleanVar(master=self.root, value=False)
         self.tap_choice = tk.BooleanVar(master=self.root, value=False)
         for text, variable in (("抽打动作 · 15 次", self.whip_choice),
-                               ("双敲力度范围 · 测量一次，并启用语音", self.tap_choice)):
+                               ("开启双敲语音 · 使用芯片硬件识别", self.tap_choice)):
             tk.Checkbutton(self.choices, text=text, variable=variable, bg=BG, fg=TEXT,
                            activebackground=BG, selectcolor=CARD, font=(FONT, 10),
                            cursor="hand2").pack(anchor="w", pady=3)
@@ -742,7 +742,12 @@ class Interface:
             if self.app.ble_connected and time.monotonic() - self._sensor_at < 1.5:
                 self.app.open_mount_calibration()
         elif self.stage == "choices":
-            self._learning_queue = (["whip"] if self.whip_choice.get() else []) + (["tap"] if self.tap_choice.get() else [])
+            if self.tap_choice.get() and not self.app.voice_store.settings.enabled:
+                if not self.app.apply_voice_settings(
+                    replace(self.app.voice_store.settings, enabled=True)
+                ):
+                    return
+            self._learning_queue = ["whip"] if self.whip_choice.get() else []
             self._next_learning()
         elif self.stage == "learning":
             if not self.app.ble_connected:
@@ -761,14 +766,8 @@ class Interface:
                     window.request_record()
                 else:
                     window.start_positive_learning()
-            elif self._tap_done:
-                self._next_learning()
-            elif window._voice_calibrating:
-                self.open_preferences('calibration')
             else:
-                if self.app.voice_store.settings.enabled or self.app.apply_voice_settings(
-                        replace(self.app.voice_store.settings, enabled=True)):
-                    window._begin_voice_calibration()
+                self._next_learning()
         self._render_key = None
 
     def _next_learning(self):
@@ -789,12 +788,7 @@ class Interface:
         if self._learning_kind == "whip":
             window.start_positive_learning()
         else:
-            if not self.app.voice_store.settings.enabled:
-                # The choice explicitly says this enables the optional voice module.
-                if not self.app.apply_voice_settings(replace(self.app.voice_store.settings, enabled=True)):
-                    return
-            window._begin_voice_calibration()
-            self.open_preferences('calibration')
+            self._next_learning()
         self._render_key = None
 
     def skip_learning(self):
@@ -907,12 +901,10 @@ class Interface:
                     enabled = connected and not window._awaiting_record
                 else:
                     mode = "voice_ready"
-                    step, title = "双敲力度", "设定允许的冲击范围"
-                    subtitle = "可直接拖动最轻和最重力度，也可以双敲一次自动设置。"
+                    step, title = "双敲识别", "调整最低冲击"
+                    subtitle = "芯片会识别一秒内的两次冲击，不需要录入动作。"
                     progress = window.tap_range_status.get()
-                    primary = "完成并继续" if self._tap_done else "打开力度设置"
-                    if not self._tap_done and not window._voice_calibrating:
-                        primary = "双敲一次自动设置"
+                    primary = "完成并继续"
                     enabled = connected
             if not connected:
                 progress = "连接已断开。重新连接后可以继续，已录入的样本仍在。"

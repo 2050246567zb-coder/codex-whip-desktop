@@ -76,7 +76,7 @@ def test_ui_hang_watchdog_persists_thread_dump(tmp_path) -> None:
         watchdog.stop()
 
     text = path.read_text(encoding="utf-8")
-    assert "version=2.2.55" in text
+    assert "version=2.2.56" in text
     assert "context=voice-state:recording" in text
     assert "Current thread" in text
     assert "_run" in text
@@ -377,7 +377,7 @@ def test_first_tap_candidate_does_not_swallow_firmware_whip(tmp_path) -> None:
     batch = RawMotionBatch(1, 0, _voice_motion_frames(second_tap=False))
 
     asyncio.run(processor.handle(batch))
-    assert voice.detector.suppress_whip  # a possible first tap is pending
+    assert not voice.detector.suppress_whip  # RAW data never runs a tap detector.
     asyncio.run(processor.handle(WhipEvent(46, 900, 3.0, 120)))
 
     assert any(kind == "whip" for kind, _payload in emitted)
@@ -391,9 +391,7 @@ def test_completed_double_tap_owns_its_firmware_motion_tail(tmp_path) -> None:
         voice_module=voice,
     )
 
-    asyncio.run(processor.handle(
-        RawMotionBatch(1, 0, _voice_motion_frames(second_tap=True))
-    ))
+    asyncio.run(processor.handle(DeviceMessage('TAP2', ('900', '80'), 'TAP2,900,80')))
     assert voice.blocks_device_whip
     asyncio.run(processor.handle(WhipEvent(47, 900, 3.0, 120)))
 

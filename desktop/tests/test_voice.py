@@ -346,8 +346,9 @@ def test_legacy_double_tap_learning_no_longer_controls_runtime_range(tmp_path: P
     triggered, suppressed = restored.feed_motion(
         RawMotionBatch(9, frames[0].timestamp_ms, frames)
     )
-    assert triggered
-    assert suppressed
+    assert not triggered
+    assert not suppressed
+    assert restored.handle_hardware_double_tap(frames[-1].timestamp_ms)
     assert not any(kind == "voice_match" for kind, _payload in emitted)
 
 
@@ -367,9 +368,11 @@ def test_runtime_ignores_legacy_trajectory_when_force_is_in_range(tmp_path: Path
         RawMotionBatch(10, candidate[0].timestamp_ms, candidate)
     )
 
-    assert triggered
-    assert suppressed
+    assert not triggered
+    assert not suppressed
     assert not any(kind == "voice_match" for kind, _payload in emitted)
+    assert not any(kind == "voice_trigger" for kind, _payload in emitted)
+    assert module.handle_hardware_double_tap(candidate[-1].timestamp_ms)
     assert any(kind == "voice_trigger" for kind, _payload in emitted)
 
 

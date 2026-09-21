@@ -40,14 +40,15 @@ def main(argv=None) -> int:
         root.geometry("560x660+80+80")
         app.ui.stage = "ready"
 
-        def settle_and_capture(name, delay=1.2):
+        def settle_and_capture(name, delay=1.2, widget=None):
             until = time.monotonic() + delay
             while time.monotonic() < until:
                 root.update()
                 time.sleep(.008)
             try:
-                x, y = root.winfo_rootx(), root.winfo_rooty()
-                ImageGrab.grab(bbox=(x, y, x + root.winfo_width(), y + root.winfo_height())).save(args.output / f"{name}.png")
+                target = widget or root
+                x, y = target.winfo_rootx(), target.winfo_rooty()
+                ImageGrab.grab(bbox=(x, y, x + target.winfo_width(), y + target.winfo_height())).save(args.output / f"{name}.png")
                 report["screenshots"].append(name)
             except Exception as exc:
                 report["capture_errors"].append(f"{name}: {exc}")
@@ -58,6 +59,11 @@ def main(argv=None) -> int:
             app.worker_loop = Mock()
             app.ui.observe("battery", {"percent": 68, "charging": False})
             settle_and_capture("02-whip")
+            app.ui.open_preferences("calibration")
+            settle_and_capture("02a-hardware-tap-settings", .3, app.ui.settings)
+            app.ui._advanced_canvas.yview_moveto(1.0)
+            settle_and_capture("02a-hardware-tap-settings-bottom", .2, app.ui.settings)
+            app.ui.hide_preferences()
             app.ui.observe("battery", {"percent": 18, "charging": False})
             settle_and_capture("02b-battery-low", .2)
             app.ui.observe("battery", {"percent": 68, "charging": True})

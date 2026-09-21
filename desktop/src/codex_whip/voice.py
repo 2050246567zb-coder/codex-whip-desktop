@@ -125,9 +125,8 @@ class VoiceSettings:
                 or not all(math.isfinite(v) and 0 <= v <= 100
                            for v in (self.tap_light_g, self.tap_heavy_g))):
             raise ValueError("敲击力度标定数据无效")
-        if (self.tap_force_calibrated
-                and not 0.25 <= self.tap_light_g < self.tap_heavy_g <= 12.0):
-            raise ValueError("双敲力度范围必须在 0.25–12 g，且最轻力度小于最重力度")
+        if self.tap_force_calibrated and not 0.25 <= self.tap_light_g <= 12.0:
+            raise ValueError("双敲最低冲击必须在 0.25–12 g")
         if not 0.25 <= self.impact_dynamic_accel_g <= 12.0:
             raise ValueError("双敲冲击阈值必须在 0.25–12 g")
         if not 80 <= self.max_tap_gyro_dps <= 2000:
@@ -365,6 +364,29 @@ class DoubleTapDetector:
             first.peak_at_ms,
             pulse.peak_at_ms,
         )
+
+
+class HardwareTapRuntime:
+    """Passive desktop state for ST's hardware double-tap engine.
+
+    Runtime gesture recognition lives entirely in the LSM6DS3TR-C register
+    engine configured from ST AN5130.  Keeping this tiny reset-compatible
+    object avoids coupling unrelated pose/calibration code to a software tap
+    detector without retaining a second recognition path.
+    """
+
+    def __init__(self, settings: VoiceSettings) -> None:
+        self.settings = settings.validated()
+
+    @property
+    def suppress_whip(self) -> bool:
+        return False
+
+    def update_settings(self, settings: VoiceSettings) -> None:
+        self.settings = settings.validated()
+
+    def reset(self) -> None:
+        pass
 
 
 def extract_manual_double_tap(
@@ -941,7 +963,7 @@ class VoiceModule:
         self.double_tap_profile = load_double_tap_profile(
             self.double_tap_profile_path
         )
-        self.detector = DoubleTapDetector(store.settings)
+        self.detector = HardwareTapRuntime(store.settings)
         self.assembler = VoiceAudioAssembler()
         self._pending_text: str | None = None
         self._pending_until = 0.0
@@ -963,8 +985,7 @@ class VoiceModule:
         self._install_tap_detector()
 
     def _install_tap_detector(self) -> None:
-        from .tap_calibration import ForceTapDetector
-        self.detector = ForceTapDetector(self.store.settings)
+        self.detector = HardwareTapRuntime(self.store.settings)
 
     def start_force_calibration(self, interval_ms: int | None = None) -> None:
         del interval_ms  # Retained for compatibility with older callers.
@@ -1047,7 +1068,7 @@ class VoiceModule:
         self.emit("voice_native_pending", False)
 
     def update_settings(self) -> None:
-        self._install_tap_detector()
+        self.detector.update_settings(self.store.settings)
         if not self.store.settings.enabled:
             self.cancel_calibration()
             self.clear_pending()
@@ -1169,17 +1190,12 @@ class VoiceModule:
         if hardware:
             self.emit(
                 "log",
-                "LSM6DS3 硬件双敲通过；已用同期六轴数据复核力度和间隔",
+                "LSM6DS3 硬件双敲通过；ST 状态机已确认两次冲击",
             )
         self.emit("voice_trigger", event)
 
     def handle_hardware_double_tap(self, device_timestamp_ms: int) -> bool:
-        """Validate an ST hardware candidate against recent RAW5 force data.
-
-        The LSM6DS3TR-C implements ST's open Shock/Quiet/Duration state
-        machine.  It is a broad, direction-independent candidate detector;
-        exact user force limits remain a desktop responsibility.
-        """
+        """Accept one event from ST's hardware Shock/Quiet/Duration engine."""
         settings = self.store.settings
         if not settings.enabled or self.calibration_active:
             return False
@@ -1190,50 +1206,14 @@ class VoiceModule:
         duplicate_delta = (timestamp - self._last_trigger_second_ms) & 0xFFFFFFFF
         if duplicate_delta <= 450:
             return False
-        with self._motion_lock:
-            frames = tuple(self._motion_frames)
-        # Include baseline before the first impact so median gravity remains
-        # stable even when the two impulses occupy several samples.
-        lookback = min(MANUAL_CAPTURE_WINDOW_MS - 100,
-                       settings.max_interval_ms + 500)
-        after = (timestamp - lookback) & 0xFFFFFFFF
-        # Device uptime wrap is rare; allow the extractor's own bounded window
-        # instead of presenting a future lower bound across the wrap point.
-        if after > timestamp:
-            after = -1
-        try:
-            event = extract_manual_double_tap(
-                frames,
-                after_timestamp_ms=after,
-                max_interval_ms=settings.max_interval_ms,
-            )
-        except ValueError as exc:
-            self.emit("log", f"硬件识别到双敲，但六轴复核失败：{exc}")
-            return False
-        tail = (timestamp - event.second_at_ms) & 0xFFFFFFFF
-        if tail > 350:
-            self.emit("log", "硬件识别到双敲，但同期六轴峰值时间不匹配")
-            return False
-        from .tap_calibration import MIN_TAP_IMPACT_G
-        low = (settings.tap_light_g if settings.tap_force_calibrated
-               else settings.impact_dynamic_accel_g)
-        high = (settings.tap_heavy_g if settings.tap_force_calibrated
-                else 12.0)
-        low = max(MIN_TAP_IMPACT_G, low)
-        strengths = (
-            event.first_peak_dynamic_accel_g,
-            event.second_peak_dynamic_accel_g,
+        event = DoubleTapEvent(
+            first_peak_dynamic_accel_g=0.0,
+            second_peak_dynamic_accel_g=0.0,
+            peak_gyro_dps=0.0,
+            interval_ms=0,
+            first_at_ms=timestamp,
+            second_at_ms=timestamp,
         )
-        if not all(low <= value <= high for value in strengths):
-            self.emit(
-                "log",
-                f"硬件双敲力度 {strengths[0]:.2f}/{strengths[1]:.2f} g "
-                f"不在 {low:.2f}–{high:.2f} g 范围内",
-            )
-            return False
-        if event.interval_ms < settings.min_interval_ms:
-            self.emit("log", f"硬件双敲间隔 {event.interval_ms} ms 低于当前设置")
-            return False
         self.detector.reset()
         self._accept_double_tap(event, hardware=True)
         return True
@@ -1251,21 +1231,10 @@ class VoiceModule:
                             self._force_calibration = None
                             break
                 return False, True
-        settings = self.store.settings
-        if not settings.enabled and not self.calibration_active:
-            return False, False
-        if self.calibration_active:
-            return False, True
-        if self.detector.settings != settings:
-            self.detector.update_settings(settings)
-        event = self.detector.feed_batch(batch)
-        if event is None:
-            return False, self.detector.suppress_whip
-        # Cover the tail of the accepted second impact.  Unlike
-        # ``detector.suppress_whip``, this never activates for a lone first
-        # impact, which may actually be the acceleration peak of a whip.
-        self._accept_double_tap(event)
-        return True, True
+        # RAW motion remains available for pose/whip handling and legacy data
+        # import only. Double-tap recognition is exclusively the LSM6DS3TR-C
+        # hardware event; the desktop never runs a parallel custom detector.
+        return False, self.calibration_active
 
     async def handle_audio(self, message: AudioStart | AudioChunk | AudioEnd) -> None:
         if isinstance(message, AudioStart):
