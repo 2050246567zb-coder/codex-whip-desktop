@@ -1,16 +1,19 @@
 """Compact speech-service card, using the existing native settings components."""
 from dataclasses import replace
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+from .audio_driver_installer import AudioDriverInstaller, AudioDriverInstallError
 from .cloud_speech import PRESETS, LOCAL_LABEL, SpeechKeys, SpeechError, encode_doubao_credentials
 from . import settings_style as style
 from .tick_slider import TickSlider
 from .voice_replay import RecordingPlayer, recording_path, recording_duration
+from .virtual_microphone import VirtualMicrophoneBridge, VirtualMicrophoneError
 
 
 class SpeechServiceCard:
-    def __init__(self, parent, store, apply, *, keys=None):
+    def __init__(self, parent, store, apply, *, keys=None, driver_installer=None, virtual_bridge=None):
         self.store, self.apply = store, apply
         self.keys = keys or SpeechKeys()
         self.card = style.RoundedCard(parent, padx=24, pady=24)
@@ -52,10 +55,24 @@ class SpeechServiceCard:
         self.notice = tk.Label(self.card,bg=bg,fg='#68686F',anchor='w',justify='left',
                                font=('Microsoft YaHei UI',9),wraplength=570)
         self.notice.pack(fill='x',pady=(12,0))
+        self.driver_installer = driver_installer or AudioDriverInstaller()
+        self.virtual_bridge = virtual_bridge or VirtualMicrophoneBridge()
+        self.driver_panel = tk.Frame(self.card, bg=bg)
+        self.driver_status = tk.StringVar(value='尚未检测')
+        tk.Label(self.driver_panel, textvariable=self.driver_status, bg=bg, fg=style.MUTED,
+                 font=(style.FONT,9)).pack(anchor='w', pady=(0,10))
+        driver_actions = tk.Frame(self.driver_panel, bg=bg)
+        driver_actions.pack(fill='x')
+        self.install_driver_button = style.ActionButton(
+            driver_actions, '安装音频驱动', self.install_audio_driver, primary=True)
+        self.install_driver_button.pack(side='left')
+        self.detect_driver_button = style.ActionButton(driver_actions, '重新检测', self.detect_audio_driver)
+        self.detect_driver_button.pack(side='left', padx=(8,0))
         self.gain = tk.DoubleVar(value=store.settings.recording_gain)
         self.gain_label = tk.StringVar(value=f'录音增益：{self.gain.get():.1f} 倍')
-        tk.Label(self.card,textvariable=self.gain_label,bg=bg,fg=style.TEXT,
-                 font=(style.FONT,10)).pack(anchor='w',pady=(18,4))
+        self.gain_title = tk.Label(self.card,textvariable=self.gain_label,bg=bg,fg=style.TEXT,
+                                   font=(style.FONT,10))
+        self.gain_title.pack(anchor='w',pady=(18,4))
         self.gain_slider = TickSlider(self.card,minimum=1,maximum=8,variable=self.gain,
             ticks=[1,2,4,6,8],formatter=lambda v:f'{v:g}×',bg=bg,
             command=lambda value:self.gain_label.set(f'录音增益：{value:.1f} 倍'))
@@ -73,6 +90,7 @@ class SpeechServiceCard:
         self._recording = False
         self.recording_active = None
         self._replay_after = None
+        self._driver_after_ids = []
         replay = tk.Frame(self.card, bg=bg)
         replay.pack(fill='x', pady=(16,0))
         self.replay_button = style.ActionButton(replay, '播放上次录音', self.toggle_replay)
@@ -133,6 +151,12 @@ class SpeechServiceCard:
             if self._replay_after is not None:
                 self.card.after_cancel(self._replay_after)
                 self._replay_after = None
+            for after_id in self._driver_after_ids:
+                try:
+                    self.card.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+            self._driver_after_ids.clear()
             self.stop_replay()
 
     @property
@@ -180,9 +204,59 @@ class SpeechServiceCard:
                 setup = '安装 Virtual Audio Driver 或 VB-CABLE，并在 Codex/系统中把对应 Output 端设为麦克风输入'
             self.notice.configure(text=(f'双敲后把手柄声音送入 Codex 自带听写；需要先{setup}。'
                 '软件只连接明确识别的虚拟设备，不会把声音播放到扬声器。'))
+            self.driver_panel.pack(fill='x', pady=(14,0), before=self.gain_title)
             self.status.set('保存后，下一次双敲改用 Codex 原生听写')
+            self.detect_audio_driver()
         else:
+            self.driver_panel.pack_forget()
             self.changed()
+
+    def detect_audio_driver(self):
+        if self.mode.get() != 'virtual_microphone':
+            return
+        try:
+            device = self.virtual_bridge.detect()
+            self.driver_status.set(f'已安装 · {device.name}')
+            self.install_driver_button.configure(text='重新安装', state='normal')
+        except (VirtualMicrophoneError, OSError, ValueError):
+            self.driver_status.set(f'未检测到 {self.driver_installer.product_name}')
+            self.install_driver_button.configure(text='安装音频驱动', state='normal')
+
+    def install_audio_driver(self):
+        source = self.driver_installer.source_url
+        if not messagebox.askyesno(
+                '安装虚拟音频驱动',
+                f'将从官方来源安装 {self.driver_installer.product_name}。\n\n'
+                '系统会显示管理员或安装确认，安装后可能需要重启音频应用。\n'
+                f'官方来源：{source}\n\n继续吗？',
+                parent=self.card.winfo_toplevel()):
+            return
+        self.install_driver_button.configure(state='disabled')
+        self.detect_driver_button.configure(state='disabled')
+        self.driver_status.set('正在下载并验证官方安装包…')
+
+        def work():
+            try:
+                result = self.driver_installer.install()
+                error = None
+            except (AudioDriverInstallError, OSError) as exc:
+                result, error = None, str(exc)
+            try:
+                self.card.after(0, lambda: self._finish_driver_install(result, error))
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=work, name='codex-whip-driver-install', daemon=True).start()
+
+    def _finish_driver_install(self, result, error):
+        self.install_driver_button.configure(state='normal')
+        self.detect_driver_button.configure(state='normal')
+        if error:
+            self.driver_status.set(error)
+            return
+        self.driver_status.set(result.message)
+        for delay in (2500, 8000):
+            self._driver_after_ids.append(self.card.after(delay, self.detect_audio_driver))
 
     def save(self):
         preset = self.selected
