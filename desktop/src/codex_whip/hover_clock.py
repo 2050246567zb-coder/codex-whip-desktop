@@ -102,6 +102,35 @@ def recognizing_pose(width, height, nodes, elapsed):
                     tuple(point(.065 + i/max(1,nodes-1)*.855) for i in range(nodes)))
 
 
+def sleep_pose(width, height, nodes, elapsed):
+    """Continuous Z silhouette with a slow, breath-like vertical float."""
+    size = min(width, height)
+    center_x = width / 2
+    center_y = height / 2
+    # The cosine loop has zero velocity at both reversals, like calm breathing.
+    breath = (1 - math.cos((elapsed % 3.6) / 3.6 * math.tau)) / 2
+    offset_y = (breath - .5) * size * .055
+    scale = 1 + breath * .018
+
+    def point(x, y):
+        return center_x + x * size * scale, center_y + y * size * scale + offset_y
+
+    start = point(-.25, -.18)
+    joint = point(.23, -.18)
+
+    def cord_point(fraction):
+        # Most nodes form the diagonal; the final third forms the lower bar.
+        if fraction <= .67:
+            amount = fraction / .67
+            return point(.23 - .46 * amount, -.18 + .36 * amount)
+        amount = (fraction - .67) / .33
+        return point(-.23 + .46 * amount, .18)
+
+    return WhipPose(start, joint, tuple(
+        cord_point(index / max(1, nodes - 1)) for index in range(nodes)
+    ))
+
+
 def cord_rotation(source, target, previous=None):
     def direction(pose):
         x,y = pose.handle_end

@@ -9,6 +9,12 @@ from .models import RawMotionFrame
 from .voice import DoubleTapDetector, DoubleTapEvent, VoiceSettings
 
 
+# A deliberate handle-bottom impact creates a sharp impulse well above ordinary
+# hand translation. Keep this floor independent of saved/user ranges so a stale
+# low setting cannot turn casual movement into a tap.
+MIN_TAP_IMPACT_G = 0.75
+
+
 class ForceTapDetector(DoubleTapDetector):
     """Remove a slowly tracked gravity vector, rather than abs(|a|-1).
 
@@ -83,7 +89,8 @@ class ForceTapDetector(DoubleTapDetector):
                and settings.tap_light_g >= .25 else settings.impact_dynamic_accel_g)
         high = (settings.tap_heavy_g if settings.tap_force_calibrated
                 and settings.tap_heavy_g > low else 12.0)
-        return low, high
+        low = max(MIN_TAP_IMPACT_G, low)
+        return low, max(low + .05, high)
 
     def _finish_pulse(self, pulse):
         """Accept two short impacts by timing and force range only."""
@@ -123,7 +130,7 @@ class TapImpactMeter:
     the user explicitly confirms the pair with the record button.
     """
 
-    START_G = .18
+    START_G = MIN_TAP_IMPACT_G
     RELEASE_G = .09
     MAX_PULSE_MS = 180
     MIN_PEAK_GAP_MS = 90
@@ -195,7 +202,7 @@ class TapImpactMeter:
 class TapRangeCapture:
     """One-shot helper that suggests a force range from a single pair."""
 
-    MIN_G = .25
+    MIN_G = MIN_TAP_IMPACT_G
     MAX_G = 12.0
 
     def __init__(self, settings: VoiceSettings):

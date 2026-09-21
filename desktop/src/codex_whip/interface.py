@@ -28,7 +28,7 @@ from .gear_button import GearButton
 from .battery_indicator import BatteryIndicator
 from .morphing_title import MorphingTitle
 from .sand_countdown import SandCountdownTitle
-from .hover_clock import clock_pose, morph, ease, near_whip, project, project_pose, pointer_tilt, loading_pose, recognizing_pose, cord_rotation
+from .hover_clock import clock_pose, morph, ease, near_whip, project, project_pose, pointer_tilt, loading_pose, recognizing_pose, sleep_pose, cord_rotation
 
 BG, CARD, SOFT = "#F5F5F7", "#FFFFFF", "#EAEAED"
 TEXT, MUTED, LINE = "#1D1D1F", "#68686F", "#DEDEE3"
@@ -96,6 +96,7 @@ class Hero(tk.Canvas):
         self._clock_items = []
         self._loading_at = time.monotonic()
         self._recognizing_at = time.monotonic()
+        self._sleep_at = time.monotonic()
         self._loading_alpha = self._loading_from = 0.
         self._loading_transition_at = -100.
         self._loading_dots = []
@@ -212,13 +213,15 @@ class Hero(tk.Canvas):
                 self._preview_key = None
             if mode != 'whip':
                 self._set_clock(False)
-            if mode == 'recognizing' or self.mode == 'recognizing':
+            if mode in {'recognizing', 'sleep'} or self.mode in {'recognizing', 'sleep'}:
                 self._clock_source = self._display_pose
                 self._cord_turn = None
                 self._clock_started = time.monotonic()
                 self._clock_from_alpha = self._clock_alpha
                 if mode == 'recognizing':
                     self._recognizing_at = time.monotonic()
+                elif mode == 'sleep':
+                    self._sleep_at = time.monotonic()
                 self._preview_key = None
             if mode == 'connecting' or self.mode == 'connecting':
                 self._set_clock(False)
@@ -269,7 +272,7 @@ class Hero(tk.Canvas):
         key = (pose, position, w, h)
         if not self.clock_enabled:
             self._set_clock(False)
-        animated = (self._clock_hover or self._clock_source is not None or self.mode in {'connecting', 'recognizing'}
+        animated = (self._clock_hover or self._clock_source is not None or self.mode in {'connecting', 'recognizing', 'sleep'}
                     or self._loading_alpha > 0 or self._voice_source is not None or self._voice_amount > 0)
         if key == self._preview_key and not animated:
             return
@@ -292,6 +295,9 @@ class Hero(tk.Canvas):
         elif self.mode == 'recognizing':
             target = recognizing_pose(w,h,len(pose.cord),
                                       0 if self.reduce_motion else time.monotonic()-self._recognizing_at)
+        elif self.mode == 'sleep':
+            target = sleep_pose(w, h, len(pose.cord),
+                                0 if self.reduce_motion else time.monotonic()-self._sleep_at)
         elapsed = (time.monotonic()-self._clock_started)/.28
         progress = ease(elapsed)
         if self.reduce_motion:
@@ -412,6 +418,8 @@ class Interface:
         self._tap_done = False
         self._battery_percent = None
         self._battery_charging = False
+        self._power_state = "ACTIVE"
+        self._sleep_at = 0.0
         self._advanced_section = "general"
         self._build_home()
         self._build_preferences()
@@ -794,6 +802,13 @@ class Interface:
             self.battery_indicator.set_status(
                 self._battery_percent, self._battery_charging
             )
+        elif kind == "device" and getattr(payload, "kind", "") == "POWER" and len(payload.fields) >= 2:
+            state = payload.fields[1]
+            if state in {"SLEEP", "ACTIVE"} and state != self._power_state:
+                self._power_state = state
+                if state == "SLEEP":
+                    self._sleep_at = time.monotonic()
+                self._render_key = None
         elif kind == "sensor_pose":
             self._sensor_at = time.monotonic()
             self.hero.pose(payload.offset_x, payload.offset_y)
@@ -832,6 +847,7 @@ class Interface:
             self._voice_state = ""
             self._battery_percent = None
             self._battery_charging = False
+            self._power_state = "ACTIVE"
             self.battery_indicator.set_status(None)
         elif kind == "worker_stopped":
             self._sensor_at = -100.0
@@ -904,6 +920,10 @@ class Interface:
             elif self._pending:
                 mode, title = "whip", self._pending
                 subtitle = "beat it, then send"
+            if connected and self._power_state == "SLEEP":
+                mode = "sleep"
+                dots = 1 + int((time.monotonic() - self._sleep_at) / .9) % 3
+                title, subtitle = "deep sleep" + "." * dots, ""
         if not connected:
             mode = 'connecting'
             title = 'Connecting'
