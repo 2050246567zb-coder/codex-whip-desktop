@@ -445,7 +445,7 @@ class Interface:
         self.whip_choice = tk.BooleanVar(master=self.root, value=False)
         self.tap_choice = tk.BooleanVar(master=self.root, value=False)
         for text, variable in (("抽打动作 · 15 次", self.whip_choice),
-                               ("双敲动作 · 5 次，并启用语音", self.tap_choice)):
+                               ("双敲力度范围 · 测量一次，并启用语音", self.tap_choice)):
             tk.Checkbutton(self.choices, text=text, variable=variable, bg=BG, fg=TEXT,
                            activebackground=BG, selectcolor=CARD, font=(FONT, 10),
                            cursor="hand2").pack(anchor="w", pady=3)
@@ -869,12 +869,12 @@ class Interface:
                     enabled = connected and not window._awaiting_record
                 else:
                     mode = "voice_ready"
-                    step, title = "双敲校准", "轻敲一组，重敲一组"
-                    subtitle = "敲完后手动录入力度，测试满意再保存。"
-                    progress = window.tap_step.get()
-                    primary = "完成并继续" if self._tap_done else "打开校准页"
+                    step, title = "双敲力度", "设定允许的冲击范围"
+                    subtitle = "可直接拖动最轻和最重力度，也可以双敲一次自动设置。"
+                    progress = window.tap_range_status.get()
+                    primary = "完成并继续" if self._tap_done else "打开力度设置"
                     if not self._tap_done and not window._voice_calibrating:
-                        primary = "开始双敲录入"
+                        primary = "双敲一次自动设置"
                     enabled = connected
             if not connected:
                 progress = "连接已断开。重新连接后可以继续，已录入的样本仍在。"

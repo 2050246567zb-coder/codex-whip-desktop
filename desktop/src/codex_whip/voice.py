@@ -125,6 +125,9 @@ class VoiceSettings:
                 or not all(math.isfinite(v) and 0 <= v <= 100
                            for v in (self.tap_light_g, self.tap_heavy_g))):
             raise ValueError("敲击力度标定数据无效")
+        if (self.tap_force_calibrated
+                and not 0.25 <= self.tap_light_g < self.tap_heavy_g <= 12.0):
+            raise ValueError("双敲力度范围必须在 0.25–12 g，且最轻力度小于最重力度")
         if not 0.25 <= self.impact_dynamic_accel_g <= 12.0:
             raise ValueError("双敲冲击阈值必须在 0.25–12 g")
         if not 80 <= self.max_tap_gyro_dps <= 2000:
@@ -960,69 +963,32 @@ class VoiceModule:
 
     def _install_tap_detector(self) -> None:
         from .tap_calibration import ForceTapDetector
-        cls = ForceTapDetector if self.store.settings.tap_force_calibrated else DoubleTapDetector
-        self.detector = cls(self.store.settings)
+        self.detector = ForceTapDetector(self.store.settings)
 
     def start_force_calibration(self, interval_ms: int | None = None) -> None:
-        from .tap_calibration import TapCalibration
+        del interval_ms  # Retained for compatibility with older callers.
+        from .tap_calibration import TapRangeCapture
         self.cancel_calibration()
-        with self._motion_lock:
-            after_timestamp_ms = (
-                self._motion_frames[-1].timestamp_ms if self._motion_frames else -1
-            )
         with self._force_lock:
-            self._force_calibration = TapCalibration(
-                self.store.settings, interval_ms, after_timestamp_ms
-            )
-            self.emit('tap_calibration_state', self._force_calibration.snapshot())
+            self._force_calibration = TapRangeCapture(self.store.settings)
+            self.emit('tap_range_capture', self._force_calibration.snapshot(
+                '请用手柄底部连续敲击桌面两次。'))
 
     def record_force_calibration_sample(self) -> DoubleTapEvent:
-        """Record the latest raw pair only after the user confirms it."""
-        with self._force_lock:
-            session = self._force_calibration
-            if session is None:
-                raise ValueError('请先开始双敲校准')
-            if session.stage == 'test':
-                raise ValueError('力度录入已经完成；可自由测试或重新校准')
-            with self._motion_lock:
-                frames = tuple(self._motion_frames)
-            event = extract_manual_double_tap(
-                frames,
-                after_timestamp_ms=session.after_timestamp_ms,
-                max_interval_ms=session.interval_ms,
-            )
-            state = session.record(event)
-            self.emit('tap_calibration_state', state)
-            return event
+        raise ValueError('当前版本会自动测量一次双敲，不需要手动录入')
 
     def set_tap_interval(self, interval_ms: int) -> None:
-        with self._force_lock:
-            if self._force_calibration is not None:
-                self._force_calibration.set_interval(interval_ms)
-                self.emit('tap_calibration_state', self._force_calibration.snapshot(
-                    f'双敲最大间隔已设为 {interval_ms/1000:.2f} 秒，请按当前时长继续敲击。'))
+        del interval_ms
 
     def save_force_calibration(self) -> None:
-        with self._force_lock:
-            session = self._force_calibration
-            if session is None or session.stage != 'test' or session.draft is None:
-                raise ValueError('请先完成轻敲和重敲两轮校准')
-            # Persist one settings file before switching the live detector.
-            # Old trajectory templates remain on disk for backward compatibility.
-            self.store.update(session.draft)
-            self._force_calibration = None
-            self._install_tap_detector()
-            self.emit('tap_calibration_saved', self.store.settings)
+        raise ValueError('力度范围由滑条即时保存，不再需要完成校准')
 
     def pause_force_calibration(self) -> None:
         with self._force_lock:
             session = self._force_calibration
             if session is not None:
-                session.detector.reset()
                 session.meter.reset()
-                if session.stage == 'test':
-                    session.test_detector.reset()
-                self.emit('tap_calibration_state', session.snapshot(
+                self.emit('tap_range_capture', session.snapshot(
                     '连接已断开；已采集数据保留。连接恢复后继续敲击即可。'))
 
     @property
@@ -1199,10 +1165,12 @@ class VoiceModule:
             if self._force_calibration is not None:
                 session = self._force_calibration
                 for frame in batch.frames:
-                    state = (session.feed_test(frame) if session.stage == 'test'
-                             else session.feed(frame))
+                    state = session.feed(frame)
                     if state is not None:
-                        self.emit('tap_calibration_state', state)
+                        self.emit('tap_range_capture', state)
+                        if state.get('stage') == 'done':
+                            self._force_calibration = None
+                            break
                 return False, True
         settings = self.store.settings
         if not settings.enabled and not self.calibration_active:
@@ -1214,33 +1182,6 @@ class VoiceModule:
         event = self.detector.feed_batch(batch)
         if event is None:
             return False, self.detector.suppress_whip
-        profile = self.double_tap_profile
-        if profile is not None and profile.trained and not settings.tap_force_calibrated:
-            with self._motion_lock:
-                frames = tuple(self._motion_frames)
-            try:
-                candidate = extract_double_tap_template(frames, event)
-            except ValueError as exc:
-                self.emit(
-                    "voice_match",
-                    {"accepted": False, "detail": str(exc)},
-                )
-                return False, True
-            score = min(
-                double_tap_distance(candidate, template)
-                for template in profile.templates
-            )
-            accepted = score <= profile.acceptance_distance
-            self.emit(
-                "voice_match",
-                {
-                    "accepted": accepted,
-                    "score": score,
-                    "threshold": profile.acceptance_distance,
-                },
-            )
-            if not accepted:
-                return False, True
         # Cover the tail of the accepted second impact.  Unlike
         # ``detector.suppress_whip``, this never activates for a lone first
         # impact, which may actually be the acceleration peak of a whip.

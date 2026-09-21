@@ -663,7 +663,7 @@ class DetectorSettingsWindow:
             font=("Microsoft YaHei UI", 9, "bold"),
             cursor="hand2",
         ).pack(side="right")
-        self._button(enabled_card, '调整双敲识别…', lambda: self._select_section('calibration'), self.CARD_ALT,self.TEXT).pack(anchor='w',pady=(12,0))
+        self._button(enabled_card, '调整双敲力度…', lambda: self._select_section('calibration'), self.CARD_ALT,self.TEXT).pack(anchor='w',pady=(12,0))
         from .speech_settings import SpeechServiceCard
         self.speech_service = SpeechServiceCard(parent, self._voice_store, self._apply_voice_settings)
 
@@ -679,21 +679,11 @@ class DetectorSettingsWindow:
             font=("Microsoft YaHei UI", 12, "bold"),
         ).pack(anchor="w", pady=(0, 5))
         self.voice_tap_model_status = tk.StringVar(
-            value=(
-                "双敲力度识别已启用，不限制为旧轨迹或固定方向。"
-                if settings.tap_force_calibrated else
-                "旧版轨迹识别；可在校准页升级为力度识别。"
-                if self._voice_tap_model_ready()
-                else "在校准页完成一次轻双敲、一次重双敲，即可测试并保存。"
-            )
+            value="双敲按最轻与最重冲击力度范围识别，不再使用旧轨迹模板。"
         )
         fields_spec = (
-            ("impact_dynamic_accel_g", "冲击阈值", "g"),
-            ("max_tap_gyro_dps", "敲击最大角速度", "dps"),
             ("min_interval_ms", "两次最短间隔", "ms"),
             ("max_interval_ms", "两次最长间隔", "ms"),
-            ("pre_still_ms", "敲击前静止", "ms"),
-            ("settle_ms", "两次之间稳定", "ms"),
             ("silence_ms", "结束录音静音", "ms"),
             ("max_recording_ms", "最长录音", "ms"),
         )
@@ -709,8 +699,8 @@ class DetectorSettingsWindow:
         for column in (1, 4):
             grid.grid_columnconfigure(column, weight=1)
         for index, (name, label, unit) in enumerate(fields_spec):
-            target_grid = tap_grid if index<6 else grid
-            row = index if index<6 else index-6
+            target_grid = tap_grid if index < 2 else grid
+            row = index if index < 2 else index - 2
             column = 0
             target_grid.grid_columnconfigure(1,weight=1)
             tk.Label(
@@ -752,15 +742,15 @@ class DetectorSettingsWindow:
         ).pack(fill="x", pady=(0, 11))
         self.voice_calibrate_button = self._button(
             actions,
-            "前往校准",
+            "调整力度范围",
             lambda: self._select_section('calibration'),
             self.CARD_ALT,
             self.TEXT,
         )
         self.voice_record_button = self._button(
             actions,
-            "录入刚才双敲",
-            self._record_voice_calibration_sample,
+            "双敲一次自动设置",
+            self._begin_voice_calibration,
             self.ACCENT,
             "#17120A",
         )
@@ -799,7 +789,7 @@ class DetectorSettingsWindow:
         if self._apply_voice_settings(settings):
             if not settings.enabled:
                 self._voice_calibrating = False
-                self.voice_calibrate_button.configure(text="开始重新学习")
+                self.voice_calibrate_button.configure(text="调整力度范围")
                 self.voice_record_button.configure(state="disabled")
             self.voice_status.set(
                 "已开启；等待双敲手柄" if settings.enabled else "语音模块已关闭"
@@ -811,131 +801,142 @@ class DetectorSettingsWindow:
         if self._start_voice_calibration():
             self._voice_calibrating = True
             self._select_section('calibration')
-            self.handle_tap_calibration(dict(stage='light'))
+            self.tap_auto_button.configure(text='重新测量')
+            self.tap_range_status.set('请用手柄底部连续敲击桌面两次。')
 
     def _build_calibration_panel(self, parent):
         card = self._card(parent, padx=24, pady=24)
         card.pack(fill='x', pady=(0, 16))
-        tk.Label(card, text='双敲识别', bg=self.CARD, fg=self.TEXT,
+        tk.Label(card, text='双敲力度范围', bg=self.CARD, fg=self.TEXT,
                  font=('Microsoft YaHei UI', 12, 'bold')).pack(anchor='w')
-        self.tap_step = tk.StringVar(value='')
-        self.tap_feedback = tk.Frame(card, bg=self.CARD)
-        tk.Label(self.tap_feedback, textvariable=self.tap_step, bg=self.CARD, fg=self.TEXT,
-                 font=('Microsoft YaHei UI', 11)).pack(anchor='w', pady=(18, 12))
-        self.tap_detail = tk.StringVar(value='')
-        tk.Label(self.tap_feedback, textvariable=self.tap_detail, bg=self.CARD, fg=self.MUTED,
-                 wraplength=510, justify='left', font=('Microsoft YaHei UI', 10)).pack(fill='x', pady=(0, 16))
-        self.tap_result = tk.StringVar(value='')
-        tk.Label(self.tap_feedback, textvariable=self.tap_result, bg=self.CARD, fg=self.MUTED,
-                 wraplength=510, justify='left', font=('Microsoft YaHei UI', 9)).pack(fill='x', pady=(0, 20))
-        duration = max(.2, min(1.0, self._voice_store.settings.max_interval_ms/1000)) if self._voice_store else .7
-        self.tap_interval = tk.DoubleVar(master=self.window, value=duration)
-        self.tap_interval_label = tk.StringVar(master=self.window, value=f'敲击间隔：{duration:.1f}秒')
-        self.tap_interval_heading = tk.Label(card, textvariable=self.tap_interval_label, bg=self.CARD, fg=self.TEXT,
-                 font=('Microsoft YaHei UI', 10, 'bold'))
-        self.tap_interval_heading.pack(anchor='w', pady=(24,4))
-        self.tap_interval_slider = TickSlider(card, variable=self.tap_interval,
-            command=self._tap_interval_changed, bg=self.CARD)
-        self.tap_interval_slider.pack(fill='x', pady=(0,18))
+        tk.Label(card, text='两次敲击都在这个范围内，才会触发双敲。', bg=self.CARD,
+                 fg=self.MUTED, font=('Microsoft YaHei UI', 9)).pack(anchor='w', pady=(6,18))
+        settings = self._voice_store.settings if self._voice_store else VoiceSettings()
+        minimum, maximum = self._tap_range_values(settings)
+        self._tap_range_sync = False
+        self.tap_minimum = tk.DoubleVar(master=self.window, value=minimum)
+        self.tap_maximum = tk.DoubleVar(master=self.window, value=maximum)
+        self.tap_minimum_label = tk.StringVar(master=self.window, value=f'最轻力度：{minimum:.2f} g')
+        self.tap_maximum_label = tk.StringVar(master=self.window, value=f'最重力度：{maximum:.2f} g')
+        ticks = [.25, 3.0, 6.0, 9.0, 12.0]
+        formatter = lambda value: f'{value:.2f} g' if value == .25 else f'{value:.0f} g'
+        tk.Label(card, textvariable=self.tap_minimum_label, bg=self.CARD, fg=self.TEXT,
+                 font=('Microsoft YaHei UI',10,'bold')).pack(anchor='w')
+        self.tap_minimum_slider = TickSlider(
+            card, minimum=.25, maximum=12.0, variable=self.tap_minimum,
+            ticks=ticks, formatter=formatter, command=self._tap_minimum_changed, bg=self.CARD)
+        self.tap_minimum_slider.pack(fill='x', pady=(0,12))
+        tk.Label(card, textvariable=self.tap_maximum_label, bg=self.CARD, fg=self.TEXT,
+                 font=('Microsoft YaHei UI',10,'bold')).pack(anchor='w')
+        self.tap_maximum_slider = TickSlider(
+            card, minimum=.25, maximum=12.0, variable=self.tap_maximum,
+            ticks=ticks, formatter=formatter, command=self._tap_maximum_changed, bg=self.CARD)
+        self.tap_maximum_slider.pack(fill='x', pady=(0,16))
+        for slider in (self.tap_minimum_slider, self.tap_maximum_slider):
+            slider.bind('<ButtonRelease-1>', self._commit_tap_range, add='+')
+            slider.bind('<KeyRelease>', self._commit_tap_range, add='+')
+        self.tap_range_status = tk.StringVar(value=(
+            f'当前允许范围：{minimum:.2f}–{maximum:.2f} g'))
+        tk.Label(card, textvariable=self.tap_range_status, bg=self.CARD, fg=self.MUTED,
+                 font=('Microsoft YaHei UI',9)).pack(anchor='w', pady=(0,14))
         row = tk.Frame(card, bg=self.CARD)
         row.pack(fill='x')
-        self.tap_start = self._button(row, '开始校准', self._begin_voice_calibration, self.BLUE, '#FFFFFF')
-        self.tap_start.pack(side='left')
-        self.tap_record = self._button(
-            row, '录入本次', self._record_voice_calibration_sample,
-            self.BLUE, '#FFFFFF'
-        )
-        self.tap_record.pack(side='left', padx=(8, 0))
-        self.tap_record.pack_forget()
-        self.tap_save = self._button(row, '保存并完成', self._save_tap, self.BLUE, '#FFFFFF')
-        self.tap_save.configure(state='disabled')
-        self.tap_save.pack(side='right')
-        self.tap_cancel = self._button(row, '取消', self._cancel_tap_calibration, self.CARD_ALT, self.TEXT)
-        self.tap_cancel.pack_forget()
-        self.tap_save.pack_forget()
-        self.tap_interval_slider.bind("<ButtonRelease-1>", self._commit_tap_interval, add="+")
-        self.tap_interval_slider.bind("<KeyRelease>", self._commit_tap_interval, add="+")
+        self.tap_auto_button = self._button(
+            row, '双敲一次自动设置', self._begin_voice_calibration,
+            self.BLUE, '#FFFFFF')
+        self.tap_auto_button.pack(side='left')
 
-    def _commit_tap_interval(self, _event=None):
-        if self._voice_calibrating or self._voice_store is None or self._apply_voice_settings is None:
+    @staticmethod
+    def _tap_range_values(settings):
+        minimum = (settings.tap_light_g if settings.tap_force_calibrated
+                   and settings.tap_light_g >= .25 else settings.impact_dynamic_accel_g)
+        maximum = (settings.tap_heavy_g if settings.tap_force_calibrated
+                   and settings.tap_heavy_g > minimum else max(6.0, minimum + 1.0))
+        return max(.25, min(11.95, minimum)), max(.30, min(12.0, maximum))
+
+    def _set_tap_range(self, minimum, maximum):
+        self._tap_range_sync = True
+        try:
+            self.tap_minimum_slider.set(minimum)
+            self.tap_maximum_slider.set(maximum)
+        finally:
+            self._tap_range_sync = False
+        self._update_tap_range_labels()
+
+    def _update_tap_range_labels(self):
+        self.tap_minimum_label.set(f'最轻力度：{self.tap_minimum.get():.2f} g')
+        self.tap_maximum_label.set(f'最重力度：{self.tap_maximum.get():.2f} g')
+
+    def _tap_minimum_changed(self, value):
+        if self._tap_range_sync:
             return
+        if value >= self.tap_maximum.get():
+            self._set_tap_range(value, min(12.0, value + .05))
+        else:
+            self._update_tap_range_labels()
+
+    def _tap_maximum_changed(self, value):
+        if self._tap_range_sync:
+            return
+        if value <= self.tap_minimum.get():
+            self._set_tap_range(max(.25, value - .05), value)
+        else:
+            self._update_tap_range_labels()
+
+    def _commit_tap_range(self, _event=None):
+        if self._voice_store is None or self._apply_voice_settings is None:
+            return False
+        minimum = round(self.tap_minimum.get(), 2)
+        maximum = round(self.tap_maximum.get(), 2)
+        if maximum - minimum < .05:
+            maximum = min(12.0, minimum + .05)
+            minimum = min(minimum, maximum - .05)
+            self._set_tap_range(minimum, maximum)
         current = self._voice_store.settings
-        updated = replace(current, max_interval_ms=round(self.tap_interval.get()*1000))
-        if self._apply_voice_settings(updated):
-            self._voice_variables["max_interval_ms"].set(str(updated.max_interval_ms))
-        else:
-            self.tap_interval_slider.set(current.max_interval_ms/1000)
+        updated = replace(
+            current,
+            tap_force_calibrated=True,
+            tap_light_g=minimum,
+            tap_heavy_g=maximum,
+            impact_dynamic_accel_g=minimum,
+        )
+        if not self._apply_voice_settings(updated):
+            self._set_tap_range(*self._tap_range_values(current))
+            return False
+        if 'impact_dynamic_accel_g' in self._voice_variables:
+            self._voice_variables['impact_dynamic_accel_g'].set(str(minimum))
+        self.tap_range_status.set(f'已保存 · 两次敲击须在 {minimum:.2f}–{maximum:.2f} g')
+        return True
 
-    def _tap_interval_changed(self, seconds):
-        self.tap_interval_label.set(f'敲击间隔：{seconds:.1f}秒')
-        if self._set_tap_interval and self._voice_calibrating:
-            self._set_tap_interval(round(seconds*1000))
-
-    def handle_tap_calibration(self, state):
-        self.tap_feedback.pack(fill='x', before=self.tap_interval_heading)
-        self.tap_save.pack(side='right')
-        self.tap_cancel.pack(side='right',padx=8)
-        self._tap_stage = state['stage']
-        self._voice_calibrating = True
-        titles = {'light': '1 / 2 · 录入最轻力度', 'heavy': '2 / 2 · 录入较重力度', 'test': '自由测试'}
-        hints = {'light': '用手柄底部敲桌面两下。确认下方力度后，点击“录入本次”。',
-                 'heavy': '换成日常较重力度敲两下，确认数值后点击“录入本次”。',
-                 'test': '随意试试轻敲和重敲。满意后保存，不合适可重新校准。'}
-        self.tap_step.set(titles[self._tap_stage])
-        self.tap_detail.set(state.get('detail') or hints[self._tap_stage])
-        self.tap_start.configure(text='重新校准')
-        self.tap_save.configure(state='normal' if self._tap_stage == 'test' else 'disabled')
-        if self._tap_stage in {'light', 'heavy'}:
-            if not self.tap_record.winfo_manager():
-                self.tap_record.pack(side='left', padx=(8, 0), after=self.tap_start)
-            self.tap_record.configure(state='normal')
-        else:
-            self.tap_record.pack_forget()
-        if state.get('threshold') is not None:
-            self.tap_result.set(f"轻敲 {state['light']:.2f} g · 重敲 {state['heavy']:.2f} g · "
-                                f"触发下限 {state['threshold']:.2f} g\n"
-                                f"测试通过 {state.get('accepted', 0)} 次；重敲值不是力度上限。")
-        else:
-            strengths = tuple(state.get('live_strengths') or ())
-            if len(strengths) >= 2:
-                reading = f'本次力度：第一下 {strengths[-2]:.2f} g · 第二下 {strengths[-1]:.2f} g'
-            elif strengths:
-                reading = f'当前力度：第一下 {strengths[-1]:.2f} g · 等待第二下'
+    def handle_tap_range_capture(self, state):
+        strengths = tuple(state.get('live_strengths') or ())
+        if state.get('stage') != 'done':
+            self._voice_calibrating = True
+            if strengths:
+                self.tap_range_status.set(f'第一下 {strengths[-1]:.2f} g · 等待第二下')
             else:
-                reading = '等待敲击；这里会实时显示每一下的力度。'
-            if self._tap_stage == 'heavy' and state.get('light') is not None:
-                reading += f"\n已录入最轻力度 {state['light']:.2f} g"
-            self.tap_result.set(reading)
+                self.tap_range_status.set(state.get('detail') or '等待双敲…')
+            return False
+        self._voice_calibrating = False
+        self.tap_auto_button.configure(text='重新测量')
+        minimum = state['suggested_min_g']
+        maximum = state['suggested_max_g']
+        self._set_tap_range(minimum, maximum)
+        saved = self._commit_tap_range()
+        if saved:
+            first, second = strengths
+            self.tap_range_status.set(
+                f'本次 {first:.2f} / {second:.2f} g · 平均 {state["average_g"]:.2f} g · '
+                f'已自动设置为 {minimum:.2f}–{maximum:.2f} g')
+        return saved
 
     def _cancel_tap_calibration(self):
         if self._cancel_voice_calibration:
             self._cancel_voice_calibration()
         self._voice_calibrating = False
         self._tap_stage = 'idle'
-        if self._voice_store:
-            self.tap_interval_slider.set(self._voice_store.settings.max_interval_ms/1000)
-        self.tap_feedback.pack_forget()
-        self.tap_cancel.pack_forget()
-        self.tap_record.pack_forget()
-        self.tap_save.pack_forget()
-        self.tap_step.set('')
-        self.tap_detail.set('已退出校准，原来的参数保持不变。')
-        self.tap_start.configure(text='开始校准')
-        self.tap_save.configure(state='disabled')
-
-    def _save_tap(self):
-        if self._save_tap_calibration and self._save_tap_calibration():
-            self._voice_calibrating = False
-            self._tap_stage = 'saved'
-            self.tap_step.set('校准已保存')
-            self.tap_detail.set('新力度设置已生效。')
-            self.tap_save.configure(state='disabled')
-            self.tap_record.pack_forget()
-
-    def _record_voice_calibration_sample(self) -> None:
-        if not self._voice_calibrating or self._record_voice_calibration is None:
-            return
-        self._record_voice_calibration()
+        self.tap_auto_button.configure(text='双敲一次自动设置')
+        self.tap_range_status.set('已取消自动测量，当前滑条范围保持不变。')
 
     def handle_voice_calibration(self, done: int, total: int) -> None:
         if done <= 0:
@@ -946,11 +947,10 @@ class DetectorSettingsWindow:
             )
 
     def set_voice_calibration_error(self, text: str) -> None:
-        self.voice_status.set(f"本次未计数：{text}。请重新双敲后立即录入。")
+        self.voice_status.set(f"自动测量失败：{text}")
         if self._voice_calibrating:
-            self.voice_record_button.configure(state="normal")
-            self.tap_detail.set(f'未录入：{text}')
-            self.tap_record.configure(state='normal')
+            self.tap_range_status.set(f'没有完成测量：{text}。可点击重新测量。')
+            self.tap_auto_button.configure(text='重新测量')
 
     def refresh_voice_settings(self, settings: VoiceSettings) -> None:
         self.voice_enabled.set(settings.enabled)
@@ -960,14 +960,15 @@ class DetectorSettingsWindow:
         for name, variable in self._voice_variables.items():
             variable.set(str(getattr(settings, name)))
         self._voice_calibrating = False
-        self.voice_calibrate_button.configure(text="重新学习", state="normal")
+        self.voice_calibrate_button.configure(text="调整力度范围", state="normal")
         self.voice_record_button.configure(state="disabled")
-        self.tap_record.pack_forget()
+        if hasattr(self, 'tap_minimum_slider'):
+            self._set_tap_range(*self._tap_range_values(settings))
+            self.tap_auto_button.configure(text='双敲一次自动设置')
         self.voice_tap_model_status.set(
-            "双敲力度识别已启用，不限制为旧轨迹或固定方向。"
-            if settings.tap_force_calibrated else "旧版双敲轨迹模板已启用。"
+            "双敲按最轻与最重冲击力度范围识别，不再使用旧轨迹模板。"
         )
-        self.voice_status.set("双敲设置已保存")
+        self.voice_status.set("双敲力度范围已保存")
 
     def set_voice_runtime_status(self, text: str) -> None:
         if hasattr(self, "voice_status") and not self._voice_calibrating:

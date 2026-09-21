@@ -1,17 +1,20 @@
 from dataclasses import replace
 import math
+
 import pytest
 
 from codex_whip.models import RawMotionBatch, RawMotionFrame
-from codex_whip.voice import VoiceModule, VoiceSettingsStore, VoiceSettings
-from codex_whip.tap_calibration import ForceTapDetector
+from codex_whip.tap_calibration import ForceTapDetector, TapRangeCapture
+from codex_whip.voice import VoiceModule, VoiceSettings, VoiceSettingsStore
 
 
-def pair(start=0, strength=1, axis=(0, 0, 1), spacing=300):
-    for dt in range(0, 2200, 10):
-        pulse = strength if dt in (300, 310, 300+spacing, 310+spacing) else 0
-        yield RawMotionFrame(start+dt, 0, 0, 0,
-                             axis[0]*pulse, axis[1]*pulse, 1+axis[2]*pulse)
+def pair(start=0, strength=2, axis=(0, 0, 1), spacing=300):
+    for dt in range(0, 1400, 10):
+        pulse = strength if dt in (300, 310, 300 + spacing, 310 + spacing) else 0
+        yield RawMotionFrame(
+            start + dt, 0, 0, 0,
+            axis[0] * pulse, axis[1] * pulse, 1 + axis[2] * pulse,
+        )
 
 
 def batch(frames):
@@ -19,178 +22,123 @@ def batch(frames):
     return RawMotionBatch(1, frames[0].timestamp_ms, frames)
 
 
-def module(tmp_path, enabled=True):
-    store = VoiceSettingsStore(tmp_path/'voice.json')
-    store.update(VoiceSettings(enabled=enabled, impact_dynamic_accel_g=8))
+def ranged_settings(minimum=.7, maximum=4.0, *, enabled=True):
+    return VoiceSettings(
+        enabled=enabled,
+        tap_force_calibrated=True,
+        tap_light_g=minimum,
+        tap_heavy_g=maximum,
+        impact_dynamic_accel_g=minimum,
+        max_tap_gyro_dps=2000,
+        min_interval_ms=150,
+        max_interval_ms=700,
+        pre_still_ms=120,
+        settle_ms=50,
+        max_pulse_ms=180,
+    )
+
+
+def module(tmp_path, settings=None):
+    store = VoiceSettingsStore(tmp_path / 'voice.json')
+    store.update(settings or ranged_settings())
     emitted = []
-    voice = VoiceModule(store, lambda *e: emitted.append(e))
+    voice = VoiceModule(store, lambda *event: emitted.append(event))
     return voice, emitted
 
 
-def calibrate(voice):
-    voice.start_force_calibration()
-    assert voice.feed_motion(batch(pair(strength=.8))) == (False, True)
-    assert voice._force_calibration.stage == 'light'
-    assert voice._force_calibration.meter.strengths == pytest.approx((.8, .8))
-    voice.record_force_calibration_sample()
-    assert voice._force_calibration.stage == 'heavy'
-    assert voice.feed_motion(batch(pair(2200, 4))) == (False, True)
-    assert voice._force_calibration.stage == 'heavy'
-    voice.record_force_calibration_sample()
-    assert voice._force_calibration.stage == 'test'
+@pytest.mark.parametrize('axis', [
+    (0, 0, 1), (1, 0, 0), (0, 1, 0),
+    (2**-.5, 0, 2**-.5), (0, 0, -1),
+])
+@pytest.mark.parametrize('strength', [.7, 2.0, 4.0])
+def test_two_impacts_inside_force_range_trigger_in_any_direction(axis, strength):
+    detector = ForceTapDetector(ranged_settings())
+    assert detector.feed_batch(batch(pair(strength=strength, axis=axis))) is not None
 
 
-def test_two_pairs_advance_only_after_manual_record_and_save_only_on_confirm(tmp_path):
+@pytest.mark.parametrize('strength', [.4, 4.5, 8.0])
+def test_both_impacts_must_be_inside_selected_force_range(strength):
+    detector = ForceTapDetector(ranged_settings())
+    assert detector.feed_batch(batch(pair(strength=strength))) is None
+
+
+def test_mixed_pair_is_rejected_when_one_impact_exceeds_maximum():
+    frames = list(pair(strength=2))
+    frames = [replace(frame, accel_z_g=6.0)
+              if frame.timestamp_ms in (600, 610) else frame for frame in frames]
+    assert ForceTapDetector(ranged_settings()).feed_batch(batch(frames)) is None
+
+
+def test_capture_suggests_plus_or_minus_thirty_percent():
+    capture = TapRangeCapture(ranged_settings())
+    states = [state for frame in pair(strength=2)
+              if (state := capture.feed(frame)) is not None]
+    assert states[0]['live_strengths'] == pytest.approx((2.0,))
+    assert states[-1]['stage'] == 'done'
+    assert states[-1]['average_g'] == pytest.approx(2.0)
+    assert states[-1]['suggested_min_g'] == pytest.approx(1.4)
+    assert states[-1]['suggested_max_g'] == pytest.approx(2.6)
+
+
+def test_capture_clamps_suggested_range_to_supported_limits():
+    low = TapRangeCapture(ranged_settings())
+    low_states = [state for frame in pair(strength=.2)
+                  if (state := low.feed(frame)) is not None]
+    assert low_states[-1]['suggested_min_g'] == .25
+    assert low_states[-1]['suggested_max_g'] > .25
+    high = TapRangeCapture(ranged_settings())
+    high_states = [state for frame in pair(strength=12)
+                   if (state := high.feed(frame)) is not None]
+    assert high_states[-1]['suggested_max_g'] == 12
+
+
+def test_voice_capture_emits_readings_and_does_not_trigger_recording(tmp_path):
     voice, emitted = module(tmp_path)
-    old = voice.store.path.read_bytes()
-    calibrate(voice)
-    assert voice.store.path.read_bytes() == old
-    voice.feed_motion(batch(pair(4400, 2)))
-    assert voice._force_calibration.accepted == 1
-    assert not any(k == 'voice_trigger' for k, _ in emitted)
-    voice.save_force_calibration()
-    assert not voice.calibration_active
-    assert voice.store.settings.tap_force_calibrated
-    assert voice.store.settings.impact_dynamic_accel_g == pytest.approx(.52)
-    restored = VoiceModule(VoiceSettingsStore(voice.store.path), lambda *e: None)
-    assert isinstance(restored.detector, ForceTapDetector)
-
-
-@pytest.mark.parametrize('axis', [(0,0,1), (1,0,0), (0,1,0), (2**-.5,0,2**-.5), (0,0,-1)])
-@pytest.mark.parametrize('strength', [.8, 2, 8, 12])
-def test_changed_strength_and_direction_accepted_in_test_and_live(tmp_path, axis, strength):
-    voice, _ = module(tmp_path)
-    calibrate(voice)
-    voice.feed_motion(batch(pair(4400, strength, axis)))
-    assert voice._force_calibration.accepted == 1
-    voice.save_force_calibration()
-    assert voice.feed_motion(batch(pair(6600, strength, axis)))[0]
-
-
-def test_cancel_restart_and_disabled_voice_preserve_saved_settings(tmp_path):
-    voice, emitted = module(tmp_path, enabled=False)
-    old = voice.store.path.read_bytes()
-    calibrate(voice)
     voice.start_force_calibration()
-    assert voice._force_calibration.stage == 'light'
-    voice.cancel_calibration()
+    assert voice.feed_motion(batch(pair(strength=2))) == (False, True)
+    states = [payload for kind, payload in emitted if kind == 'tap_range_capture']
+    assert states[-1]['stage'] == 'done'
+    assert states[-1]['suggested_min_g'] == 1.4
+    assert not any(kind == 'voice_trigger' for kind, _payload in emitted)
     assert not voice.calibration_active
-    assert voice.store.path.read_bytes() == old
-    assert voice.feed_motion(batch(pair(4400, 4))) == (False, False)
+
+
+def test_runtime_uses_updated_slider_range(tmp_path):
+    voice, _ = module(tmp_path, ranged_settings(1.4, 2.6))
+    assert voice.feed_motion(batch(pair(strength=2)))[0]
+    assert not voice.feed_motion(batch(pair(2000, strength=1.0)))[0]
+    assert not voice.feed_motion(batch(pair(4000, strength=3.0)))[0]
 
 
 def test_single_heavy_impact_with_fast_rebounds_does_not_become_double_tap():
-    detector = ForceTapDetector(VoiceSettings(impact_dynamic_accel_g=.5))
-    frames = [RawMotionFrame(t, 0,0,0, 0,0, 1+(8 if t in (300,340,380) else 0))
+    detector = ForceTapDetector(ranged_settings(.5, 10))
+    frames = [RawMotionFrame(t, 0, 0, 0, 0, 0, 1 + (8 if t in (300, 340, 380) else 0))
               for t in range(0, 1800, 10)]
     assert detector.feed_batch(batch(frames)) is None
 
 
 def test_sustained_rotation_and_broad_acceleration_are_not_taps():
-    detector = ForceTapDetector(VoiceSettings(impact_dynamic_accel_g=.5))
-    frames = [RawMotionFrame(t, 500,0,0, 0,0, 1+(4 if 300 <= t < 550 or 700 <= t < 900 else 0))
+    detector = ForceTapDetector(ranged_settings(.5, 10))
+    frames = [RawMotionFrame(t, 500, 0, 0, 0, 0,
+                            1 + (4 if 300 <= t < 550 or 700 <= t < 900 else 0))
               for t in range(0, 1800, 10)]
     assert detector.feed_batch(batch(frames)) is None
 
 
-def test_transport_gap_duplicates_and_invalid_samples_cannot_join_two_impacts():
-    detector = ForceTapDetector(VoiceSettings(impact_dynamic_accel_g=.5))
+def test_transport_gap_duplicates_and_invalid_samples_cannot_join_impacts():
+    detector = ForceTapDetector(ranged_settings(.5, 10))
     frames = list(pair())
-    frames = [f for f in frames if not 400 <= f.timestamp_ms < 590]
+    frames = [frame for frame in frames if not 400 <= frame.timestamp_ms < 590]
     assert detector.feed_batch(batch(frames)) is None
-    assert detector.feed_batch(batch([frames[-1]]*500)) is None
-    detector._feed_frame(RawMotionFrame(2300, 0,0,0, math.nan,0,1))
+    assert detector.feed_batch(batch([frames[-1]] * 500)) is None
+    detector._feed_frame(RawMotionFrame(2300, 0, 0, 0, math.nan, 0, 1))
     assert detector._gravity is None
 
 
-def test_below_threshold_test_reports_rejection(tmp_path):
-    voice, emitted = module(tmp_path)
-    calibrate(voice)
-    voice.feed_motion(batch(pair(4400, .3)))
-    assert voice._force_calibration.accepted == 0
-    assert any(k == 'tap_calibration_state' and '未通过' in p['detail'] for k,p in emitted)
-
-
-def test_failed_save_keeps_draft_and_old_runtime(tmp_path, monkeypatch):
-    voice, _ = module(tmp_path)
-    calibrate(voice)
-    def fail(_):
-        raise OSError('disk full')
-    monkeypatch.setattr(voice.store, 'update', fail)
-    with pytest.raises(OSError):
-        voice.save_force_calibration()
-    assert voice.calibration_active
-    assert not voice.store.settings.tap_force_calibrated
-
-
-def test_new_resting_orientation_relearns_gravity_without_recalibration():
-    detector = ForceTapDetector(VoiceSettings(impact_dynamic_accel_g=.5, pre_still_ms=120))
-    detector.feed_batch(batch(pair(strength=0)))
-    frames = [RawMotionFrame(2200+t, 0,0,0, 1,0,0) for t in range(0,500,10)]
-    assert detector.feed_batch(batch(frames)) is None
-    frames = [replace(f, accel_x_g=1+f.accel_z_g-1, accel_z_g=0)
-              for f in pair(2700, 3)]
-    assert detector.feed_batch(batch(frames)) is not None
-
-
-def test_calibration_blocks_all_strike_sources_even_with_voice_disabled(tmp_path):
-    import asyncio
-    import threading
-    from codex_whip.gui import GuiEventProcessor
-    from codex_whip.settings import Settings
-    from codex_whip.models import WhipEvent
-    voice, _ = module(tmp_path, enabled=False)
-    voice.start_force_calibration()
-    emitted = []
-    armed = threading.Event()
-    armed.set()
-    processor = GuiEventProcessor(Settings(), armed, lambda *e: emitted.append(e), voice_module=voice)
-    for source in ('device', 'mouse', 'simulation', 'motion_v3'):
-        asyncio.run(processor.handle(WhipEvent(1, 500, 3, 120), source=source))
-    assert not any(k in ('whip','send_result','send_error') for k, _ in emitted)
-
-
-@pytest.mark.parametrize('limit', [200, 400, 600, 800, 1000])
-def test_interval_slider_limits_apply_to_capture_test_and_saved_runtime(tmp_path, limit):
-    voice, _ = module(tmp_path)
-    voice.start_force_calibration(limit)
-    voice.feed_motion(batch(pair(strength=.8, spacing=limit)))
-    assert voice._force_calibration.stage == 'light'
-    voice.record_force_calibration_sample()
-    assert voice._force_calibration.stage == 'heavy'
-    voice.feed_motion(batch(pair(3200, 4, spacing=limit)))
-    assert voice._force_calibration.stage == 'heavy'
-    voice.record_force_calibration_sample()
-    assert voice._force_calibration.stage == 'test'
-    voice.feed_motion(batch(pair(6400, 2, spacing=limit)))
-    assert voice._force_calibration.accepted == 1
-    voice.save_force_calibration()
-    assert voice.store.settings.max_interval_ms == limit
-    assert voice.feed_motion(batch(pair(9600, 2, spacing=limit)))[0]
-    assert not voice.feed_motion(batch(pair(12800, 2, spacing=limit+20)))[0]
-
-
-def test_adjusting_draft_interval_does_not_save_or_lose_strength_samples(tmp_path):
-    voice, _ = module(tmp_path)
-    calibrate(voice)
-    old = voice.store.path.read_bytes()
-    samples = (voice._force_calibration.light, voice._force_calibration.heavy)
-    voice.set_tap_interval(200)
-    assert voice._force_calibration.stage == 'test'
-    assert (voice._force_calibration.light, voice._force_calibration.heavy) == samples
-    assert voice.store.path.read_bytes() == old
-    voice.feed_motion(batch(pair(4400, 2, spacing=300)))
-    assert voice._force_calibration.accepted == 0
-    voice.set_tap_interval(1000)
-    voice.feed_motion(batch(pair(6600, 2, spacing=800)))
-    assert voice._force_calibration.accepted == 1
-    voice.cancel_calibration()
-    assert voice.store.path.read_bytes() == old
-
-
-@pytest.mark.parametrize('limit', [199, 1001])
-def test_interval_out_of_range_rejected(tmp_path, limit):
-    voice, _ = module(tmp_path)
-    voice.start_force_calibration()
+def test_force_range_validation():
     with pytest.raises(ValueError):
-        voice.set_tap_interval(limit)
+        ranged_settings(2, 2).validated()
+    with pytest.raises(ValueError):
+        ranged_settings(.2, 2).validated()
+    with pytest.raises(ValueError):
+        ranged_settings(2, 12.1).validated()

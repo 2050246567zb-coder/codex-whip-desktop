@@ -626,6 +626,6 @@ def test_settings_layout_stacking_and_group_ownership(app):
     ui.open_preferences("calibration")
     assert win.tap_advanced.pack_info()["in"] == win._calibration_panel
     assert not win.record_button.winfo_manager()
-    assert not win.tap_cancel.winfo_manager()
+    assert win.tap_auto_button.winfo_manager()
     ui.hide_preferences()
     app.effects.set_settings_open.assert_called_with(False)

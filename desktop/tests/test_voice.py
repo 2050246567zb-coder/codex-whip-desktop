@@ -307,7 +307,7 @@ def test_no_detected_speech_leaves_no_candidate_or_error(tmp_path: Path) -> None
     assert not any(kind == "voice_error" for kind, _payload in emitted)
 
 
-def test_double_tap_learning_counts_only_after_manual_record(tmp_path: Path) -> None:
+def test_legacy_double_tap_learning_no_longer_controls_runtime_range(tmp_path: Path) -> None:
     emitted: list[tuple[str, object]] = []
     store = VoiceSettingsStore(tmp_path / "voice.json")
     store.update(replace(store.settings, enabled=True, impact_dynamic_accel_g=8.0))
@@ -348,13 +348,10 @@ def test_double_tap_learning_counts_only_after_manual_record(tmp_path: Path) -> 
     )
     assert triggered
     assert suppressed
-    assert any(
-        kind == "voice_match" and payload["accepted"]
-        for kind, payload in emitted
-    )
+    assert not any(kind == "voice_match" for kind, _payload in emitted)
 
 
-def test_double_tap_trajectory_rejects_foreign_motion_between_peaks(tmp_path: Path) -> None:
+def test_runtime_ignores_legacy_trajectory_when_force_is_in_range(tmp_path: Path) -> None:
     emitted: list[tuple[str, object]] = []
     store = VoiceSettingsStore(tmp_path / "voice.json")
     store.update(replace(store.settings, enabled=True))
@@ -370,13 +367,10 @@ def test_double_tap_trajectory_rejects_foreign_motion_between_peaks(tmp_path: Pa
         RawMotionBatch(10, candidate[0].timestamp_ms, candidate)
     )
 
-    assert not triggered
+    assert triggered
     assert suppressed
-    assert any(
-        kind == "voice_match" and not payload["accepted"]
-        for kind, payload in emitted
-    )
-    assert not any(kind == "voice_trigger" for kind, _payload in emitted)
+    assert not any(kind == "voice_match" for kind, _payload in emitted)
+    assert any(kind == "voice_trigger" for kind, _payload in emitted)
 
 
 def test_manual_double_tap_learning_rejects_a_single_impact(tmp_path: Path) -> None:
