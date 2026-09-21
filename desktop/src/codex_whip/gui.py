@@ -187,6 +187,98 @@ class UiHangWatchdog:
                 pass
 
 
+class NativeDictationJob:
+    """Own one native dictation session on a non-Tk thread.
+
+    Windows UI Automation may wait indefinitely inside a third-party
+    accessibility provider.  Start and stop must therefore happen on the same
+    background thread, while Tk only receives finite state notifications.
+    """
+
+    def __init__(
+        self,
+        sender: Any,
+        virtual_microphone: VirtualMicrophoneBridge,
+        gain: float,
+        generation: int,
+        emit: Any,
+    ) -> None:
+        self.sender = sender
+        self.virtual_microphone = virtual_microphone
+        self.gain = gain
+        self.generation = generation
+        self.emit = emit
+        self._stop = threading.Event()
+        self._abort = False
+        self._thread: threading.Thread | None = None
+
+    @property
+    def alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self) -> None:
+        self._thread = threading.Thread(
+            target=self._run,
+            name="codex-whip-native-dictation",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def request_stop(self, *, abort: bool) -> None:
+        self._abort = self._abort or abort
+        self._stop.set()
+
+    def _run(self) -> None:
+        session = None
+        audio_started = False
+        try:
+            session = self.sender.start_dictation()
+            if self._stop.is_set():
+                return
+            device = self.virtual_microphone.start(self.gain)
+            audio_started = True
+            if self._stop.is_set():
+                return
+            self.emit(
+                "native_dictation_started",
+                {
+                    "job": self,
+                    "generation": self.generation,
+                    "device": device.name,
+                },
+            )
+            self._stop.wait()
+        except Exception as exc:
+            self.emit(
+                "native_dictation_failed",
+                {
+                    "job": self,
+                    "generation": self.generation,
+                    "detail": str(exc),
+                },
+            )
+        finally:
+            stop_error = None
+            if session is not None:
+                try:
+                    self.sender.stop_dictation(session)
+                except Exception as exc:
+                    stop_error = str(exc)
+            if audio_started and self._abort:
+                try:
+                    self.virtual_microphone.abort()
+                except Exception:
+                    pass
+            self.emit(
+                "native_dictation_stopped",
+                {
+                    "job": self,
+                    "generation": self.generation,
+                    "detail": stop_error,
+                },
+            )
+
+
 def find_config_path() -> Path | None:
     candidates: list[Path] = []
     if getattr(sys, "frozen", False):
@@ -557,7 +649,9 @@ class CodexWhipWindow:
         self.visual_store = VisualSettingsStore()
         self.voice_store = VoiceSettingsStore()
         self.virtual_microphone = VirtualMicrophoneBridge()
-        self._dictation_session: Any | None = None
+        self._dictation_job: NativeDictationJob | None = None
+        self._dictation_generation = 0
+        self._dictation_phase = ""
         self._dictation_watchdog: str | None = None
         from .cloud_speech import SpeechRouter
         self.voice_transcriber = SpeechRouter(self.voice_store, WhisperCppTranscriber())
@@ -911,27 +1005,54 @@ class CodexWhipWindow:
             except tk.TclError:
                 pass
             self._dictation_watchdog = None
-        if abort:
-            self.virtual_microphone.abort()
-        session, self._dictation_session = self._dictation_session, None
-        if session is None:
+        job, self._dictation_job = self._dictation_job, None
+        self._dictation_phase = ""
+        self._dictation_generation += 1
+        if job is None:
+            if abort and self.virtual_microphone.active:
+                threading.Thread(
+                    target=self.virtual_microphone.abort,
+                    name="codex-whip-virtual-mic-abort",
+                    daemon=True,
+                ).start()
             return not abort
-        try:
-            if self.processor is None:
-                raise RuntimeError("监听已经停止")
-            self.processor._sender().stop_dictation(session)
-            return True
-        except Exception as exc:
-            self._append_log(f"Codex 原生听写结束失败：{exc}")
-            return False
+        job.request_stop(abort=abort)
+        return True
 
     def _native_dictation_start_timeout(self) -> None:
         self._dictation_watchdog = None
-        if self._dictation_session is None or self.voice_module.assembler.start is not None:
+        if self._dictation_job is None or self.voice_module.assembler.start is not None:
             return
+        phase = self._dictation_phase
         self._stop_native_dictation(abort=True)
-        self.voice_status_value.set("手柄录音未响应")
-        self._append_log("原生听写已取消：2.5 秒内没有收到手柄录音起始包")
+        if phase == "starting":
+            self.voice_status_value.set("Codex 原生听写启动超时")
+            self._append_log("原生听写已取消：Codex 窗口检查超过 6 秒；界面未被阻塞")
+        else:
+            self.voice_status_value.set("手柄录音未响应")
+            self._append_log("原生听写已取消：2.5 秒内没有收到手柄录音起始包")
+
+    def _begin_native_dictation(self, voice: VoiceSettings) -> bool:
+        if self._dictation_job is not None and self._dictation_job.alive:
+            self.voice_status_value.set("Codex 原生听写正在启动")
+            return False
+        self._dictation_generation += 1
+        generation = self._dictation_generation
+        job = NativeDictationJob(
+            create_live_sender(self.settings.codex),
+            self.virtual_microphone,
+            voice.recording_gain,
+            generation,
+            self.emit,
+        )
+        self._dictation_job = job
+        self._dictation_phase = "starting"
+        self.voice_status_value.set("正在启动 Codex 原生听写")
+        job.start()
+        self._dictation_watchdog = self.root.after(
+            6000, self._native_dictation_start_timeout
+        )
+        return True
 
     def start_voice_calibration(self) -> bool:
         if self.voice_module.assembler.start is not None:
@@ -1495,25 +1616,63 @@ class CodexWhipWindow:
                                 self.voice_status_value.set("已有听写草稿，挥鞭发送或手动清空")
                                 self._append_log("忽略双敲：Codex 输入框仍有待发送听写草稿")
                                 continue
-                            try:
+                            if self.processor is None or not self._begin_native_dictation(voice):
                                 if self.processor is None:
-                                    raise VirtualMicrophoneError("监听尚未启动")
-                                device = self.virtual_microphone.start(voice.recording_gain)
-                                self._dictation_session = self.processor._sender().start_dictation()
-                                self._append_log(f"Codex 原生听写已启动：{device.name}")
-                            except Exception as exc:
-                                self.virtual_microphone.abort()
-                                self._dictation_session = None
-                                self.voice_status_value.set("原生听写启动失败")
-                                self._append_log(f"原生听写：{exc}")
+                                    self.voice_status_value.set("监听尚未启动")
                                 continue
-                        if self.send_device_command(f"VOICE,START,{voice.silence_ms},{voice.max_recording_ms}"):
+                            # The background job opens Codex and the virtual
+                            # microphone first. It will request device audio via
+                            # ``native_dictation_started`` when both are ready.
+                            continue
+                        if self.send_device_command(
+                            f"VOICE,START,{voice.silence_ms},{voice.max_recording_ms}"
+                        ):
                             self.voice_status_value.set("正在启动录音")
-                            if voice.input_mode == "virtual_microphone":
-                                self._dictation_watchdog = self.root.after(
-                                    2500, self._native_dictation_start_timeout)
-                        elif voice.input_mode == "virtual_microphone":
-                            self._stop_native_dictation(abort=True)
+                elif kind == "native_dictation_started":
+                    job = payload.get("job")
+                    generation = int(payload.get("generation", -1))
+                    if (
+                        generation != self._dictation_generation
+                        or job is not self._dictation_job
+                        or self.closing
+                    ):
+                        if isinstance(job, NativeDictationJob):
+                            job.request_stop(abort=True)
+                        continue
+                    if self._dictation_watchdog is not None:
+                        self.root.after_cancel(self._dictation_watchdog)
+                        self._dictation_watchdog = None
+                    voice = self.voice_store.settings
+                    if self.send_device_command(
+                        f"VOICE,START,{voice.silence_ms},{voice.max_recording_ms}"
+                    ):
+                        self._dictation_phase = "waiting_audio"
+                        self.voice_status_value.set("正在启动录音")
+                        self._append_log(
+                            f"Codex 原生听写已启动：{payload.get('device', '虚拟麦克风')}"
+                        )
+                        self._dictation_watchdog = self.root.after(
+                            2500, self._native_dictation_start_timeout
+                        )
+                    else:
+                        self._stop_native_dictation(abort=True)
+                elif kind == "native_dictation_failed":
+                    job = payload.get("job")
+                    generation = int(payload.get("generation", -1))
+                    if generation != self._dictation_generation or job is not self._dictation_job:
+                        continue
+                    if self._dictation_watchdog is not None:
+                        self.root.after_cancel(self._dictation_watchdog)
+                        self._dictation_watchdog = None
+                    self._dictation_job = None
+                    self._dictation_phase = ""
+                    self._dictation_generation += 1
+                    self.voice_status_value.set("原生听写启动失败")
+                    self._append_log(f"原生听写：{payload.get('detail', '未知错误')}")
+                elif kind == "native_dictation_stopped":
+                    detail = payload.get("detail")
+                    if detail:
+                        self._append_log(f"Codex 原生听写结束失败：{detail}")
                 elif kind == "voice_state":
                     state = str(payload.get("state", ""))
                     if self.settings_window is not None:
@@ -1524,6 +1683,7 @@ class CodexWhipWindow:
                         if self._dictation_watchdog is not None:
                             self.root.after_cancel(self._dictation_watchdog)
                             self._dictation_watchdog = None
+                        self._dictation_phase = "recording"
                         system_beep("start")
                         replacing = bool(payload.get("replacing"))
                         self.voice_status_value.set(
