@@ -23,7 +23,7 @@ from .mount_profile import load_mounting_profile
 from .paths import user_data_dir
 from . import __version__
 from .effects import CodexWhipEffects, WhipPose
-from .whip_drawing import WhipDrawing
+from .whip_drawing import WhipDrawing, SupersampledWhipDrawing
 from .gear_button import GearButton
 from .battery_indicator import BatteryIndicator
 from .morphing_title import MorphingTitle
@@ -67,7 +67,9 @@ def button(parent, text, command, *, primary=False, **kwargs):
 
 class Hero(tk.Canvas):
     """Read-only overlay mirror plus the generated microphone and audio meter."""
-    def __init__(self, parent, *, reduce_motion=False, size=290, frame_provider=None, interactive=True, direct_pose=False, external_clock=False):
+    def __init__(self, parent, *, reduce_motion=False, size=290, frame_provider=None,
+                 interactive=True, direct_pose=False, external_clock=False,
+                 high_resolution=False):
         super().__init__(parent, width=size, height=size, bg=parent.cget("bg"),
                          highlightthickness=0)
         self.reduce_motion = reduce_motion
@@ -88,7 +90,8 @@ class Hero(tk.Canvas):
         self._frame_provider = frame_provider
         self.direct_pose = direct_pose
         self.external_clock = external_clock
-        self._whip_drawing = WhipDrawing(self)
+        self._whip_drawing = (SupersampledWhipDrawing(self, supersample=4)
+                              if high_resolution else WhipDrawing(self))
         self._preview_key = None
         self.clock_enabled = False
         self._clock_hover = False
@@ -331,8 +334,8 @@ class Hero(tk.Canvas):
         # Geometry is in screen pixels; retain the shared whip stroke scale.
         voice_scale = .4 if self.direct_pose else 2.5
         clock_scale = 1-.5*self._clock_alpha if self.direct_pose else 1.
-        self._whip_drawing._draw_pose(self._display_pose, scale*clock_scale*(1+voice_scale*self._voice_amount))
         self._whip_drawing.fade_cord(1-self._voice_amount, self.cget('bg'))
+        self._whip_drawing._draw_pose(self._display_pose, scale*clock_scale*(1+voice_scale*self._voice_amount))
         self._draw_voice(w,h)
         self._draw_loading(w,h)
 
@@ -452,7 +455,7 @@ class Interface:
         self.step_label = label(shell, color=BLUE, size=9)
         self.step_label.pack(pady=(20, 0))
         self.hero = Hero(shell, reduce_motion=self.preferences.reduce_motion, size=275,
-                         frame_provider=self._whip_frame)
+                         frame_provider=self._whip_frame, high_resolution=True)
         self.hero.pack(fill="both", expand=True, pady=(0, 0))
         self.title = MorphingTitle(shell, lambda: self.preferences.reduce_motion)
         self.hero.clock_title_changed = self._clock_title_changed

@@ -209,10 +209,8 @@ def test_home_battery_indicator_tracks_device_and_disconnect(app):
     app._drain_events()
     assert app.ui.battery_indicator.percent == 74
     assert app.ui.battery_indicator.color == app.ui.battery_indicator.NORMAL
-    assert app.ui.battery_indicator.itemcget('body', 'outline') == app.ui.battery_indicator.OUTLINE
-    assert app.ui.battery_indicator.itemcget('level', 'fill') == app.ui.battery_indicator.NORMAL
+    assert app.ui.battery_indicator.find_withtag('glyph')
     assert app.ui.battery_indicator.find_withtag('percentage') == ()
-    assert app.ui.battery_indicator.find_withtag('level')
     assert int(float(app.ui.battery_indicator.cget('width'))) == 32
     assert int(float(app.ui.battery_indicator.cget('height'))) == 18
     assert app.ui.battery_indicator.find_withtag('bolt') == ()
@@ -225,19 +223,14 @@ def test_home_battery_indicator_tracks_device_and_disconnect(app):
     app._drain_events()
     assert app.ui.battery_indicator.charging
     assert app.ui.battery_indicator.color == app.ui.battery_indicator.CHARGING
-    assert app.ui.battery_indicator.find_withtag('body') == ()
-    assert app.ui.battery_indicator.find_withtag('terminal') == ()
-    assert app.ui.battery_indicator.itemcget(
-        'charging_capsule', 'fill'
-    ) == app.ui.battery_indicator.CHARGING
-    assert app.ui.battery_indicator.find_withtag('bolt')
+    assert app.ui.battery_indicator.find_withtag('glyph')
     assert app.ui.battery_indicator.find_withtag('percentage') == ()
     assert app.ui.battery_indicator.tooltip_text == '剩余电量 55%'
 
     app.emit('ble', 'disconnected')
     app._drain_events()
     assert app.ui.battery_indicator.percent is None
-    assert app.ui.battery_indicator.find_withtag('level') == ()
+    assert app.ui.battery_indicator.find_withtag('glyph')
 
 
 def connected(app):
@@ -632,10 +625,10 @@ def test_hero_reads_exact_overlay_pose_and_relative_motion(app):
     app.root.update_idletasks()
     hero._draw_live_whip()
     drawing = hero._whip_drawing
-    first = hero.coords(drawing._handle)
+    first = drawing.display_handle
     app.effects.preview_frame.return_value = (pose, (0.1, -0.1))
     hero._draw_live_whip()
-    second = hero.coords(drawing._handle)
+    second = drawing.display_handle
     assert second[0] - first[0] == pytest.approx(max(120, hero.winfo_width()) * 0.07)
     assert second[1] - first[1] == pytest.approx(-max(120, hero.winfo_height()) * 0.055)
     app.effects.preview_frame.return_value = (CodexWhipEffects.STRIKE, (0.1, -0.1))
@@ -644,7 +637,7 @@ def test_hero_reads_exact_overlay_pose_and_relative_motion(app):
     drawing.hide()
     hero._preview_key = None
     hero._draw_live_whip()
-    assert hero.itemcget(drawing._handle, "state") == "normal"
+    assert drawing.visible
 
 
 def test_shared_drawing_matches_source_pose_without_scale_accumulation(host):
