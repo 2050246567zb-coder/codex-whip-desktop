@@ -6,6 +6,8 @@ from .effects import WhipPose, CartoonWhipPhysics, catmull_rom_points
 
 
 class WhipDrawing:
+    RENDER_SECTIONS = 5
+
     def __init__(self, canvas: tk.Canvas):
         self.canvas = canvas
         before = set(canvas.find_all())
@@ -14,21 +16,21 @@ class WhipDrawing:
                 0, 0, 0, 0, fill="#000103", width=10,
                 capstyle=tk.ROUND, joinstyle=tk.ROUND
             )
-            for _ in range(CartoonWhipPhysics.SEGMENTS - 1)
+            for _ in range(self.RENDER_SECTIONS)
         )
         self._cord_segments = tuple(
             self.canvas.create_line(
                 0, 0, 0, 0, fill="#090B0E", width=7,
                 capstyle=tk.ROUND, joinstyle=tk.ROUND
             )
-            for _ in range(CartoonWhipPhysics.SEGMENTS - 1)
+            for _ in range(self.RENDER_SECTIONS)
         )
         self._cord_highlight_segments = tuple(
             self.canvas.create_line(
                 0, 0, 0, 0, fill="#30343A", width=2,
                 capstyle=tk.ROUND, joinstyle=tk.ROUND
             )
-            for _ in range(CartoonWhipPhysics.SEGMENTS - 1)
+            for _ in range(self.RENDER_SECTIONS)
         )
         self._handle_outline = self.canvas.create_line(
             0, 0, 0, 0, fill="#000103", width=12, capstyle=tk.ROUND
@@ -83,9 +85,11 @@ class WhipDrawing:
         return tuple(coordinate for point in points for coordinate in point)
 
     def _draw_pose(self, pose: WhipPose, scale: float = 1.0) -> None:
-        samples = 10  # Twice the curve samples, without more physics nodes.
-        smoothed = catmull_rom_points(pose.cord, samples)
-        segment_count = max(1, len(pose.cord) - 1)
+        # Draw a few long, overlapping splines instead of one Canvas item per
+        # physics link.  The old 21-piece lash exposed a dark round cap at each
+        # joint on Windows and looked visibly grainy when scaled over Codex.
+        smoothed = catmull_rom_points(pose.cord, 18)
+        point_count = len(smoothed)
         for index, (outline, cord, highlight) in enumerate(
             zip(
                 self._cord_outline_segments,
@@ -93,27 +97,39 @@ class WhipDrawing:
                 self._cord_highlight_segments,
             )
         ):
-            if index >= segment_count:
+            if point_count < 2:
                 self._configure(outline, state="hidden")
                 self._configure(cord, state="hidden")
                 self._configure(highlight, state="hidden")
                 continue
-            curve = smoothed[index * samples : (index + 1) * samples + 1]
+            start = round(index * (point_count - 1) / self.RENDER_SECTIONS)
+            end = round((index + 1) * (point_count - 1) / self.RENDER_SECTIONS)
+            if index:
+                start = max(0, start - 2)
+            if index + 1 < self.RENDER_SECTIONS:
+                end = min(point_count - 1, end + 2)
+            curve = smoothed[start : end + 1]
             coordinates = self._flatten(curve)
-            progress = index / max(1, segment_count - 1)
-            extra = 2.0 if index < 2 else 0.0
+            progress = index / max(1, self.RENDER_SECTIONS - 1)
+            extra = 2.0 if index == 0 else 0.0
             body_width = 7.0 - progress * 4.5 + extra
             self.canvas.coords(outline, *coordinates)
             self.canvas.coords(cord, *coordinates)
             self.canvas.coords(highlight, *coordinates)
             self._configure(
-                outline, width=(body_width + 2.5) * scale, state="normal"
+                outline, width=(body_width + 2.5) * scale, state="normal",
+                smooth=True, splinesteps=36,
             )
-            self._configure(cord, width=body_width * scale, state="normal")
+            self._configure(
+                cord, width=body_width * scale, state="normal",
+                smooth=True, splinesteps=36,
+            )
             self._configure(
                 highlight,
                 width=max(1.0, body_width * 0.24) * scale,
                 state="normal",
+                smooth=True,
+                splinesteps=36,
             )
 
         handle = (*pose.handle_start, *pose.handle_end)

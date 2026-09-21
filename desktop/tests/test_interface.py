@@ -225,9 +225,11 @@ def test_home_battery_indicator_tracks_device_and_disconnect(app):
     app._drain_events()
     assert app.ui.battery_indicator.charging
     assert app.ui.battery_indicator.color == app.ui.battery_indicator.CHARGING
-    assert app.ui.battery_indicator.itemcget('body', 'outline') == app.ui.battery_indicator.OUTLINE
-    assert app.ui.battery_indicator.itemcget('terminal', 'fill') == app.ui.battery_indicator.OUTLINE
-    assert app.ui.battery_indicator.itemcget('level', 'fill') == app.ui.battery_indicator.CHARGING
+    assert app.ui.battery_indicator.find_withtag('body') == ()
+    assert app.ui.battery_indicator.find_withtag('terminal') == ()
+    assert app.ui.battery_indicator.itemcget(
+        'charging_capsule', 'fill'
+    ) == app.ui.battery_indicator.CHARGING
     assert app.ui.battery_indicator.find_withtag('bolt')
     assert app.ui.battery_indicator.find_withtag('percentage') == ()
     assert app.ui.battery_indicator.tooltip_text == '剩余电量 55%'

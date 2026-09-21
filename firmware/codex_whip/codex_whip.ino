@@ -11,7 +11,7 @@
 
 namespace {
 
-constexpr char kFirmwareVersion[] = "0.7.0";
+constexpr char kFirmwareVersion[] = "0.7.1";
 constexpr char kDeviceName[] = "CodexWhip";
 constexpr uint32_t kSampleRateHz = 416;
 constexpr uint32_t kSamplePeriodUs = 1000000UL / kSampleRateHz;
@@ -40,6 +40,7 @@ constexpr uint32_t kVoiceNoiseCalibrationMs = 340;
 constexpr uint32_t kVoiceNoSpeechTimeoutMs = 4000;
 constexpr uint8_t kChargeStatusPin = 23;  // P0.17, active-low BQ25100 ~CHG.
 constexpr uint32_t kBatteryReportPeriodMs = 30000;
+constexpr uint32_t kChargeDebounceMs = 80;
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
 BLEDis deviceInfo;
@@ -123,6 +124,9 @@ volatile size_t voiceRingCount = 0;
 volatile uint32_t voiceLastPdmAtMs = 0;
 volatile bool voiceRingOverflow = false;
 uint32_t nextBatteryReportAt = 0;
+bool chargingState = false;
+bool chargingCandidate = false;
+uint32_t chargingCandidateSince = 0;
 
 void sendLine(const String& line);
 
@@ -171,9 +175,22 @@ uint8_t batteryPercent(uint16_t millivolts) {
 
 void reportBattery() {
   const uint8_t percent = batteryPercent(readBatteryMillivolts());
-  const bool charging = digitalRead(kChargeStatusPin) == LOW;
-  sendLine("BATTERY," + String(percent) + "," + String(charging ? 1 : 0));
+  sendLine("BATTERY," + String(percent) + "," + String(chargingState ? 1 : 0));
   nextBatteryReportAt = millis() + kBatteryReportPeriodMs;
+}
+
+void pollChargeStatus() {
+  const uint32_t now = millis();
+  const bool rawCharging = digitalRead(kChargeStatusPin) == LOW;
+  if (rawCharging != chargingCandidate) {
+    chargingCandidate = rawCharging;
+    chargingCandidateSince = now;
+    return;
+  }
+  if (rawCharging != chargingState && now - chargingCandidateSince >= kChargeDebounceMs) {
+    chargingState = rawCharging;
+    if (Bluefruit.connected() && !voiceRecording) reportBattery();
+  }
 }
 
 int16_t readInt16LE(const uint8_t* bytes) {
@@ -1158,6 +1175,9 @@ void setup() {
   pinMode(VBAT_ENABLE, OUTPUT);
   digitalWrite(VBAT_ENABLE, LOW);
   pinMode(kChargeStatusPin, INPUT_PULLUP);
+  chargingState = digitalRead(kChargeStatusPin) == LOW;
+  chargingCandidate = chargingState;
+  chargingCandidateSince = millis();
 
   // Explicitly retain the maximum ranges and 416 Hz rate used by the detector.
   imu.settings.accelRange = 16;
@@ -1207,6 +1227,7 @@ void setup() {
 void loop() {
   pollCommands();
   flushRawTransmission();
+  pollChargeStatus();
 
   if (Bluefruit.connected() && !voiceRecording &&
       static_cast<int32_t>(millis() - nextBatteryReportAt) >= 0) {
