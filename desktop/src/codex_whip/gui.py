@@ -1077,13 +1077,13 @@ class CodexWhipWindow:
 
     def record_voice_calibration(self) -> bool:
         try:
-            event = self.voice_module.record_calibration_sample()
+            event = self.voice_module.record_force_calibration_sample()
         except (OSError, ValueError) as exc:
             self.emit("voice_calibration_error", str(exc))
             return False
         self.emit(
             "log",
-            f"手动录入双敲：间隔 {event.interval_ms} ms，"
+            f"手动录入力度：间隔 {event.interval_ms} ms，"
             f"冲击 {event.first_peak_dynamic_accel_g:.2f}/"
             f"{event.second_peak_dynamic_accel_g:.2f} g",
         )

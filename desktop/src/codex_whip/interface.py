@@ -870,7 +870,7 @@ class Interface:
                 else:
                     mode = "voice_ready"
                     step, title = "双敲校准", "轻敲一组，重敲一组"
-                    subtitle = "在校准页自动采集，测试满意后保存。"
+                    subtitle = "敲完后手动录入力度，测试满意再保存。"
                     progress = window.tap_step.get()
                     primary = "完成并继续" if self._tap_done else "打开校准页"
                     if not self._tap_done and not window._voice_calibrating:

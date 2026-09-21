@@ -79,8 +79,81 @@ class ForceTapDetector(DoubleTapDetector):
         return super()._feed_frame(replace(frame, timestamp_ms=self._clock))
 
 
+class TapImpactMeter:
+    """Measure individual table impacts without deciding whether they are a double tap.
+
+    Calibration must not wait for the runtime gesture recognizer to accept a
+    complete pair.  This meter only reports pulse strength for UI feedback;
+    the user explicitly confirms the pair with the record button.
+    """
+
+    START_G = .18
+    RELEASE_G = .09
+    MAX_PULSE_MS = 180
+    MIN_PEAK_GAP_MS = 90
+
+    def __init__(self, interval_ms: int):
+        self.interval_ms = interval_ms
+        self._gravity = None
+        self._pulse_started_ms = None
+        self._pulse_peak = 0.0
+        self._pulse_peak_ms = 0
+        self._last_peak_ms = -10000
+        self._recent = deque(maxlen=2)
+
+    def reset(self):
+        self._gravity = None
+        self._pulse_started_ms = None
+        self._pulse_peak = 0.0
+        self._recent.clear()
+
+    def set_interval(self, interval_ms: int):
+        self.interval_ms = interval_ms
+
+    @property
+    def strengths(self):
+        return tuple(strength for _timestamp, strength in self._recent)
+
+    def feed(self, frame):
+        accel = (frame.accel_x_g, frame.accel_y_g, frame.accel_z_g)
+        if not all(math.isfinite(value) for value in accel):
+            self.reset()
+            return False
+        if self._gravity is None:
+            self._gravity = accel
+        dynamic = math.dist(accel, self._gravity)
+        if self._pulse_started_ms is None:
+            if dynamic < .14:
+                self._gravity = tuple(current*.04 + baseline*.96
+                                      for current, baseline in zip(accel, self._gravity))
+            if dynamic >= self.START_G:
+                self._pulse_started_ms = frame.timestamp_ms
+                self._pulse_peak_ms = frame.timestamp_ms
+                self._pulse_peak = dynamic
+            return False
+
+        if dynamic > self._pulse_peak:
+            self._pulse_peak = dynamic
+            self._pulse_peak_ms = frame.timestamp_ms
+        elapsed = frame.timestamp_ms - self._pulse_started_ms
+        if dynamic > self.RELEASE_G and elapsed <= self.MAX_PULSE_MS:
+            return False
+
+        peak_ms, peak = self._pulse_peak_ms, self._pulse_peak
+        self._pulse_started_ms = None
+        self._pulse_peak = 0.0
+        if peak_ms - self._last_peak_ms < self.MIN_PEAK_GAP_MS:
+            return False
+        if self._recent and peak_ms - self._recent[-1][0] > self.interval_ms:
+            self._recent.clear()
+        self._recent.append((peak_ms, peak))
+        self._last_peak_ms = peak_ms
+        return True
+
+
 class TapCalibration:
-    def __init__(self, settings: VoiceSettings, interval_ms: int | None = None):
+    def __init__(self, settings: VoiceSettings, interval_ms: int | None = None,
+                 after_timestamp_ms: int = -1):
         self.stage = 'light'
         self.light = None
         self.heavy = None
@@ -88,6 +161,7 @@ class TapCalibration:
         self.tests = 0
         self.accepted = 0
         self.base = settings
+        self.after_timestamp_ms = after_timestamp_ms
         self.interval_ms = max(200, min(1000, settings.max_interval_ms)) if interval_ms is None else interval_ms
         if not 200 <= self.interval_ms <= 1000:
             raise ValueError('双敲时间段须在 0.2–1 秒')
@@ -95,11 +169,13 @@ class TapCalibration:
             impact_dynamic_accel_g=.25, max_tap_gyro_dps=2000,
             pre_still_ms=120, settle_ms=50, max_pulse_ms=180,
             min_interval_ms=150, max_interval_ms=self.interval_ms))
+        self.meter = TapImpactMeter(self.interval_ms)
 
     def set_interval(self, interval_ms):
         if not 200 <= interval_ms <= 1000:
             raise ValueError('双敲时间段须在 0.2–1 秒')
         self.interval_ms = interval_ms
+        self.meter.set_interval(interval_ms)
         self.detector.update_settings(replace(self.detector.settings,
             min_interval_ms=150, max_interval_ms=interval_ms))
         if self.draft is not None:
@@ -108,8 +184,10 @@ class TapCalibration:
             self.tests = self.accepted = 0
 
     def snapshot(self, detail=''):
+        strengths = self.meter.strengths
         return dict(session=id(self), stage=self.stage, detail=detail, tests=self.tests,
                     accepted=self.accepted, interval_ms=self.interval_ms,
+                    live_strengths=strengths,
                     threshold=self.draft.impact_dynamic_accel_g if self.draft else None,
                     light=min(self.light.first_peak_dynamic_accel_g,
                               self.light.second_peak_dynamic_accel_g) if self.light else None,
@@ -117,13 +195,20 @@ class TapCalibration:
                               self.heavy.second_peak_dynamic_accel_g) if self.heavy else None)
 
     def feed(self, frame):
-        event = self.detector._feed_frame(frame)
-        if event is None:
+        if not self.meter.feed(frame):
             return None
+        return self.snapshot('敲击力度已更新；完成两下后点击“录入本次”。')
+
+    def record(self, event):
+        """Accept the pair the user explicitly confirmed in the UI."""
+        if event.second_at_ms <= self.after_timestamp_ms:
+            raise ValueError('没有新的双敲动作，请敲完两下后再录入')
+        self.after_timestamp_ms = event.second_at_ms
         if self.stage == 'light':
             self.light = event
             self.stage = 'heavy'
-            return self.snapshot('轻敲已记录。现在用日常较重力度，底部双敲一次。')
+            self.meter.reset()
+            return self.snapshot('轻敲已录入。现在完成一次较重双敲，再点击“录入本次”。')
         if self.stage == 'heavy':
             low = min(self.light.first_peak_dynamic_accel_g, self.light.second_peak_dynamic_accel_g)
             high = max(event.first_peak_dynamic_accel_g, event.second_peak_dynamic_accel_g)
@@ -142,8 +227,9 @@ class TapCalibration:
             self.test_detector.settings = self.draft
             self._last_test_ms = -10000
             self.stage = 'test'
+            self.meter.reset()
             return self.snapshot('自由测试：轻敲或重敲均可。这里只显示结果，不录音、不发送。')
-        return event
+        raise ValueError('力度录入已经完成；可自由测试或重新校准')
 
     def feed_test(self, frame):
         was_waiting = self.detector._first is not None

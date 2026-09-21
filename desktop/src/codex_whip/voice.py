@@ -365,15 +365,27 @@ class DoubleTapDetector:
 
 
 def extract_manual_double_tap(
-    frames: tuple[RawMotionFrame, ...], *, after_timestamp_ms: int = -1
+    frames: tuple[RawMotionFrame, ...], *, after_timestamp_ms: int = -1,
+    max_interval_ms: int = MANUAL_CAPTURE_MAX_INTERVAL_MS,
 ) -> DoubleTapEvent:
-    """Extract the latest intended double tap without using learned thresholds."""
+    """Measure the pair the user just confirmed, without runtime recognition."""
     eligible = [frame for frame in frames if frame.timestamp_ms > after_timestamp_ms]
     if len(eligible) < 12:
         raise ValueError("最近原始数据不足，请双敲后立即点击录入")
     cutoff = eligible[-1].timestamp_ms - MANUAL_CAPTURE_WINDOW_MS
     eligible = [frame for frame in eligible if frame.timestamp_ms >= cutoff]
-    metrics = [DoubleTapDetector._magnitudes(frame) for frame in eligible]
+    # Use the per-axis median as the local gravity vector.  Unlike abs(|a|-1),
+    # this keeps horizontal and vertical table impacts comparable and remains
+    # independent of how the handle is held.
+    gravity = tuple(statistics.median(getattr(frame, axis) for frame in eligible)
+                    for axis in ('accel_x_g', 'accel_y_g', 'accel_z_g'))
+    metrics = [
+        (
+            math.dist((frame.accel_x_g, frame.accel_y_g, frame.accel_z_g), gravity),
+            math.hypot(frame.gyro_x_dps, frame.gyro_y_dps, frame.gyro_z_dps),
+        )
+        for frame in eligible
+    ]
     dynamics = [dynamic for dynamic, _gyro in metrics]
     lower_half = sorted(dynamics)[: max(5, len(dynamics) // 2)]
     baseline = statistics.median(lower_half)
@@ -405,7 +417,7 @@ def extract_manual_double_tap(
             interval = second[0] - first[0]
             if interval < MANUAL_CAPTURE_MIN_INTERVAL_MS:
                 continue
-            if interval > MANUAL_CAPTURE_MAX_INTERVAL_MS:
+            if interval > max_interval_ms:
                 break
             between = [
                 metrics[index][0]
@@ -954,9 +966,34 @@ class VoiceModule:
     def start_force_calibration(self, interval_ms: int | None = None) -> None:
         from .tap_calibration import TapCalibration
         self.cancel_calibration()
+        with self._motion_lock:
+            after_timestamp_ms = (
+                self._motion_frames[-1].timestamp_ms if self._motion_frames else -1
+            )
         with self._force_lock:
-            self._force_calibration = TapCalibration(self.store.settings, interval_ms)
+            self._force_calibration = TapCalibration(
+                self.store.settings, interval_ms, after_timestamp_ms
+            )
             self.emit('tap_calibration_state', self._force_calibration.snapshot())
+
+    def record_force_calibration_sample(self) -> DoubleTapEvent:
+        """Record the latest raw pair only after the user confirms it."""
+        with self._force_lock:
+            session = self._force_calibration
+            if session is None:
+                raise ValueError('请先开始双敲校准')
+            if session.stage == 'test':
+                raise ValueError('力度录入已经完成；可自由测试或重新校准')
+            with self._motion_lock:
+                frames = tuple(self._motion_frames)
+            event = extract_manual_double_tap(
+                frames,
+                after_timestamp_ms=session.after_timestamp_ms,
+                max_interval_ms=session.interval_ms,
+            )
+            state = session.record(event)
+            self.emit('tap_calibration_state', state)
+            return event
 
     def set_tap_interval(self, interval_ms: int) -> None:
         with self._force_lock:
@@ -982,6 +1019,7 @@ class VoiceModule:
             session = self._force_calibration
             if session is not None:
                 session.detector.reset()
+                session.meter.reset()
                 if session.stage == 'test':
                     session.test_detector.reset()
                 self.emit('tap_calibration_state', session.snapshot(

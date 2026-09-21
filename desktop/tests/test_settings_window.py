@@ -210,7 +210,7 @@ def test_visual_settings_adjust_and_save_wound_frequency(root: tk.Tk, tmp_path) 
         window.close()
 
 
-def test_tap_calibration_auto_steps_test_and_cancel(root: tk.Tk, tmp_path) -> None:
+def test_tap_calibration_manual_record_test_and_cancel(root: tk.Tk, tmp_path) -> None:
     starts: list[bool] = []
     records: list[bool] = []
     intervals: list[int] = []
@@ -234,20 +234,27 @@ def test_tap_calibration_auto_steps_test_and_cancel(root: tk.Tk, tmp_path) -> No
         assert starts == [True]
         assert not window.voice_record_button.winfo_ismapped()
         assert window._tap_stage == 'light'
+        assert window.tap_record.winfo_manager()
+        assert window.tap_record.cget('text') == '录入本次'
         assert str(window.tap_save['state']) == 'disabled'
         window.tap_interval_slider.set(.2)
         assert intervals[-1] == 200
         assert window.tap_interval_label.get() == '敲击间隔：0.2秒'
         assert window.tap_save._paint_key[2] == '#AFC5EB'
         assert window.tap_save.cget('image')
-        window.handle_tap_calibration(dict(stage='heavy'))
+        window.handle_tap_calibration(dict(stage='light', live_strengths=(.82, .91)))
+        assert '第一下 0.82 g' in window.tap_result.get()
+        assert '第二下 0.91 g' in window.tap_result.get()
+        window.tap_record.invoke()
+        assert records == [True]
+        window.handle_tap_calibration(dict(stage='heavy', light=.82))
         assert '2 / 2' in window.tap_step.get()
         window.handle_tap_calibration(dict(stage='test', threshold=.5, light=.8, heavy=4, accepted=1))
         assert str(window.tap_save['state']) == 'normal'
+        assert not window.tap_record.winfo_manager()
         window.tap_interval_slider.set(1)
         assert intervals[-1] == 1000
         assert '测试通过 1 次' in window.tap_result.get()
-        assert records == []
         window._select_section('voice')
         assert not window._voice_calibrating
         assert window.tap_interval.get() == .7
