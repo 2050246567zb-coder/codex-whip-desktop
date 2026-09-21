@@ -197,6 +197,20 @@ if sys.platform == "win32":
     _user32.SetForegroundWindow.restype = wintypes.BOOL
     _user32.GetForegroundWindow.argtypes = ()
     _user32.GetForegroundWindow.restype = wintypes.HWND
+    ENUM_WINDOWS_PROC = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+    )
+    _user32.EnumWindows.argtypes = (ENUM_WINDOWS_PROC, wintypes.LPARAM)
+    _user32.EnumWindows.restype = wintypes.BOOL
+    _user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+    _user32.IsWindowVisible.restype = wintypes.BOOL
+    _user32.GetWindowTextLengthW.argtypes = (wintypes.HWND,)
+    _user32.GetWindowTextLengthW.restype = ctypes.c_int
+    _user32.GetWindowThreadProcessId.argtypes = (
+        wintypes.HWND,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    _user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 
 
 def _send_key(vk: int, scan: int = 0, flags: int = 0) -> None:
@@ -247,14 +261,45 @@ class WindowsCodexSender:
             raise CodexTargetError("pywinauto is required for live mode") from exc
         return Desktop(backend="uia")
 
+    @staticmethod
+    def _visible_top_level_windows() -> list[tuple[int, int]]:
+        """Enumerate HWND/PID pairs without asking UI Automation about every app.
+
+        ``Desktop(backend="uia").windows(visible_only=True)`` queries the UIA
+        visibility property of every desktop element. A single broken or busy
+        third-party accessibility provider can block that call indefinitely.
+        Native Win32 enumeration lets us filter by executable first and only
+        create a UIA wrapper for the actual Codex/Claude window.
+        """
+        if sys.platform != "win32":
+            return []
+        windows: list[tuple[int, int]] = []
+
+        @ENUM_WINDOWS_PROC
+        def collect(hwnd: int, _lparam: int) -> bool:
+            if not _user32.IsWindowVisible(hwnd):
+                return True
+            if _user32.GetWindowTextLengthW(hwnd) <= 0:
+                return True
+            pid = wintypes.DWORD()
+            _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value:
+                windows.append((int(hwnd), int(pid.value)))
+            return True
+
+        _user32.EnumWindows(collect, 0)
+        return windows
+
     def _codex_windows(self) -> list[Any]:
         candidates: list[Any] = []
-        for window in self._desktop().windows(visible_only=True):
+        desktop = self._desktop()
+        for hwnd, pid in self._visible_top_level_windows():
             try:
-                pid = window.process_id()
                 executable = psutil.Process(pid).exe()
-                title = window.window_text().strip()
-                if title and is_target_executable(executable, self._settings):
+                if not is_target_executable(executable, self._settings):
+                    continue
+                window = desktop.window(handle=hwnd).wrapper_object()
+                if window.window_text().strip():
                     candidates.append(window)
             except (psutil.Error, RuntimeError, OSError):
                 continue

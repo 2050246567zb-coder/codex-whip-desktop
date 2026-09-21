@@ -2,12 +2,14 @@ import asyncio
 import threading
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from codex_whip.calibration import LearningSample
 from codex_whip.gui import (
     CodexWhipWindow,
     GuiEventProcessor,
+    NativeDictationJob,
     UiEventBuffer,
     UiHangWatchdog,
 )
@@ -74,10 +76,54 @@ def test_ui_hang_watchdog_persists_thread_dump(tmp_path) -> None:
         watchdog.stop()
 
     text = path.read_text(encoding="utf-8")
-    assert "version=2.2.44" in text
+    assert "version=2.2.45" in text
     assert "context=voice-state:recording" in text
     assert "Current thread" in text
     assert "_run" in text
+
+
+def test_native_dictation_start_and_stop_never_run_on_ui_thread() -> None:
+    emitted: list[tuple[str, object]] = []
+    started = threading.Event()
+    stopped = threading.Event()
+    calls: list[tuple[str, int]] = []
+    ui_thread = threading.get_ident()
+
+    class Sender:
+        def start_dictation(self):
+            calls.append(("start", threading.get_ident()))
+            return object()
+
+        def stop_dictation(self, _session):
+            calls.append(("stop", threading.get_ident()))
+
+    class Microphone:
+        def start(self, _gain):
+            calls.append(("microphone", threading.get_ident()))
+            return SimpleNamespace(name="Test Cable")
+
+        def abort(self):
+            calls.append(("abort", threading.get_ident()))
+
+    def emit(kind, payload):
+        emitted.append((kind, payload))
+        if kind == "native_dictation_started":
+            started.set()
+        elif kind == "native_dictation_stopped":
+            stopped.set()
+
+    job = NativeDictationJob(Sender(), Microphone(), 2.0, 7, emit)
+    job.start()
+    assert started.wait(1)
+    job.request_stop(abort=False)
+    assert stopped.wait(1)
+
+    worker_threads = {thread_id for _name, thread_id in calls}
+    assert len(worker_threads) == 1
+    assert ui_thread not in worker_threads
+    assert [name for name, _thread_id in calls] == ["start", "microphone", "stop"]
+    assert emitted[0][0] == "native_dictation_started"
+    assert emitted[-1][0] == "native_dictation_stopped"
 
 
 def test_gui_processor_reports_device_messages() -> None:

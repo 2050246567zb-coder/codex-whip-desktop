@@ -1,4 +1,5 @@
 from codex_whip.settings import CodexSettings
+from codex_whip.senders import windows_uia
 from codex_whip.senders.windows_uia import (
     is_target_executable, ControlCandidate, Rectangle, score_composer_candidate,
     composer_identity, WindowsCodexSender,
@@ -35,3 +36,30 @@ def test_claude_identity_is_not_placeholder_or_draft_text():
     assert sender._composer_value(control) == ''
     control.get_value = lambda: 'My unsent draft'
     assert sender._composer_value(control) == 'My unsent draft'
+
+
+def test_window_lookup_filters_processes_before_creating_uia_wrappers(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    sender = object.__new__(WindowsCodexSender)
+    sender._settings = CodexSettings()
+    sender._visible_top_level_windows = lambda: [(101, 11), (202, 22)]
+    desktop = Mock()
+    target = Mock()
+    target.window_text.return_value = 'Codex'
+    desktop.window.return_value.wrapper_object.return_value = target
+    sender._desktop = lambda: desktop
+    executables = {
+        11: 'C:/Program Files/WindowsApps/OpenAI.Codex_test/ChatGPT.exe',
+        22: 'C:/Windows/notepad.exe',
+    }
+    monkeypatch.setattr(
+        windows_uia.psutil,
+        'Process',
+        lambda pid: SimpleNamespace(exe=lambda: executables[pid]),
+    )
+
+    assert sender._codex_windows() == [target]
+    desktop.window.assert_called_once_with(handle=101)
+    desktop.windows.assert_not_called()
