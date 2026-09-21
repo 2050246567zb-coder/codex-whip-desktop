@@ -444,11 +444,43 @@ class WindowsCodexSender:
             raise CodexTargetError(f"expected one Codex dictation control, found {len(matches)}")
         return matches[0]
 
+    def _find_stop_dictation_button(self, window: Any) -> Any:
+        """Find only Codex's active dictation stop control.
+
+        Starting dictation replaces the original ``听写`` element with a new
+        ``停止听写`` element. Reusing the original UIA wrapper either raises a
+        stale-element COM error or does nothing. The adjacent ``转录并发送`` and
+        the unrelated task ``停止`` button are deliberately not accepted.
+        """
+        window_rect = _rect(window.rectangle())
+        accepted = {"停止听写", "结束听写", "stop dictation"}
+        matches: list[Any] = []
+        for button in window.descendants(control_type="Button"):
+            try:
+                name = (
+                    button.window_text() or button.element_info.name or ""
+                ).strip().casefold()
+                rect = _rect(button.rectangle())
+                if (
+                    name in accepted
+                    and button.is_visible()
+                    and button.is_enabled()
+                    and rect.top >= window_rect.top + window_rect.height * 0.52
+                ):
+                    matches.append(button)
+            except (RuntimeError, OSError):
+                continue
+        if len(matches) != 1:
+            raise CodexTargetError(
+                f"expected one active Codex dictation stop control, found {len(matches)}"
+            )
+        return matches[0]
+
     @staticmethod
     def _invoke(button: Any, detail: str) -> None:
         try:
             button.invoke()
-        except (AttributeError, RuntimeError, OSError) as exc:
+        except Exception as exc:
             raise CodexTargetError(detail) from exc
 
     def start_dictation(self) -> WindowsDictationSession:
@@ -475,9 +507,11 @@ class WindowsCodexSender:
                    if int(window.handle) == session.hwnd and int(window.process_id()) == session.pid]
         if len(windows) != 1:
             raise CodexTargetError("Codex 听写窗口已经关闭或改变")
-        # Invoke the exact element that started this session. Never search for a
-        # generic “停止” button because that could stop a running Codex task.
-        self._invoke(session.button, "无法安全停止 Codex 听写")
+        # Codex replaces the start element after activation. Re-find only the
+        # explicit dictation stop control; never click a generic “停止” button,
+        # which could stop a running Codex task.
+        button = self._find_stop_dictation_button(windows[0])
+        self._invoke(button, "无法安全停止 Codex 听写")
 
     def submit_existing(self, event: WhipEvent) -> SendResult:
         del event

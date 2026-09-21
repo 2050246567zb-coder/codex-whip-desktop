@@ -2,7 +2,7 @@ from codex_whip.settings import CodexSettings
 from codex_whip.senders import windows_uia
 from codex_whip.senders.windows_uia import (
     is_target_executable, ControlCandidate, Rectangle, score_composer_candidate,
-    composer_identity, WindowsCodexSender,
+    composer_identity, WindowsCodexSender, WindowsDictationSession,
 )
 
 
@@ -63,3 +63,23 @@ def test_window_lookup_filters_processes_before_creating_uia_wrappers(monkeypatc
     assert sender._codex_windows() == [target]
     desktop.window.assert_called_once_with(handle=101)
     desktop.windows.assert_not_called()
+
+
+def test_stop_dictation_refinds_replacement_button_instead_of_stale_start():
+    from unittest.mock import Mock
+
+    sender = object.__new__(WindowsCodexSender)
+    sender._settings = CodexSettings()
+    window = Mock()
+    window.handle = 101
+    window.process_id.return_value = 11
+    sender._codex_windows = lambda: [window]
+    stale_start = Mock()
+    active_stop = Mock()
+    sender._find_stop_dictation_button = Mock(return_value=active_stop)
+
+    sender.stop_dictation(WindowsDictationSession(101, 11, stale_start))
+
+    sender._find_stop_dictation_button.assert_called_once_with(window)
+    active_stop.invoke.assert_called_once_with()
+    stale_start.invoke.assert_not_called()
