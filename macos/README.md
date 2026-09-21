@@ -1,4 +1,4 @@
-# Codex Whip 产品版 2.2.42 for macOS
+# Codex Whip 产品版 2.2.43 for macOS
 
 macOS 与 Windows 共用动作识别、校准、设置、界面动画、鞭绳物理、伤口、消息和
 语音状态机；窗口控制使用 macOS Accessibility/AppKit/Quartz，BLE 使用

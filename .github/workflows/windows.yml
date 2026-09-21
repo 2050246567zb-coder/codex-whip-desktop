@@ -25,9 +25,9 @@ jobs:
           $source = (Resolve-Path desktop/src).Path
           $assets = (Resolve-Path desktop/assets).Path
           $entry = (Resolve-Path desktop/codex_whip_gui.py).Path
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --name "产品版-2.2.42" --paths $source --add-data "${assets};assets" --collect-all bleak --collect-all pywinauto --collect-all sounddevice --exclude-module pytest --distpath dist --workpath build/pyinstaller --specpath build/pyinstaller-spec $entry
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name "产品版-2.2.43" --paths $source --add-data "${assets};assets" --collect-all bleak --collect-all pywinauto --collect-all sounddevice --exclude-module pytest --distpath dist --workpath build/pyinstaller --specpath build/pyinstaller-spec $entry
       - uses: actions/upload-artifact@v4
         with:
-          name: CodexWhip-Windows-2.2.42
-          path: dist/产品版-2.2.42.exe
+          name: CodexWhip-Windows-2.2.43
+          path: dist/产品版-2.2.43.exe
           retention-days: 14
