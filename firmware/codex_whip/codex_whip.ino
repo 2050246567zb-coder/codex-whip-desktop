@@ -11,7 +11,7 @@
 
 namespace {
 
-constexpr char kFirmwareVersion[] = "0.6.1";
+constexpr char kFirmwareVersion[] = "0.7.0";
 constexpr char kDeviceName[] = "CodexWhip";
 constexpr uint32_t kSampleRateHz = 416;
 constexpr uint32_t kSamplePeriodUs = 1000000UL / kSampleRateHz;
@@ -38,6 +38,8 @@ constexpr size_t kVoiceRingSamples = 12800;
 constexpr uint32_t kVoiceNoiseIgnoreMs = 140;
 constexpr uint32_t kVoiceNoiseCalibrationMs = 340;
 constexpr uint32_t kVoiceNoSpeechTimeoutMs = 4000;
+constexpr uint8_t kChargeStatusPin = 23;  // P0.17, active-low BQ25100 ~CHG.
+constexpr uint32_t kBatteryReportPeriodMs = 30000;
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
 BLEDis deviceInfo;
@@ -120,6 +122,59 @@ volatile size_t voiceRingWrite = 0;
 volatile size_t voiceRingCount = 0;
 volatile uint32_t voiceLastPdmAtMs = 0;
 volatile bool voiceRingOverflow = false;
+uint32_t nextBatteryReportAt = 0;
+
+void sendLine(const String& line);
+
+uint16_t readBatteryMillivolts() {
+  // Seeed exposes VBAT through P0.31. P0.14 must remain LOW while charging
+  // so the divider stays enabled and the ADC input never sees raw LiPo voltage.
+  analogReference(AR_INTERNAL_3_0);
+  analogReadResolution(12);
+  delayMicroseconds(250);
+  analogRead(PIN_VBAT);  // Discard the first conversion after reference change.
+  uint32_t sum = 0;
+  constexpr uint8_t kSamples = 8;
+  for (uint8_t sample = 0; sample < kSamples; ++sample) {
+    sum += analogRead(PIN_VBAT);
+    delayMicroseconds(120);
+  }
+  analogReference(AR_DEFAULT);
+  analogReadResolution(10);
+
+  const float pinMillivolts = (sum / static_cast<float>(kSamples)) * 3000.0f / 4095.0f;
+  // XIAO revisions use either 1:1 or approximately 1M:510K dividers. Their
+  // ADC voltage ranges do not overlap for a normal single-cell LiPo, allowing
+  // safe automatic compensation without a user-visible voltage setting.
+  const float dividerCompensation = pinMillivolts > 1500.0f ? 2.0f : (1510.0f / 510.0f);
+  return static_cast<uint16_t>(pinMillivolts * dividerCompensation + 0.5f);
+}
+
+uint8_t batteryPercent(uint16_t millivolts) {
+  struct Point { uint16_t millivolts; uint8_t percent; };
+  constexpr Point curve[] = {
+      {3300, 0}, {3400, 5}, {3600, 15}, {3700, 30}, {3800, 50},
+      {3900, 65}, {4000, 80}, {4100, 90}, {4200, 100},
+  };
+  if (millivolts <= curve[0].millivolts) return 0;
+  for (size_t index = 1; index < sizeof(curve) / sizeof(curve[0]); ++index) {
+    if (millivolts <= curve[index].millivolts) {
+      const Point& lower = curve[index - 1];
+      const Point& upper = curve[index];
+      return lower.percent + static_cast<uint8_t>(
+          (millivolts - lower.millivolts) * (upper.percent - lower.percent) /
+          (upper.millivolts - lower.millivolts));
+    }
+  }
+  return 100;
+}
+
+void reportBattery() {
+  const uint8_t percent = batteryPercent(readBatteryMillivolts());
+  const bool charging = digitalRead(kChargeStatusPin) == LOW;
+  sendLine("BATTERY," + String(percent) + "," + String(charging ? 1 : 0));
+  nextBatteryReportAt = millis() + kBatteryReportPeriodMs;
+}
 
 int16_t readInt16LE(const uint8_t* bytes) {
   return static_cast<int16_t>(static_cast<uint16_t>(bytes[0]) |
@@ -976,6 +1031,9 @@ void handleCommand(String command) {
   }
   if (command == "PING") {
     sendLine("PONG," + String(kFirmwareVersion));
+    reportBattery();
+  } else if (command == "BATTERY") {
+    reportBattery();
   } else if (command == "SELFTEST") {
     runDetectorSelfTest();
   } else if (command == "STATUS") {
@@ -1097,6 +1155,10 @@ void setup() {
   Serial.begin(115200);
   delay(250);
 
+  pinMode(VBAT_ENABLE, OUTPUT);
+  digitalWrite(VBAT_ENABLE, LOW);
+  pinMode(kChargeStatusPin, INPUT_PULLUP);
+
   // Explicitly retain the maximum ranges and 416 Hz rate used by the detector.
   imu.settings.accelRange = 16;
   imu.settings.accelSampleRate = kSampleRateHz;
@@ -1145,6 +1207,11 @@ void setup() {
 void loop() {
   pollCommands();
   flushRawTransmission();
+
+  if (Bluefruit.connected() && !voiceRecording &&
+      static_cast<int32_t>(millis() - nextBatteryReportAt) >= 0) {
+    reportBattery();
+  }
 
   if (voiceRecording && !Bluefruit.connected()) {
     stopVoiceRecording("DISCONNECTED");

@@ -46,6 +46,7 @@ from .senders import create_live_sender
 from .senders.base import SendResult
 from .settings import Settings, load_settings
 from .settings_window import DetectorSettingsWindow
+from .battery import parse_battery_fields
 from .sensor_pose import SensorPoseTracker
 from .sensor_bias import load_sensor_bias
 from .power_settings import PowerSettings, supports_power_saving
@@ -1422,6 +1423,16 @@ class CodexWhipWindow:
                     elif message.kind == 'POWERERR':
                         self._set_power_status('省电设置或传感器恢复失败，请重启手柄并检查日志')
                         self._append_log(f'设备：{display}')
+                    elif message.kind == 'BATTERY':
+                        try:
+                            battery = parse_battery_fields(message.fields)
+                        except ValueError as exc:
+                            self._append_log(f'设备电量数据无效：{exc}')
+                        else:
+                            self.ui.observe('battery', {
+                                'percent': battery.percent,
+                                'charging': battery.charging,
+                            })
                     elif message.kind == "CFGVAL":
                         pass
                     else:

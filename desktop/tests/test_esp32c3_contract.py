@@ -34,7 +34,10 @@ def test_all_existing_command_branches_retained():
     new = (PORT/'codex_whip_esp32c3.ino').read_text()
     commands = set(re.findall(r'command == "([^"]+)"', old))
     # XIAO-only opt-in low power, gated explicitly by the desktop capability.
-    xiao_only = {'POWERGET', 'POWERTEST', 'POWERHOLD', 'POWER,0', 'POWER,1'}
+    xiao_only = {
+        'POWERGET', 'POWERTEST', 'POWERHOLD', 'POWER,0', 'POWER,1',
+        'BATTERY',  # ESP32-C3 build has no battery-divider ADC wiring yet.
+    }
     assert commands - xiao_only <= set(re.findall(r'command == "([^"]+)"', new))
     for prefix in ('VOICE,START,', 'CFG,'):
         assert f'command.startsWith("{prefix}")' in new
