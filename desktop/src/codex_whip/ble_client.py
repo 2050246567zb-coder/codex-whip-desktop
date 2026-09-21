@@ -13,6 +13,7 @@ from .settings import BleSettings
 
 NUS_RX_CHARACTERISTIC = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_TX_CHARACTERISTIC = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+BATTERY_POLL_SECONDS = 1.0
 
 MessageHandler = Callable[[ProtocolMessage], Awaitable[None]]
 LogHandler = Callable[[str], None]
@@ -107,8 +108,13 @@ class BleWhipClient:
             await client.write_gatt_char(
                 NUS_RX_CHARACTERISTIC, b"ARM,1\n", response=False
             )
+            next_battery_poll = asyncio.get_running_loop().time() + BATTERY_POLL_SECONDS
 
             while client.is_connected and not stop.is_set():
+                now = asyncio.get_running_loop().time()
+                if now >= next_battery_poll:
+                    await self._write_command(client, "BATTERY")
+                    next_battery_poll = now + BATTERY_POLL_SECONDS
                 # Continuous IMU/audio notifications must not starve control
                 # writes (threshold sync, RAW mode, recording commands).
                 if self._command_queue is not None:
@@ -136,7 +142,11 @@ class BleWhipClient:
                     if self._command_queue is not None
                     else None
                 )
+                battery_task = asyncio.create_task(asyncio.sleep(max(
+                    0.0, next_battery_poll - asyncio.get_running_loop().time()
+                )))
                 tasks = {queue_task, disconnect_task, stop_task}
+                tasks.add(battery_task)
                 if command_task is not None:
                     tasks.add(command_task)
                 done, pending = await asyncio.wait(
@@ -156,6 +166,11 @@ class BleWhipClient:
                     and client.is_connected
                 ):
                     await self._write_command(client, command_task.result())
+                if battery_task in done and client.is_connected:
+                    await self._write_command(client, "BATTERY")
+                    next_battery_poll = (
+                        asyncio.get_running_loop().time() + BATTERY_POLL_SECONDS
+                    )
                 if disconnect_task in done or stop_task in done:
                     break
 

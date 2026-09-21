@@ -30,6 +30,8 @@ class ForceTapDetector(DoubleTapDetector):
         self._turn_ms = 0
         self.last_strength = 0.0
         self._accels = deque(maxlen=16)
+        self._previous_accel = None
+        self._previous_departure = 0.0
 
     def reset(self):
         super().reset()
@@ -38,6 +40,8 @@ class ForceTapDetector(DoubleTapDetector):
         self._clock = 0
         self._turn_ms = 0
         self._accels.clear()
+        self._previous_accel = None
+        self._previous_departure = 0.0
 
     def _magnitudes(self, frame):
         accel = (frame.accel_x_g, frame.accel_y_g, frame.accel_z_g)
@@ -45,19 +49,28 @@ class ForceTapDetector(DoubleTapDetector):
             self._gravity = accel
         gyro = math.hypot(frame.gyro_x_dps, frame.gyro_y_dps, frame.gyro_z_dps)
         radial = abs(math.hypot(*accel) - 1.0)
-        vector_change = math.dist(accel, self._gravity)
-        if radial < .18 and vector_change < .35:
-            # A pure change of orientation rotates the gravity vector but does
-            # not change its magnitude.  Re-anchor immediately so the next
-            # real impact works from any grip and a completed pulse releases
-            # as soon as the handle returns to 1 g.
+        step = 0.0 if self._previous_accel is None else math.dist(
+            accel, self._previous_accel
+        )
+        self._previous_accel = accel
+        departure = math.dist(accel, self._gravity)
+        # A table strike is an impulse: acceleration changes sharply between
+        # adjacent 100 Hz transport samples. Slow translation or a grip-angle
+        # change can move far from an old gravity vector, but its per-frame
+        # step stays small. This releases immediately after a one-sample peak
+        # and no longer depends on which face of the handle points downward.
+        # Count the vector step only on the leading edge.  The equally sharp
+        # return to rest is the pulse release, not a second impact.
+        leading_step = (
+            step if departure > self._previous_departure + .03 else 0.0
+        )
+        self._previous_departure = departure
+        dynamic = max(radial, leading_step)
+        if dynamic < .22:
             self._gravity = accel
-            dynamic = radial
+            self._previous_departure = 0.0
         else:
-            dynamic = vector_change
-            # Follow sustained translation gradually; a 10–30 ms impact keeps
-            # nearly all of its peak while a broad movement times out.
-            self._gravity = tuple(a*.08+b*.92 for a, b in zip(accel, self._gravity))
+            self._gravity = tuple(a*.15+b*.85 for a, b in zip(accel, self._gravity))
         self.last_strength = dynamic
         # Impact direction must not be a hidden constraint.  A sharp bottom
         # strike can momentarily saturate the gyro even though its acceleration
@@ -73,6 +86,8 @@ class ForceTapDetector(DoubleTapDetector):
         if self._timestamp is None:
             self._timestamp = frame.timestamp_ms
             self._gravity = values[:3]
+            self._previous_accel = values[:3]
+            self._previous_departure = 0.0
             return None
         delta = (frame.timestamp_ms-self._timestamp) & 0xFFFFFFFF
         if delta == 0 or delta > 0x80000000:
@@ -83,6 +98,8 @@ class ForceTapDetector(DoubleTapDetector):
             self.reset()
             self._timestamp = frame.timestamp_ms
             self._gravity = values[:3]
+            self._previous_accel = values[:3]
+            self._previous_departure = 0.0
             return None
         self._accels.append(values[:3])
         gyro = math.hypot(*values[3:])

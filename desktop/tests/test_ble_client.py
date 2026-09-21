@@ -92,3 +92,47 @@ def test_continuous_notifications_do_not_starve_commands(monkeypatch) -> None:
         assert received < 256
 
     asyncio.run(exercise())
+
+
+def test_idle_connection_polls_battery_without_waiting_for_notifications(monkeypatch) -> None:
+    from codex_whip import ble_client
+    from codex_whip.settings import BleSettings
+
+    async def exercise():
+        stop = asyncio.Event()
+        writes = []
+
+        class Peripheral:
+            is_connected = True
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def start_notify(self, _uuid, _callback):
+                pass
+
+            async def stop_notify(self, _uuid):
+                pass
+
+            async def write_gatt_char(self, _uuid, payload, **_kwargs):
+                writes.append(payload)
+                if payload == b"BATTERY\n":
+                    stop.set()
+
+        monkeypatch.setattr(ble_client, "BATTERY_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(ble_client, "BleakClient", lambda *a, **k: Peripheral())
+        client = ble_client.BleWhipClient(BleSettings())
+
+        async def handler(_item):
+            pass
+
+        await asyncio.wait_for(
+            client._run_connection(object(), handler, stop), timeout=0.5
+        )
+        assert writes[:2] == [b"PING\n", b"ARM,1\n"]
+        assert b"BATTERY\n" in writes
+
+    asyncio.run(exercise())

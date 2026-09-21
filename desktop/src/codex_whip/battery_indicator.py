@@ -76,6 +76,27 @@ class BatteryIndicator(tk.Canvas):
 
     def _draw(self) -> None:
         self.delete("all")
+        if self.charging:
+            # Charging is a distinct status glyph, not another battery body.
+            # Its compact capsule echoes the optical weight of the header gear.
+            self.create_polygon(
+                self._rounded_points(3.0, 3.0, 29.0, 15.0, 6.0),
+                smooth=True,
+                splinesteps=32,
+                fill=self.CHARGING,
+                outline=self.CHARGING,
+                width=1.6,
+                tags="charging_capsule",
+            )
+            self.create_polygon(
+                16.2, 4.1, 11.8, 9.2, 14.7, 9.2,
+                13.7, 14.0, 20.1, 7.3, 16.8, 7.3,
+                fill="#FFFFFF",
+                outline="",
+                tags="bolt",
+            )
+            return
+
         level_color = self.color if self.percent is not None else self.UNKNOWN
         outline = self.OUTLINE if self.percent is not None else self.UNKNOWN
         self.create_polygon(
@@ -99,16 +120,6 @@ class BatteryIndicator(tk.Canvas):
                 fill=level_color,
                 outline="",
                 tags="level",
-            )
-
-        if self.charging:
-            self.create_polygon(
-                15.4, 2.1, 9.8, 9.0, 13.5, 9.0,
-                11.8, 15.8, 19.5, 7.1, 15.7, 7.1,
-                fill="#FFFFFF",
-                outline=self.OUTLINE,
-                width=1.1,
-                tags="bolt",
             )
 
     def _tooltip_label(self) -> tk.Label:
