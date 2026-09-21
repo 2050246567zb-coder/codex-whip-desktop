@@ -53,6 +53,7 @@ class AudioDriverInstaller:
         downloader: Callable = urlopen,
         temp_root: Path | None = None,
         elevate: Callable[[Path], bool] | None = None,
+        brew_paths: tuple[str, ...] = ("/opt/homebrew/bin/brew", "/usr/local/bin/brew"),
     ) -> None:
         self.platform = platform or sys.platform
         self._opener = opener
@@ -61,6 +62,7 @@ class AudioDriverInstaller:
         self._downloader = downloader
         self._temp_root = temp_root
         self._elevate = elevate or self._windows_elevate
+        self._brew_paths = brew_paths
         # Keep extracted INF/CAT/SYS alive until the elevated installer has read them.
         self._working_directories: list[Path] = []
 
@@ -149,7 +151,7 @@ class AudioDriverInstaller:
 
     def _install_macos(self) -> InstallLaunchResult:
         brew = next(
-            (path for path in ("/opt/homebrew/bin/brew", "/usr/local/bin/brew", self._which("brew"))
+            (path for path in (*self._brew_paths, self._which("brew"))
              if path and Path(path).exists()),
             None,
         )
