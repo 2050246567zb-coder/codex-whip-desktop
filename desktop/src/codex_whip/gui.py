@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import faulthandler
 import json
 import os
 import queue
@@ -104,6 +105,86 @@ class UiEventBuffer:
 
     def empty(self) -> bool:
         return self._queue.empty()
+
+
+class UiHangWatchdog:
+    """Persist Python thread stacks when Tk stops servicing callbacks."""
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        timeout_seconds: float = 3.0,
+        repeat_seconds: float = 10.0,
+    ) -> None:
+        self.path = path
+        self.timeout_seconds = timeout_seconds
+        self.repeat_seconds = repeat_seconds
+        self._heartbeat_at = time.monotonic()
+        self._last_dump_at = -repeat_seconds
+        self._context = "startup"
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def beat(self, context: str = "idle") -> None:
+        with self._lock:
+            self._heartbeat_at = time.monotonic()
+            self._context = context
+
+    def note(self, context: str) -> None:
+        with self._lock:
+            self._context = context
+
+    def overdue(self, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            return (
+                now - self._heartbeat_at >= self.timeout_seconds
+                and now - self._last_dump_at >= self.repeat_seconds
+            )
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._run,
+            name="codex-whip-ui-watchdog",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        thread, self._thread = self._thread, None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=0.75)
+
+    def _run(self) -> None:
+        while not self._stop.wait(0.5):
+            now = time.monotonic()
+            if not self.overdue(now):
+                continue
+            with self._lock:
+                age = now - self._heartbeat_at
+                context = self._context
+                self._last_dump_at = now
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                with self.path.open("a", encoding="utf-8") as stream:
+                    stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+                    stream.write(
+                        f"\n=== UI HANG {stamp} version={__version__} "
+                        f"heartbeat_age={age:.2f}s context={context} ===\n"
+                    )
+                    stream.flush()
+                    faulthandler.dump_traceback(file=stream, all_threads=True)
+                    stream.write("=== END UI HANG ===\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except (OSError, RuntimeError):
+                # Diagnostics must never introduce another failure mode.
+                pass
 
 
 def find_config_path() -> Path | None:
@@ -498,6 +579,8 @@ class CodexWhipWindow:
         self._effect_refresh_running = False
         self._manual_sequence = 1_000_000
         self._scare_hotkey: GlobalHotkey | None = None
+        self._hang_watchdog = UiHangWatchdog(user_data_dir() / "hang-diagnostics.log")
+        self._hang_heartbeat_after: str | None = None
 
         self.arm_value = tk.BooleanVar(value=False)
         self.ble_value = tk.StringVar(value="尚未启动")
@@ -527,6 +610,8 @@ class CodexWhipWindow:
                                   sound_enabled=self.visual_store.settings.sound_enabled)
         self._replace_scare_hotkey(self.visual_store.settings, log=True)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self._hang_watchdog.start()
+        self._hang_heartbeat()
         self._drain_after = self.root.after(16, self._drain_events)
         self._listen_after = self.root.after(250, self.start_listening)
         self._check_after = self.root.after(500, self.check_codex)
@@ -539,6 +624,13 @@ class CodexWhipWindow:
 
     def emit(self, kind: str, payload: Any) -> None:
         self.events.put((kind, payload))
+
+    def _hang_heartbeat(self) -> None:
+        self._hang_heartbeat_after = None
+        if self.closing:
+            return
+        self._hang_watchdog.beat("tk-event-loop")
+        self._hang_heartbeat_after = self.root.after(250, self._hang_heartbeat)
 
     def _worker_main(self) -> None:
         loop = asyncio.new_event_loop()
@@ -1112,6 +1204,7 @@ class CodexWhipWindow:
             # the cap is a final guard for bursts of lossless state events.
             for _event_index in range(96):
                 kind, payload = self.events.get_nowait()
+                self._hang_watchdog.note(f"ui-event:{kind}")
                 if kind == 'target_checked':
                     selected, kind, payload = payload
                     if selected != self.settings.codex:
@@ -1535,6 +1628,13 @@ class CodexWhipWindow:
 
     def close(self) -> None:
         self.closing = True
+        if self._hang_heartbeat_after is not None:
+            try:
+                self.root.after_cancel(self._hang_heartbeat_after)
+            except tk.TclError:
+                pass
+            self._hang_heartbeat_after = None
+        self._hang_watchdog.stop()
         self._stop_native_dictation(abort=True)
         for callback in (self._drain_after, self._listen_after, self._check_after):
             if callback is not None:

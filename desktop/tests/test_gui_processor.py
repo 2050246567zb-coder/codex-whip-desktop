@@ -1,10 +1,16 @@
 import asyncio
 import threading
+import time
 from dataclasses import replace
 from unittest.mock import Mock
 
 from codex_whip.calibration import LearningSample
-from codex_whip.gui import CodexWhipWindow, GuiEventProcessor, UiEventBuffer
+from codex_whip.gui import (
+    CodexWhipWindow,
+    GuiEventProcessor,
+    UiEventBuffer,
+    UiHangWatchdog,
+)
 from codex_whip.models import DeviceMessage, RawMotionBatch, RawMotionFrame, WhipEvent
 from codex_whip.senders.base import SendResult
 from codex_whip.settings import Settings
@@ -37,6 +43,41 @@ def test_ui_event_buffer_coalesces_motion_and_audio_without_losing_actions() -> 
     assert events.get_nowait() == ("ui_audio_level", 0.9999)
     assert events.get_nowait() == ("voice_state", {"state": "recording"})
     assert events.empty()
+
+
+def test_ui_hang_watchdog_uses_heartbeat_and_dump_cooldown(tmp_path) -> None:
+    watchdog = UiHangWatchdog(
+        tmp_path / "hang.log", timeout_seconds=3.0, repeat_seconds=10.0
+    )
+    watchdog._heartbeat_at = 10.0
+    watchdog._last_dump_at = 0.0
+
+    assert not watchdog.overdue(12.99)
+    assert watchdog.overdue(13.0)
+    watchdog._last_dump_at = 12.0
+    assert not watchdog.overdue(20.0)
+    assert watchdog.overdue(22.0)
+
+
+def test_ui_hang_watchdog_persists_thread_dump(tmp_path) -> None:
+    path = tmp_path / "hang.log"
+    watchdog = UiHangWatchdog(
+        path, timeout_seconds=0.05, repeat_seconds=10.0
+    )
+    watchdog.note("voice-state:recording")
+    watchdog.start()
+    try:
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline and not path.exists():
+            time.sleep(0.02)
+    finally:
+        watchdog.stop()
+
+    text = path.read_text(encoding="utf-8")
+    assert "version=2.2.44" in text
+    assert "context=voice-state:recording" in text
+    assert "Current thread" in text
+    assert "_run" in text
 
 
 def test_gui_processor_reports_device_messages() -> None:
