@@ -87,7 +87,8 @@ def test_macos_uses_visible_terminal_homebrew_install(tmp_path):
 def test_macos_without_homebrew_opens_official_installation_page():
     opened = []
     result = AudioDriverInstaller(
-        platform="darwin", which=lambda _name: None, opener=lambda url: opened.append(url) or True
+        platform="darwin", which=lambda _name: None, brew_paths=(),
+        opener=lambda url: opened.append(url) or True
     ).install()
     assert not result.automatic
     assert opened == [MACOS_INSTALL_PAGE]
