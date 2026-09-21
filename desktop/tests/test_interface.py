@@ -197,7 +197,10 @@ def test_home_battery_indicator_tracks_device_and_disconnect(app):
     app._drain_events()
     assert app.ui.battery_indicator.percent == 74
     assert app.ui.battery_indicator.color == app.ui.battery_indicator.NORMAL
-    assert app.ui.battery_indicator.itemcget('percentage', 'text') == '74%'
+    assert app.ui.battery_indicator.find_withtag('percentage') == ()
+    assert app.ui.battery_indicator.find_withtag('level')
+    assert int(float(app.ui.battery_indicator.cget('width'))) == 32
+    assert int(float(app.ui.battery_indicator.cget('height'))) == 18
     assert app.ui.battery_indicator.find_withtag('bolt') == ()
 
     app.emit('device', DeviceMessage('BATTERY', ('18', '0'), ''))
@@ -215,6 +218,7 @@ def test_home_battery_indicator_tracks_device_and_disconnect(app):
     app.emit('ble', 'disconnected')
     app._drain_events()
     assert app.ui.battery_indicator.percent is None
+    assert app.ui.battery_indicator.find_withtag('level') == ()
 
 
 def connected(app):
