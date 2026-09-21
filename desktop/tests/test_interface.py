@@ -183,6 +183,33 @@ def test_disconnected_loader_returns_to_whip(app):
     assert ui.title.cget('text') == 'just beat it'
 
 
+def test_home_battery_indicator_tracks_device_and_disconnect(app):
+    from codex_whip.models import DeviceMessage
+
+    app.emit('device', DeviceMessage('BATTERY', ('74', '0'), ''))
+    app._drain_events()
+    assert app.ui.battery_indicator.percent == 74
+    assert app.ui.battery_indicator.color == app.ui.battery_indicator.NORMAL
+    assert app.ui.battery_indicator.itemcget('percentage', 'text') == '74%'
+    assert app.ui.battery_indicator.find_withtag('bolt') == ()
+
+    app.emit('device', DeviceMessage('BATTERY', ('18', '0'), ''))
+    app._drain_events()
+    assert app.ui.battery_indicator.color == app.ui.battery_indicator.LOW
+
+    app.emit('device', DeviceMessage('BATTERY', ('55', '1'), ''))
+    app._drain_events()
+    assert app.ui.battery_indicator.charging
+    assert app.ui.battery_indicator.color == app.ui.battery_indicator.CHARGING
+    assert app.ui.battery_indicator.find_withtag('bolt')
+    assert app.ui.battery_indicator.find_withtag('percentage') == ()
+    assert app.ui.battery_indicator.tooltip_text == '剩余电量 55%'
+
+    app.emit('ble', 'disconnected')
+    app._drain_events()
+    assert app.ui.battery_indicator.percent is None
+
+
 def connected(app):
     app.ble_connected = True
     app.worker_loop = Mock()
@@ -556,8 +583,13 @@ def test_minimal_header_and_footer(app):
     assert app.ui.connection_label.master is app.settings_button.master
     assert not app.ui.footer.winfo_children()
     assert not hasattr(app.ui, "mode")
-    header_text = [w.cget("text") for w in app.settings_button.master.winfo_children()]
+    header_text = [
+        w.cget("text")
+        for w in app.settings_button.master.winfo_children()
+        if "text" in w.keys()
+    ]
     assert "Codex 鞭子" not in header_text
+    assert app.ui.battery_indicator.winfo_manager() == "pack"
 
 
 def test_hero_reads_exact_overlay_pose_and_relative_motion(app):

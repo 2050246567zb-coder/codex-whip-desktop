@@ -25,6 +25,7 @@ from . import __version__
 from .effects import CodexWhipEffects, WhipPose
 from .whip_drawing import WhipDrawing
 from .gear_button import GearButton
+from .battery_indicator import BatteryIndicator
 from .morphing_title import MorphingTitle
 from .sand_countdown import SandCountdownTitle
 from .hover_clock import clock_pose, morph, ease, near_whip, project, project_pose, pointer_tilt, loading_pose, recognizing_pose, cord_rotation
@@ -409,6 +410,8 @@ class Interface:
         self._learning_kind = ""
         self._tap_count = 0
         self._tap_done = False
+        self._battery_percent = None
+        self._battery_charging = False
         self._advanced_section = "general"
         self._build_home()
         self._build_preferences()
@@ -428,6 +431,8 @@ class Interface:
         header = tk.Frame(shell, bg=BG)
         header.pack(fill="x")
         self.connection_label = label(header, "●", color=MUTED, size=9)
+        self.battery_indicator = BatteryIndicator(header, font=FONT)
+        self.battery_indicator.pack(side="left")
         self.app.settings_button = GearButton(header, self.app.open_settings,
                                               lambda: self.preferences.reduce_motion)
         self.app.settings_button.pack(side="right")
@@ -783,7 +788,13 @@ class Interface:
         self._render_key = None
 
     def observe(self, kind, payload):
-        if kind == "sensor_pose":
+        if kind == "battery":
+            self._battery_percent = int(payload["percent"])
+            self._battery_charging = bool(payload["charging"])
+            self.battery_indicator.set_status(
+                self._battery_percent, self._battery_charging
+            )
+        elif kind == "sensor_pose":
             self._sensor_at = time.monotonic()
             self.hero.pose(payload.offset_x, payload.offset_y)
         elif kind == "whip":
@@ -819,6 +830,9 @@ class Interface:
         elif kind == "ble" and payload != "connected":
             self._sensor_at = -100.0
             self._voice_state = ""
+            self._battery_percent = None
+            self._battery_charging = False
+            self.battery_indicator.set_status(None)
         elif kind == "worker_stopped":
             self._sensor_at = -100.0
             self._voice_state = ""

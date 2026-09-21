@@ -56,7 +56,13 @@ def main(argv=None) -> int:
             settle_and_capture("01-connecting")
             app.ble_connected = True
             app.worker_loop = Mock()
+            app.ui.observe("battery", {"percent": 68, "charging": False})
             settle_and_capture("02-whip")
+            app.ui.observe("battery", {"percent": 18, "charging": False})
+            settle_and_capture("02b-battery-low", .2)
+            app.ui.observe("battery", {"percent": 68, "charging": True})
+            settle_and_capture("02c-battery-charging", .2)
+            app.ui.observe("battery", {"percent": 68, "charging": False})
             app.ui.hero._set_clock(True)
             settle_and_capture("03-clock")
             app.ui.hero._set_clock(False)
