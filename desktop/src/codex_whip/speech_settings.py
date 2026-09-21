@@ -201,7 +201,7 @@ class SpeechServiceCard:
             if __import__('sys').platform == 'darwin':
                 setup = '安装 BlackHole 2ch，并在 Codex/系统中把 BlackHole 2ch 设为麦克风输入'
             else:
-                setup = '安装 Virtual Audio Driver 或 VB-CABLE，并在 Codex/系统中把对应 Output 端设为麦克风输入'
+                setup = '安装 VB-CABLE，并在 Codex/系统中把 CABLE Output 设为麦克风输入'
             self.notice.configure(text=(f'双敲后把手柄声音送入 Codex 自带听写；需要先{setup}。'
                 '软件只连接明确识别的虚拟设备，不会把声音播放到扬声器。'))
             self.driver_panel.pack(fill='x', pady=(14,0), before=self.gain_title)

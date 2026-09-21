@@ -25,7 +25,7 @@ class Download(BytesIO):
 def windows_bundle() -> bytes:
     output = BytesIO()
     with zipfile.ZipFile(output, "w") as bundle:
-        for name in module._WINDOWS_FILES:
+        for name in module._WINDOWS_REQUIRED_FILES:
             bundle.writestr(name, b"signed fixture")
     return output.getvalue()
 
@@ -49,10 +49,12 @@ def test_windows_download_is_pinned_verified_and_elevated(tmp_path, monkeypatch)
     )
     result = installer.install()
     assert result.automatic
-    assert elevated[0].name == "VirtualAudioDriver.inf"
+    assert elevated[0].name == "VBCABLE_Setup_x64.exe"
     assert elevated[0].exists()
     assert commands[0][0] == "powershell.exe"
-    assert str(elevated[0].parent / "virtualaudiodriver.cat") in commands[0][-1]
+    assert str(elevated[0]) in commands[0][-1]
+    assert str(elevated[0].parent / "vbaudio_cable64_win10.cat") in commands[1][-1]
+    assert "BUREL VINCENT" in commands[0][-1]
     assert installer._working_directories
 
 

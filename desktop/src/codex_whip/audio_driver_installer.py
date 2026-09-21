@@ -16,17 +16,15 @@ import webbrowser
 import zipfile
 
 
-WINDOWS_RELEASE_URL = (
-    "https://github.com/VirtualDrivers/Virtual-Audio-Driver/releases/download/25.7.14/"
-    "Virtual.Audio.Driver.Signed.-.25.7.14.zip"
-)
-WINDOWS_RELEASE_SHA256 = "dd10560994de65a7e587fb8b93c0d7e9838292d9c3566a0976c2786d727292bd"
-WINDOWS_RELEASE_PAGE = "https://github.com/VirtualDrivers/Virtual-Audio-Driver/releases/tag/25.7.14"
+WINDOWS_RELEASE_URL = "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip"
+WINDOWS_RELEASE_SHA256 = "b950e39f01af1d04ea623c8f6d8eb9b6ea5c477c637295fabf20631c85116bfb"
+WINDOWS_RELEASE_PAGE = "https://vb-audio.com/Cable/"
 MACOS_INSTALL_PAGE = "https://github.com/ExistentialAudio/BlackHole/wiki/Installation"
-_WINDOWS_FILES = {
-    "Virtual Audio Driver/virtualaudiodriver.cat",
-    "Virtual Audio Driver/VirtualAudioDriver.inf",
-    "Virtual Audio Driver/VirtualAudioDriver.sys",
+_WINDOWS_REQUIRED_FILES = {
+    "VBCABLE_Setup_x64.exe",
+    "vbaudio_cable64_win10.cat",
+    "vbaudio_cable64_win10.sys",
+    "vbMmeCable64_win10.inf",
 }
 
 
@@ -68,7 +66,7 @@ class AudioDriverInstaller:
 
     @property
     def product_name(self) -> str:
-        return "BlackHole 2ch" if self.platform == "darwin" else "Virtual Audio Driver"
+        return "BlackHole 2ch" if self.platform == "darwin" else "VB-CABLE"
 
     @property
     def source_url(self) -> str:
@@ -90,7 +88,7 @@ class AudioDriverInstaller:
             with self._downloader(WINDOWS_RELEASE_URL, timeout=30) as response, archive.open("wb") as output:
                 while chunk := response.read(64 * 1024):
                     total += len(chunk)
-                    if total > 5 * 1024 * 1024:
+                    if total > 10 * 1024 * 1024:
                         raise AudioDriverInstallError("驱动下载大小异常，已停止安装")
                     digest.update(chunk)
                     output.write(chunk)
@@ -98,19 +96,22 @@ class AudioDriverInstaller:
                 raise AudioDriverInstallError("驱动校验失败，未启动安装")
             with zipfile.ZipFile(archive) as bundle:
                 files = {item.filename for item in bundle.infolist() if not item.is_dir()}
-                if files != _WINDOWS_FILES:
+                if not _WINDOWS_REQUIRED_FILES.issubset(files):
                     raise AudioDriverInstallError("驱动包内容与已验证版本不一致")
                 for item in bundle.infolist():
                     target = (work / item.filename).resolve()
                     if work.resolve() not in target.parents and target != work.resolve():
                         raise AudioDriverInstallError("驱动包包含不安全路径")
                 bundle.extractall(work)
-            driver = work / "Virtual Audio Driver"
-            self._verify_windows_catalog(driver / "virtualaudiodriver.cat")
-            if not self._elevate(driver / "VirtualAudioDriver.inf"):
+            setup = work / "VBCABLE_Setup_x64.exe"
+            self._verify_windows_signature(setup, "BUREL VINCENT")
+            self._verify_windows_signature(
+                work / "vbaudio_cable64_win10.cat", "Microsoft Windows Hardware Compatibility Publisher")
+            if not self._elevate(setup):
                 raise AudioDriverInstallError("系统没有启动驱动安装；请允许管理员确认后重试")
             self._working_directories.append(work)
-            return InstallLaunchResult("安装窗口已打开；完成系统确认后点击“重新检测”", True)
+            return InstallLaunchResult(
+                "VB-CABLE 安装器已打开；点击 Install Driver，完成后重启电脑并重新检测", True)
         except AudioDriverInstallError:
             shutil.rmtree(work, ignore_errors=True)
             raise
@@ -118,14 +119,15 @@ class AudioDriverInstaller:
             shutil.rmtree(work, ignore_errors=True)
             raise AudioDriverInstallError(f"无法准备音频驱动：{exc}") from exc
 
-    def _verify_windows_catalog(self, catalog: Path) -> None:
-        literal_path = str(catalog).replace("'", "''")
+    def _verify_windows_signature(self, file: Path, signer: str) -> None:
+        literal_path = str(file).replace("'", "''")
+        signer_fragment = signer.replace("'", "''")
         script = (
             "Import-Module (Join-Path $PSHOME "
             "'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1');"
             f"$s=Get-AuthenticodeSignature -LiteralPath '{literal_path}';"
             "if($s.Status -ne 'Valid'){exit 2};"
-            "if($s.SignerCertificate.Subject -notlike '*SignPath Foundation*'){exit 3};"
+            f"if($s.SignerCertificate.Subject -notlike '*{signer_fragment}*'){{exit 3}};"
             "Write-Output 'VALID'"
         )
         try:
@@ -141,11 +143,11 @@ class AudioDriverInstaller:
             raise AudioDriverInstallError("Windows 驱动数字签名无效，未启动安装")
 
     @staticmethod
-    def _windows_elevate(inf: Path) -> bool:
+    def _windows_elevate(installer: Path) -> bool:
         if sys.platform != "win32":
             return False
         result = ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", "pnputil.exe", f'/add-driver "{inf}" /install', str(inf.parent), 1
+            None, "runas", str(installer), None, str(installer.parent), 1
         )
         return int(result) > 32
 
