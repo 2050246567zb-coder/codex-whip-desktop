@@ -7,6 +7,17 @@ from codex_whip.cloud_speech import PRESETS, LOCAL_LABEL
 from codex_whip.voice import VoiceSettingsStore
 
 
+class MissingVirtualDriver:
+    def detect(self):
+        from codex_whip.virtual_microphone import VirtualMicrophoneError
+        raise VirtualMicrophoneError('missing')
+
+
+class FakeDriverInstaller:
+    product_name = 'Test Virtual Audio'
+    source_url = 'https://example.test/official'
+
+
 def test_card_cloud_opt_in_masking_and_switching(tmp_path,monkeypatch):
     root=tk.Tk()
     root.configure(bg='#F5F5F7')
@@ -81,5 +92,26 @@ def test_doubao_legacy_credentials_gain_and_switch_clear(tmp_path, monkeypatch):
         assert not card.app_id_row.winfo_manager()
         assert card.key_label.cget('text')=='API Key'
         assert card.app_id.get()=='' and card.key.get()==''
+    finally:
+        root.destroy()
+
+
+def test_virtual_microphone_mode_shows_driver_install_controls(tmp_path):
+    root=tk.Tk()
+    root.configure(bg='#F5F5F7')
+    root.withdraw()
+    store=VoiceSettingsStore(tmp_path/'voice.json')
+    card=SpeechServiceCard(root,store,lambda _:True,keys=Mock(),
+        driver_installer=FakeDriverInstaller(),virtual_bridge=MissingVirtualDriver())
+    try:
+        assert not card.driver_panel.winfo_manager()
+        card.mode.set('virtual_microphone')
+        card.mode_changed()
+        assert card.driver_panel.winfo_manager() == 'pack'
+        assert card.install_driver_button.cget('text') == '安装音频驱动'
+        assert 'Test Virtual Audio' in card.driver_status.get()
+        card.mode.set('transcription')
+        card.mode_changed()
+        assert not card.driver_panel.winfo_manager()
     finally:
         root.destroy()
