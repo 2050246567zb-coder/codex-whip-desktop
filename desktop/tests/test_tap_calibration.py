@@ -145,6 +145,39 @@ def test_runtime_uses_updated_slider_range(tmp_path):
     assert not voice.feed_motion(batch(pair(4000, strength=3.0)))[0]
 
 
+def test_hardware_double_tap_assist_uses_recent_raw_force_data(tmp_path):
+    voice, emitted = module(tmp_path, ranged_settings(1.4, 2.6))
+    voice._remember_motion(batch(pair(strength=2.0)))
+
+    assert voice.handle_hardware_double_tap(670)
+    event = next(payload for kind, payload in emitted if kind == 'voice_trigger')
+    assert event.first_peak_dynamic_accel_g == pytest.approx(2.0)
+    assert event.second_peak_dynamic_accel_g == pytest.approx(2.0)
+    assert event.interval_ms == 300
+    assert any(kind == 'log' and '硬件双敲通过' in str(payload)
+               for kind, payload in emitted)
+
+
+def test_hardware_double_tap_assist_still_obeys_force_sliders(tmp_path):
+    voice, emitted = module(tmp_path, ranged_settings(2.5, 4.0))
+    voice._remember_motion(batch(pair(strength=2.0)))
+
+    assert not voice.handle_hardware_double_tap(670)
+    assert not any(kind == 'voice_trigger' for kind, _payload in emitted)
+    assert any(kind == 'log' and '不在 2.50–4.00 g' in str(payload)
+               for kind, payload in emitted)
+
+
+def test_hardware_assist_does_not_duplicate_software_trigger(tmp_path):
+    voice, emitted = module(tmp_path, ranged_settings(1.4, 2.6))
+    frames = batch(pair(strength=2.0))
+    assert voice.feed_motion(frames)[0]
+    triggers_before = sum(kind == 'voice_trigger' for kind, _ in emitted)
+
+    assert not voice.handle_hardware_double_tap(670)
+    assert sum(kind == 'voice_trigger' for kind, _ in emitted) == triggers_before
+
+
 def test_single_heavy_impact_with_fast_rebounds_does_not_become_double_tap():
     detector = ForceTapDetector(ranged_settings(.5, 10))
     frames = [RawMotionFrame(t, 0, 0, 0, 0, 0, 1 + (8 if t in (300, 340, 380) else 0))

@@ -386,6 +386,21 @@ class GuiEventProcessor:
             self._emit("learning_sample", message)
             return
         if isinstance(message, DeviceMessage):
+            if message.kind == 'TAP2':
+                if (
+                    self._voice is not None
+                    and self._mount_session is None
+                    and time.monotonic() >= self._motion_resume_at
+                    and message.fields
+                ):
+                    try:
+                        timestamp_ms = int(message.fields[0])
+                    except ValueError:
+                        self._emit('log', '忽略格式错误的硬件双敲事件')
+                    else:
+                        self._voice.handle_hardware_double_tap(timestamp_ms)
+                self._emit("device", message)
+                return
             if message.kind == 'POWER' and len(message.fields) >= 2:
                 state = message.fields[1]
                 if state in ('SLEEP', 'ACTIVE') and state != getattr(self, '_power_state', None):
@@ -1383,6 +1398,8 @@ class CodexWhipWindow:
                         self._append_log(f"设备：{display}")
                         if not self._version_at_least(self.firmware_version, (0, 6, 0)):
                             self._append_log("体感角度模式建议烧录固件 0.6.0：旧 RAW4 数据会丢失微小转动。")
+                        if self._version_at_least(self.firmware_version, (0, 7, 2)):
+                            self._append_log("LSM6DS3 硬件双敲辅助已启用")
                         if self.firmware_supports_settings:
                             if self.firmware_supports_raw:
                                 raw_mode = "RAW,2" if self.motion_engine.trained else "RAW,1"
@@ -1433,6 +1450,8 @@ class CodexWhipWindow:
                                 'percent': battery.percent,
                                 'charging': battery.charging,
                             })
+                    elif message.kind in {'TAP2', 'TAPENGINE'}:
+                        pass
                     elif message.kind == "CFGVAL":
                         pass
                     else:
