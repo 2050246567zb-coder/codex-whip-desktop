@@ -137,11 +137,18 @@ class GuiEventProcessor:
                 return
             if time.monotonic() < self._motion_resume_at:
                 return
-            suppress_motion = False
+            voice_triggered = False
             if self._voice is not None:
-                _triggered, suppress_motion = self._voice.feed_motion(message)
+                voice_triggered, _candidate_active = self._voice.feed_motion(message)
             if self._motion_engine is not None:
-                event = None if suppress_motion else self._motion_engine.feed_batch(message)
+                # A lone impact is only a possible first tap and can also be
+                # part of a real whip.  Let V3 inspect it; suppress only a
+                # completed double tap (or an active calibration session).
+                event = (
+                    None
+                    if voice_triggered or (self._voice is not None and self._voice.calibration_active)
+                    else self._motion_engine.feed_batch(message)
+                )
                 if event is not None:
                     score = self._motion_engine.last_score
                     if score is not None:
@@ -184,9 +191,9 @@ class GuiEventProcessor:
             source == "device"
             and self._voice is not None
             and self._voice.store.settings.enabled
-            and self._voice.suppress_whip
+            and self._voice.blocks_device_whip
         ):
-            self._emit("log", f"双敲候选期间忽略开发板挥鞭事件 #{message.sequence}")
+            self._emit("log", f"已完成双敲，忽略同一动作尾部的挥鞭事件 #{message.sequence}")
             return
 
         if (
@@ -520,6 +527,19 @@ class CodexWhipWindow:
                 # unchanged, and owns all recognition/recording decisions.
                 if isinstance(message, AudioChunk):
                     self.emit("ui_audio_level", audio_display_level(message))
+                elif (
+                    isinstance(message, DeviceMessage)
+                    and message.kind == "PONG"
+                    and message.fields
+                    and self._version_at_least(message.fields[0], (0, 3, 1))
+                ):
+                    # Synchronize detection thresholds on the BLE worker as
+                    # soon as PONG arrives.  Previously this waited for Tk's UI
+                    # queue, so a busy animation/raw stream could leave stale
+                    # (often much higher) firmware thresholds active.
+                    for command in self.detector_profile.commands():
+                        command_queue.put_nowait(command)
+                    self.emit("profile_sync_started", len(self.detector_profile.commands()))
                 await processor.handle(message)
 
             loop.run_until_complete(client.run(handle_with_meter, stop))
@@ -1053,6 +1073,9 @@ class CodexWhipWindow:
                         continue
                 if kind == "log":
                     self._append_log(str(payload))
+                elif kind == "profile_sync_started":
+                    self._profile_ack_count = 0
+                    self._append_log("正在同步本机检测阈值到开发板")
                 elif kind == "scare_hotkey":
                     pass  # Removed feature; ignore stale queued events.
                 elif kind == "ble":
@@ -1100,8 +1123,6 @@ class CodexWhipWindow:
                         if not self._version_at_least(self.firmware_version, (0, 6, 0)):
                             self._append_log("体感角度模式建议烧录固件 0.6.0：旧 RAW4 数据会丢失微小转动。")
                         if self.firmware_supports_settings:
-                            if self._queue_detector_profile():
-                                self._append_log("正在同步本机检测阈值到开发板")
                             if self.firmware_supports_raw:
                                 raw_mode = "RAW,2" if self.motion_engine.trained else "RAW,1"
                                 if self.send_device_command(raw_mode):
