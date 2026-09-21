@@ -145,9 +145,16 @@ def test_power_setting_round_trip_and_disconnect_status(app):
     app.emit('device',DeviceMessage('POWER',('1','SLEEP','300'),''))
     app._drain_events()
     assert '省电中' in app.settings_window.power_status.get()
+    connected(app)
+    app.ui.stage = 'ready'
+    refresh(app.ui)
+    assert app.ui.hero.mode == 'sleep'
+    assert app.ui.title.cget('text').startswith('deep sleep.')
     app.emit('device',DeviceMessage('POWER',('1','ACTIVE','300'),''))
     app._drain_events()
     assert '已开启' in app.settings_window.power_status.get()
+    refresh(app.ui)
+    assert app.ui.hero.mode == 'whip'
     app.emit('ble','disconnected')
     app._drain_events()
     assert app.firmware_version == ''

@@ -20,6 +20,7 @@ from .calibration import (
 )
 from .motion_v3 import MotionEngine, MotionTemplate
 from .messages import MessageProfile, MessageProfileStore, reorder_messages
+from .tap_calibration import MIN_TAP_IMPACT_G
 from .voice import VoiceSettings, VoiceSettingsStore
 from .visual_settings import (
     MAX_SCARE_BLACKOUT_MS,
@@ -802,14 +803,15 @@ class DetectorSettingsWindow:
             self._voice_calibrating = True
             self._select_section('calibration')
             self.tap_auto_button.configure(text='重新测量')
-            self.tap_range_status.set('请用手柄底部连续敲击桌面两次。')
+            self.tap_range_status.set(
+                f'请用手柄底部连续敲击桌面两次；低于 {MIN_TAP_IMPACT_G:.2f} g 不计入。')
 
     def _build_calibration_panel(self, parent):
         card = self._card(parent, padx=24, pady=24)
         card.pack(fill='x', pady=(0, 16))
         tk.Label(card, text='双敲力度范围', bg=self.CARD, fg=self.TEXT,
                  font=('Microsoft YaHei UI', 12, 'bold')).pack(anchor='w')
-        tk.Label(card, text='两次敲击都在这个范围内，才会触发双敲。', bg=self.CARD,
+        tk.Label(card, text=f'两次敲击都在这个范围内，才会触发双敲；低于 {MIN_TAP_IMPACT_G:.2f} g 不计入。', bg=self.CARD,
                  fg=self.MUTED, font=('Microsoft YaHei UI', 9)).pack(anchor='w', pady=(6,18))
         settings = self._voice_store.settings if self._voice_store else VoiceSettings()
         minimum, maximum = self._tap_range_values(settings)
@@ -818,18 +820,18 @@ class DetectorSettingsWindow:
         self.tap_maximum = tk.DoubleVar(master=self.window, value=maximum)
         self.tap_minimum_label = tk.StringVar(master=self.window, value=f'最轻力度：{minimum:.2f} g')
         self.tap_maximum_label = tk.StringVar(master=self.window, value=f'最重力度：{maximum:.2f} g')
-        ticks = [.25, 3.0, 6.0, 9.0, 12.0]
-        formatter = lambda value: f'{value:.2f} g' if value == .25 else f'{value:.0f} g'
+        ticks = [MIN_TAP_IMPACT_G, 3.0, 6.0, 9.0, 12.0]
+        formatter = lambda value: f'{value:.2f} g' if value == MIN_TAP_IMPACT_G else f'{value:.0f} g'
         tk.Label(card, textvariable=self.tap_minimum_label, bg=self.CARD, fg=self.TEXT,
                  font=('Microsoft YaHei UI',10,'bold')).pack(anchor='w')
         self.tap_minimum_slider = TickSlider(
-            card, minimum=.25, maximum=12.0, variable=self.tap_minimum,
+            card, minimum=MIN_TAP_IMPACT_G, maximum=12.0, variable=self.tap_minimum,
             ticks=ticks, formatter=formatter, command=self._tap_minimum_changed, bg=self.CARD)
         self.tap_minimum_slider.pack(fill='x', pady=(0,12))
         tk.Label(card, textvariable=self.tap_maximum_label, bg=self.CARD, fg=self.TEXT,
                  font=('Microsoft YaHei UI',10,'bold')).pack(anchor='w')
         self.tap_maximum_slider = TickSlider(
-            card, minimum=.25, maximum=12.0, variable=self.tap_maximum,
+            card, minimum=MIN_TAP_IMPACT_G, maximum=12.0, variable=self.tap_maximum,
             ticks=ticks, formatter=formatter, command=self._tap_maximum_changed, bg=self.CARD)
         self.tap_maximum_slider.pack(fill='x', pady=(0,16))
         for slider in (self.tap_minimum_slider, self.tap_maximum_slider):
@@ -852,7 +854,8 @@ class DetectorSettingsWindow:
                    and settings.tap_light_g >= .25 else settings.impact_dynamic_accel_g)
         maximum = (settings.tap_heavy_g if settings.tap_force_calibrated
                    and settings.tap_heavy_g > minimum else max(6.0, minimum + 1.0))
-        return max(.25, min(11.95, minimum)), max(.30, min(12.0, maximum))
+        minimum = max(MIN_TAP_IMPACT_G, min(11.95, minimum))
+        return minimum, max(minimum + .05, min(12.0, maximum))
 
     def _set_tap_range(self, minimum, maximum):
         self._tap_range_sync = True
@@ -879,7 +882,7 @@ class DetectorSettingsWindow:
         if self._tap_range_sync:
             return
         if value <= self.tap_minimum.get():
-            self._set_tap_range(max(.25, value - .05), value)
+            self._set_tap_range(max(MIN_TAP_IMPACT_G, value - .05), value)
         else:
             self._update_tap_range_labels()
 

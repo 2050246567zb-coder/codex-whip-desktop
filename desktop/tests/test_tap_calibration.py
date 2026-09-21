@@ -4,7 +4,7 @@ import math
 import pytest
 
 from codex_whip.models import RawMotionBatch, RawMotionFrame
-from codex_whip.tap_calibration import ForceTapDetector, TapRangeCapture
+from codex_whip.tap_calibration import ForceTapDetector, TapRangeCapture, MIN_TAP_IMPACT_G
 from codex_whip.voice import VoiceModule, VoiceSettings, VoiceSettingsStore
 
 
@@ -50,7 +50,7 @@ def module(tmp_path, settings=None):
     (0, 0, 1), (1, 0, 0), (0, 1, 0),
     (2**-.5, 0, 2**-.5), (0, 0, -1),
 ])
-@pytest.mark.parametrize('strength', [.7, 2.0, 4.0])
+@pytest.mark.parametrize('strength', [MIN_TAP_IMPACT_G, 2.0, 4.0])
 def test_two_impacts_inside_force_range_trigger_in_any_direction(axis, strength):
     detector = ForceTapDetector(ranged_settings())
     assert detector.feed_batch(batch(pair(strength=strength, axis=axis))) is not None
@@ -84,12 +84,24 @@ def test_capture_clamps_suggested_range_to_supported_limits():
     low = TapRangeCapture(ranged_settings())
     low_states = [state for frame in pair(strength=.2)
                   if (state := low.feed(frame)) is not None]
-    assert low_states[-1]['suggested_min_g'] == .25
-    assert low_states[-1]['suggested_max_g'] > .25
+    assert low_states == []
     high = TapRangeCapture(ranged_settings())
     high_states = [state for frame in pair(strength=12)
                    if (state := high.feed(frame)) is not None]
     assert high_states[-1]['suggested_max_g'] == 12
+
+
+def test_capture_ignores_ordinary_movement_below_physical_impact_floor():
+    capture = TapRangeCapture(ranged_settings())
+    frames = list(pair(strength=MIN_TAP_IMPACT_G - .05))
+    assert all(capture.feed(frame) is None for frame in frames)
+    assert capture.meter.strengths == ()
+
+
+def test_runtime_floor_overrides_stale_too_low_saved_range():
+    detector = ForceTapDetector(ranged_settings(.25, 4.0))
+    assert detector.feed_batch(batch(pair(strength=MIN_TAP_IMPACT_G - .05))) is None
+    assert detector.feed_batch(batch(pair(2000, strength=1.0))) is not None
 
 
 def test_voice_capture_emits_readings_and_does_not_trigger_recording(tmp_path):

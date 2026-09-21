@@ -78,7 +78,7 @@ def test_overlay_render_item_pool_does_not_leak(overlay):
     assert len(p.canvas.find_all()) == count
 
 
-@pytest.mark.parametrize('mode', ['whip','recording','recognizing','connecting'])
+@pytest.mark.parametrize('mode', ['whip','recording','recognizing','connecting','sleep'])
 def test_strike_bypasses_status_geometry_and_uses_original_drawing(overlay,mode):
     from unittest.mock import Mock
     p=overlay

@@ -67,6 +67,11 @@ def main(argv=None) -> int:
             settle_and_capture("03-clock")
             app.ui.hero._set_clock(False)
             settle_and_capture("04-return-to-whip")
+            from .models import DeviceMessage
+            app.ui.observe('device', DeviceMessage('POWER', ('1', 'SLEEP', '300'), ''))
+            settle_and_capture('04b-deep-sleep', 1.1)
+            app.ui.observe('device', DeviceMessage('POWER', ('1', 'ACTIVE', '300'), ''))
+            settle_and_capture('04c-wake', .5)
             # Reproduce the live recording load: RAW pose and audio meter
             # notifications arrive concurrently and used to keep Tk's drain
             # loop busy forever.  Only the newest display frames should remain.
