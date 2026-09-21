@@ -210,57 +210,52 @@ def test_visual_settings_adjust_and_save_wound_frequency(root: tk.Tk, tmp_path) 
         window.close()
 
 
-def test_tap_calibration_manual_record_test_and_cancel(root: tk.Tk, tmp_path) -> None:
+def test_tap_force_sliders_and_one_pair_auto_setting(root: tk.Tk, tmp_path) -> None:
     starts: list[bool] = []
-    records: list[bool] = []
-    intervals: list[int] = []
     cancels: list[bool] = []
+    applied = []
     store = VoiceSettingsStore(tmp_path / "voice.json")
+    def apply(settings):
+        store.update(settings)
+        applied.append(settings)
+        return True
     window = DetectorSettingsWindow(
         root,
         DetectorProfile(),
         lambda _command: True,
         lambda _profile: True,
         voice_store=store,
+        apply_voice_settings=apply,
         start_voice_calibration=lambda: starts.append(True) or True,
-        record_voice_calibration=lambda: records.append(True) or True,
         cancel_voice_calibration=lambda: cancels.append(True),
         voice_model_ready=lambda: True,
-        set_tap_interval=intervals.append,
     )
     try:
-        assert str(window.voice_record_button["state"]) == "disabled"
+        window.tap_minimum_slider.set(1.2)
+        window.tap_maximum_slider.set(3.8)
+        assert window._commit_tap_range()
+        assert applied[-1].tap_light_g == 1.2
+        assert applied[-1].tap_heavy_g == 3.8
+        assert applied[-1].impact_dynamic_accel_g == 1.2
+        assert '1.20–3.80 g' in window.tap_range_status.get()
         window._begin_voice_calibration()
         assert starts == [True]
-        assert not window.voice_record_button.winfo_ismapped()
-        assert window._tap_stage == 'light'
-        assert window.tap_record.winfo_manager()
-        assert window.tap_record.cget('text') == '录入本次'
-        assert str(window.tap_save['state']) == 'disabled'
-        window.tap_interval_slider.set(.2)
-        assert intervals[-1] == 200
-        assert window.tap_interval_label.get() == '敲击间隔：0.2秒'
-        assert window.tap_save._paint_key[2] == '#AFC5EB'
-        assert window.tap_save.cget('image')
-        window.handle_tap_calibration(dict(stage='light', live_strengths=(.82, .91)))
-        assert '第一下 0.82 g' in window.tap_result.get()
-        assert '第二下 0.91 g' in window.tap_result.get()
-        window.tap_record.invoke()
-        assert records == [True]
-        window.handle_tap_calibration(dict(stage='heavy', light=.82))
-        assert '2 / 2' in window.tap_step.get()
-        window.handle_tap_calibration(dict(stage='test', threshold=.5, light=.8, heavy=4, accepted=1))
-        assert str(window.tap_save['state']) == 'normal'
-        assert not window.tap_record.winfo_manager()
-        window.tap_interval_slider.set(1)
-        assert intervals[-1] == 1000
-        assert '测试通过 1 次' in window.tap_result.get()
+        assert window._voice_calibrating
+        window.handle_tap_range_capture(dict(stage='capture', live_strengths=(2.0,)))
+        assert '第一下 2.00 g' in window.tap_range_status.get()
+        saved = window.handle_tap_range_capture(dict(
+            stage='done', live_strengths=(2.0, 2.0), average_g=2.0,
+            suggested_min_g=1.4, suggested_max_g=2.6))
+        assert saved
+        assert window.tap_minimum.get() == 1.4
+        assert window.tap_maximum.get() == 2.6
+        assert applied[-1].tap_light_g == 1.4
+        assert applied[-1].tap_heavy_g == 2.6
         window._select_section('voice')
         assert not window._voice_calibrating
-        assert window.tap_interval.get() == .7
     finally:
         window.close()
-    assert cancels == [True]
+    assert cancels == []
 
 
 def test_untrained_sensitivity_updates_real_thresholds_and_reopens(root, tmp_path, monkeypatch):

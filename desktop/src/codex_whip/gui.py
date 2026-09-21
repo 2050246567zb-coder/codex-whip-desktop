@@ -1056,15 +1056,13 @@ class CodexWhipWindow:
 
     def start_voice_calibration(self) -> bool:
         if self.voice_module.assembler.start is not None:
-            messagebox.showinfo('正在录音', '请等待当前录音结束后再开始校准。')
+            messagebox.showinfo('正在录音', '请等待当前录音结束后再自动设置力度。')
             return False
         if (self.processor is None or
                 time.monotonic()-self.processor._last_sensor_batch_at > 1.5):
-            messagebox.showinfo("请连接手柄", "校准需要连续六轴数据，请先连接手柄。")
+            messagebox.showinfo("请连接手柄", "自动设置力度需要连续六轴数据，请先连接手柄。")
             return False
-        interval = (round(self.settings_window.tap_interval.get()*1000)
-                    if self.settings_window is not None else None)
-        self.voice_module.start_force_calibration(interval)
+        self.voice_module.start_force_calibration()
         return True
 
     def save_tap_calibration(self) -> bool:
@@ -1751,13 +1749,13 @@ class CodexWhipWindow:
                     self._append_log(f"本地语音模型准备失败：{payload}")
                     if self.settings_window is not None and self.settings_window.window.winfo_exists():
                         self.settings_window.set_voice_runtime_status(f"模型准备失败：{payload}")
-                elif kind == 'tap_calibration_state':
+                elif kind == 'tap_range_capture':
                     if self.settings_window is not None and self.settings_window.window.winfo_exists():
-                        if (self.voice_module._force_calibration is not None and
-                                payload.get('session') == id(self.voice_module._force_calibration)):
-                            self.settings_window.handle_tap_calibration(payload)
+                        saved = self.settings_window.handle_tap_range_capture(payload)
+                        if saved:
+                            self.ui.observe('tap_calibration_saved', self.voice_store.settings)
                 elif kind == 'tap_calibration_saved':
-                    self._append_log('双敲力度校准已保存；不再使用旧轨迹匹配。')
+                    self._append_log('双敲力度范围已保存；不再使用旧轨迹匹配。')
                     if self.settings_window is not None and self.settings_window.window.winfo_exists():
                         self.settings_window.refresh_voice_settings(payload)
                 elif kind == "voice_calibration":
