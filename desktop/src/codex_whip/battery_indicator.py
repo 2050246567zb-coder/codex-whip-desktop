@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import tkinter as tk
 
+from PIL import Image, ImageDraw, ImageTk
+
 
 class BatteryIndicator(tk.Canvas):
     """iOS-style status battery; exact percentage is available on hover."""
 
-    OUTLINE = "#9A9A9E"
+    OUTLINE = "#8E8E93"
     NORMAL = "#8E8E93"
     CHARGING = "#34C759"
     LOW = "#FF3B30"
@@ -23,6 +25,7 @@ class BatteryIndicator(tk.Canvas):
             takefocus=0,
         )
         self._font = font
+        self._glyph: ImageTk.PhotoImage | None = None
         self.percent: int | None = None
         self.charging = False
         self._tooltip: tk.Toplevel | None = None
@@ -76,51 +79,57 @@ class BatteryIndicator(tk.Canvas):
 
     def _draw(self) -> None:
         self.delete("all")
-        if self.charging:
-            # Charging is a distinct status glyph, not another battery body.
-            # Its compact capsule echoes the optical weight of the header gear.
-            self.create_polygon(
-                self._rounded_points(3.0, 3.0, 29.0, 15.0, 6.0),
-                smooth=True,
-                splinesteps=32,
-                fill=self.CHARGING,
-                outline=self.CHARGING,
-                width=1.6,
-                tags="charging_capsule",
-            )
-            self.create_polygon(
-                16.2, 4.1, 11.8, 9.2, 14.7, 9.2,
-                13.7, 14.0, 20.1, 7.3, 16.8, 7.3,
-                fill="#FFFFFF",
-                outline="",
-                tags="bolt",
-            )
-            return
+        # Render at 6x and downsample. Tk Canvas primitives are visibly jagged
+        # at this 32 px status-icon size; supersampling matches Apple's soft,
+        # optically even battery outline much more closely.
+        scale = 6
+        image = Image.new("RGBA", (32 * scale, 18 * scale), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
 
-        level_color = self.color if self.percent is not None else self.UNKNOWN
+        def box(values):
+            return tuple(round(value * scale) for value in values)
+
         outline = self.OUTLINE if self.percent is not None else self.UNKNOWN
-        self.create_polygon(
-            self._rounded_points(1.5, 2.5, 26.5, 15.5, 3.2),
-            smooth=True,
-            splinesteps=24,
-            fill="",
+        stroke = max(1, round(1.35 * scale))
+        draw.rounded_rectangle(
+            box((1.5, 2.5, 26.5, 15.5)),
+            radius=3.4 * scale,
+            fill=(255, 255, 255, 0),
             outline=outline,
-            width=1.4,
-            tags="body",
+            width=stroke,
         )
-        self.create_oval(28, 6.3, 31, 11.7, fill=outline, outline="", tags="terminal")
+        draw.rounded_rectangle(
+            box((28.0, 6.3, 31.0, 11.7)),
+            radius=1.4 * scale,
+            fill=outline,
+        )
 
         if self.percent is not None and self.percent > 0:
-            fill_left = 3.5
-            fill_right = fill_left + (24.5 - fill_left) * self.percent / 100
-            self.create_polygon(
-                self._rounded_points(fill_left, 4.6, fill_right, 13.4, 2.2),
-                smooth=True,
-                splinesteps=24,
-                fill=level_color,
-                outline="",
-                tags="level",
+            fill_left = 3.6
+            fill_right = fill_left + (24.4 - fill_left) * self.percent / 100
+            draw.rounded_rectangle(
+                box((fill_left, 4.6, fill_right, 13.4)),
+                radius=min(2.2, max(0.4, (fill_right - fill_left) / 2)) * scale,
+                fill=self.color,
             )
+
+        if self.charging:
+            bolt = tuple(
+                (round(x * scale), round(y * scale))
+                for x, y in (
+                    (16.2, 2.1), (10.8, 9.0), (14.5, 9.0),
+                    (12.9, 15.8), (20.7, 7.1), (16.8, 7.1),
+                )
+            )
+            draw.polygon(bolt, fill="#FFFFFF")
+            draw.line(
+                (*bolt, bolt[0]), fill=self.CHARGING,
+                width=max(1, round(1.05 * scale)), joint="curve",
+            )
+
+        image = image.resize((32, 18), Image.Resampling.LANCZOS)
+        self._glyph = ImageTk.PhotoImage(image, master=self)
+        self.create_image(0, 0, anchor="nw", image=self._glyph, tags="glyph")
 
     def _tooltip_label(self) -> tk.Label:
         assert self._tooltip is not None

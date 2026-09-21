@@ -121,8 +121,7 @@ def test_recording_centers_head_hides_rope_and_reduced_motion_stops_ripples(app)
     assert pose.handle_start[0] == w/2
     assert pose.handle_start[1] > pose.handle_end[1]
     assert hero._voice_amount == 1
-    assert all(hero.itemcget(i,'fill') == hero.cget('bg').lower()
-               for i in hero._whip_drawing._cord_segments)
+    assert hero._whip_drawing.cord_opacity == 0
     assert len(hero.find_withtag('voice_art')) == 4  # Three rings + grille.
     hero.reduce_motion = True
     hero._draw()
