@@ -11,7 +11,7 @@
 
 namespace {
 
-constexpr char kFirmwareVersion[] = "0.7.1";
+constexpr char kFirmwareVersion[] = "0.7.2";
 constexpr char kDeviceName[] = "CodexWhip";
 constexpr uint32_t kSampleRateHz = 416;
 constexpr uint32_t kSamplePeriodUs = 1000000UL / kSampleRateHz;
@@ -41,6 +41,18 @@ constexpr uint32_t kVoiceNoSpeechTimeoutMs = 4000;
 constexpr uint8_t kChargeStatusPin = 23;  // P0.17, active-low BQ25100 ~CHG.
 constexpr uint32_t kBatteryReportPeriodMs = 30000;
 constexpr uint32_t kChargeDebounceMs = 80;
+// LSM6DS3TR-C hardware double-tap engine. Register values follow ST AN5130
+// section 5.5.5: all axes, slope threshold, Shock/Quiet/Duration state machine.
+// At the active +/-16 g range, TAP_THS=2 is a 1.0 g per-axis slope threshold.
+constexpr uint8_t kTapSourceRegister = 0x1C;
+constexpr uint8_t kTapConfigRegister = 0x58;
+constexpr uint8_t kTapThresholdRegister = 0x59;
+constexpr uint8_t kTapDurationRegister = 0x5A;
+constexpr uint8_t kWakeThresholdRegister = 0x5B;
+constexpr uint8_t kMd1ConfigRegister = 0x5E;
+constexpr uint8_t kDoubleTapSourceMask = 0x50;  // TAP_IA | DOUBLE_TAP.
+constexpr uint32_t kTapPollPeriodMs = 8;
+constexpr uint32_t kTapRawTailMs = 70;
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
 BLEDis deviceInfo;
@@ -127,8 +139,48 @@ uint32_t nextBatteryReportAt = 0;
 bool chargingState = false;
 bool chargingCandidate = false;
 uint32_t chargingCandidateSince = 0;
+bool hardwareTapReady = false;
+bool hardwareTapPending = false;
+uint8_t hardwareTapSource = 0;
+uint32_t hardwareTapDetectedAt = 0;
+uint32_t nextHardwareTapPollAt = 0;
 
 void sendLine(const String& line);
+
+bool writeImuRegisterVerified(uint8_t reg, uint8_t value) {
+  uint8_t actual = 0;
+  return imu.writeRegister(reg, value) == IMU_SUCCESS &&
+         imu.readRegister(&actual, reg) == IMU_SUCCESS && actual == value;
+}
+
+bool configureHardwareDoubleTap() {
+  uint8_t tapThreshold = 0;
+  uint8_t wakeThreshold = 0;
+  uint8_t md1 = 0;
+  if (imu.readRegister(&tapThreshold, kTapThresholdRegister) != IMU_SUCCESS ||
+      imu.readRegister(&wakeThreshold, kWakeThresholdRegister) != IMU_SUCCESS ||
+      imu.readRegister(&md1, kMd1ConfigRegister) != IMU_SUCCESS) {
+    return false;
+  }
+  bool ok = writeImuRegisterVerified(kTapConfigRegister, 0x8E);
+  ok = writeImuRegisterVerified(
+           kTapThresholdRegister,
+           static_cast<uint8_t>((tapThreshold & 0xE0) | 0x02)) && ok;
+  // SHOCK=3 (~57.7 ms), QUIET=3 (~28.8 ms), DUR=15 (~1.15 s)
+  // at 416 Hz. Desktop settings still enforce the user's chosen interval.
+  ok = writeImuRegisterVerified(kTapDurationRegister, 0xFF) && ok;
+  ok = writeImuRegisterVerified(
+           kWakeThresholdRegister,
+           static_cast<uint8_t>(wakeThreshold | 0x80)) && ok;
+  ok = writeImuRegisterVerified(
+           kMd1ConfigRegister,
+           static_cast<uint8_t>(md1 | 0x08)) && ok;
+  uint8_t ignored = 0;
+  imu.readRegister(&ignored, kTapSourceRegister);  // Clear a stale source.
+  hardwareTapPending = false;
+  nextHardwareTapPollAt = millis();
+  return ok;
+}
 
 uint16_t readBatteryMillivolts() {
   // Seeed exposes VBAT through P0.31. P0.14 must remain LOW while charging
@@ -221,6 +273,32 @@ bool readMotion(MotionSample& sample) {
   sample.accelY = imu.calcAccel(readInt16LE(&raw[8]));
   sample.accelZ = imu.calcAccel(readInt16LE(&raw[10]));
   return true;
+}
+
+void pollHardwareDoubleTap(uint32_t now) {
+  if (!hardwareTapReady || !voiceEnabled || !rawStreaming || voiceRecording) {
+    hardwareTapPending = false;
+    return;
+  }
+
+  // Delay the event briefly so RAW5 has already delivered the second impact.
+  // The desktop can then enforce the user's precise min/max force range rather
+  // than trusting the hardware's deliberately broad candidate threshold.
+  if (hardwareTapPending && now - hardwareTapDetectedAt >= kTapRawTailMs) {
+    sendLine("TAP2," + String(hardwareTapDetectedAt) + "," +
+             String(hardwareTapSource));
+    hardwareTapPending = false;
+  }
+  if (static_cast<int32_t>(now - nextHardwareTapPollAt) < 0) return;
+  nextHardwareTapPollAt = now + kTapPollPeriodMs;
+
+  uint8_t source = 0;
+  if (imu.readRegister(&source, kTapSourceRegister) == IMU_SUCCESS &&
+      (source & kDoubleTapSourceMask) == kDoubleTapSourceMask) {
+    hardwareTapSource = source;
+    hardwareTapDetectedAt = now;
+    hardwareTapPending = true;
+  }
 }
 
 size_t blePayloadLimit() {
@@ -936,6 +1014,10 @@ bool wakePower() {
   clearPowerMotion();
   powerResumeAt = millis() + 300; // Gyro settling; pickup must not become a strike.
   powerSettling = true;
+  hardwareTapPending = false;
+  nextHardwareTapPollAt = millis();
+  uint8_t ignoredTapSource = 0;
+  imu.readRegister(&ignoredTapSource, kTapSourceRegister);
   nextSampleUs = micros();
   Bluefruit.autoConnLed(true);
   BLEConnection* connection = Bluefruit.Connection(Bluefruit.connHandle());
@@ -1048,6 +1130,7 @@ void handleCommand(String command) {
   }
   if (command == "PING") {
     sendLine("PONG," + String(kFirmwareVersion));
+    sendLine("TAPENGINE," + String(hardwareTapReady ? 1 : 0) + ",ST_AN5130");
     reportBattery();
   } else if (command == "BATTERY") {
     reportBattery();
@@ -1097,6 +1180,7 @@ void handleCommand(String command) {
   } else if (command == "VOICE,0") {
     if (voiceRecording) stopVoiceRecording("DISABLED");
     voiceEnabled = false;
+    hardwareTapPending = false;
     sendLine("VOICE,ENABLED,0");
   } else if (command.startsWith("VOICE,START,")) {
     unsigned int silenceMs = 0;
@@ -1195,6 +1279,10 @@ void setup() {
   // The on-board LSM6DS3TR-C supports I2C Fast Mode. At the Wire default
   // 100 kHz, status + burst reads consume most of the 416 Hz sample period.
   Wire.setClock(400000);
+  hardwareTapReady = configureHardwareDoubleTap();
+  if (!hardwareTapReady) {
+    Serial.println("WARN,TAP_ENGINE_CONFIG_FAILED");
+  }
 
   Bluefruit.autoConnLed(true);
   Bluefruit.configPrphBandwidth(BANDWIDTH_HIGH);
@@ -1281,6 +1369,7 @@ void loop() {
   if (!armed) return;
 
   streamMotion(sample);
+  pollHardwareDoubleTap(sample.timestampMs);
 
   if (learningMode) {
     WhipEvent event;

@@ -959,6 +959,7 @@ class VoiceModule:
         # mask a genuine whip reported by the firmware.  We block firmware
         # whip events only after a complete double tap has actually fired.
         self._device_whip_block_until = 0.0
+        self._last_trigger_second_ms = -10_000
         self._install_tap_detector()
 
     def _install_tap_detector(self) -> None:
@@ -1159,6 +1160,84 @@ class VoiceModule:
                 ):
                     self._motion_frames.popleft()
 
+    def _accept_double_tap(self, event: DoubleTapEvent, *, hardware=False) -> None:
+        settings = self.store.settings
+        self._last_trigger_second_ms = event.second_at_ms
+        self._device_whip_block_until = time.monotonic() + max(
+            0.35, min(1.20, settings.settle_ms / 1000.0 + 0.30)
+        )
+        if hardware:
+            self.emit(
+                "log",
+                "LSM6DS3 硬件双敲通过；已用同期六轴数据复核力度和间隔",
+            )
+        self.emit("voice_trigger", event)
+
+    def handle_hardware_double_tap(self, device_timestamp_ms: int) -> bool:
+        """Validate an ST hardware candidate against recent RAW5 force data.
+
+        The LSM6DS3TR-C implements ST's open Shock/Quiet/Duration state
+        machine.  It is a broad, direction-independent candidate detector;
+        exact user force limits remain a desktop responsibility.
+        """
+        settings = self.store.settings
+        if not settings.enabled or self.calibration_active:
+            return False
+        try:
+            timestamp = int(device_timestamp_ms) & 0xFFFFFFFF
+        except (TypeError, ValueError):
+            return False
+        duplicate_delta = (timestamp - self._last_trigger_second_ms) & 0xFFFFFFFF
+        if duplicate_delta <= 450:
+            return False
+        with self._motion_lock:
+            frames = tuple(self._motion_frames)
+        # Include baseline before the first impact so median gravity remains
+        # stable even when the two impulses occupy several samples.
+        lookback = min(MANUAL_CAPTURE_WINDOW_MS - 100,
+                       settings.max_interval_ms + 500)
+        after = (timestamp - lookback) & 0xFFFFFFFF
+        # Device uptime wrap is rare; allow the extractor's own bounded window
+        # instead of presenting a future lower bound across the wrap point.
+        if after > timestamp:
+            after = -1
+        try:
+            event = extract_manual_double_tap(
+                frames,
+                after_timestamp_ms=after,
+                max_interval_ms=settings.max_interval_ms,
+            )
+        except ValueError as exc:
+            self.emit("log", f"硬件识别到双敲，但六轴复核失败：{exc}")
+            return False
+        tail = (timestamp - event.second_at_ms) & 0xFFFFFFFF
+        if tail > 350:
+            self.emit("log", "硬件识别到双敲，但同期六轴峰值时间不匹配")
+            return False
+        from .tap_calibration import MIN_TAP_IMPACT_G
+        low = (settings.tap_light_g if settings.tap_force_calibrated
+               else settings.impact_dynamic_accel_g)
+        high = (settings.tap_heavy_g if settings.tap_force_calibrated
+                else 12.0)
+        low = max(MIN_TAP_IMPACT_G, low)
+        strengths = (
+            event.first_peak_dynamic_accel_g,
+            event.second_peak_dynamic_accel_g,
+        )
+        if not all(low <= value <= high for value in strengths):
+            self.emit(
+                "log",
+                f"硬件双敲力度 {strengths[0]:.2f}/{strengths[1]:.2f} g "
+                f"不在 {low:.2f}–{high:.2f} g 范围内",
+            )
+            return False
+        if event.interval_ms < settings.min_interval_ms:
+            self.emit("log", f"硬件双敲间隔 {event.interval_ms} ms 低于当前设置")
+            return False
+        self.detector.reset()
+        self._accept_double_tap(event, hardware=True)
+        return True
+
     def feed_motion(self, batch: RawMotionBatch) -> tuple[bool, bool]:
         self._remember_motion(batch)
         with self._force_lock:
@@ -1185,10 +1264,7 @@ class VoiceModule:
         # Cover the tail of the accepted second impact.  Unlike
         # ``detector.suppress_whip``, this never activates for a lone first
         # impact, which may actually be the acceleration peak of a whip.
-        self._device_whip_block_until = time.monotonic() + max(
-            0.35, min(1.20, settings.settle_ms / 1000.0 + 0.30)
-        )
-        self.emit("voice_trigger", event)
+        self._accept_double_tap(event)
         return True, True
 
     async def handle_audio(self, message: AudioStart | AudioChunk | AudioEnd) -> None:

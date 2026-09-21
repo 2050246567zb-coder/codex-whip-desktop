@@ -76,7 +76,7 @@ def test_ui_hang_watchdog_persists_thread_dump(tmp_path) -> None:
         watchdog.stop()
 
     text = path.read_text(encoding="utf-8")
-    assert "version=2.2.54" in text
+    assert "version=2.2.55" in text
     assert "context=voice-state:recording" in text
     assert "Current thread" in text
     assert "_run" in text
@@ -400,6 +400,21 @@ def test_completed_double_tap_owns_its_firmware_motion_tail(tmp_path) -> None:
     assert not any(kind == "whip" for kind, _payload in emitted)
     assert any(kind == "log" and "已完成双敲" in str(payload)
                for kind, payload in emitted)
+
+
+def test_hardware_tap_message_is_forwarded_to_voice_assist() -> None:
+    emitted: list[tuple[str, object]] = []
+    voice = Mock()
+    voice.calibration_active = False
+    processor = GuiEventProcessor(
+        Settings(), threading.Event(), lambda *event: emitted.append(event),
+        voice_module=voice,
+    )
+
+    asyncio.run(processor.handle(DeviceMessage('TAP2', ('1234', '80'), 'TAP2,1234,80')))
+
+    voice.handle_hardware_double_tap.assert_called_once_with(1234)
+    assert ('device', DeviceMessage('TAP2', ('1234', '80'), 'TAP2,1234,80')) in emitted
 
 
 def test_v3_still_sees_a_lone_first_tap_candidate(tmp_path) -> None:
