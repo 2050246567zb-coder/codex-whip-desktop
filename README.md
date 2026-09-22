@@ -141,6 +141,14 @@ macos/                   Mac 构建脚本、验收表和已迁移数据
 scripts/                 环境、测试、编译和上传脚本
 ```
 
+## 开发与交接
+
+- [DEVELOPMENT.md](DEVELOPMENT.md)：Windows/macOS 分支、Apple Silicon 环境、
+  构建测试、代码结构、固件协议和跨平台开发规则。
+- [RELEASE-2.2.56.md](RELEASE-2.2.56.md)：当前源码修订、Windows/macOS CI、
+  实机固件回读和仍需在目标 Mac 验证的边界。
+- [macos/MACOS_ACCEPTANCE.md](macos/MACOS_ACCEPTANCE.md)：Mac 实机逐项验收表。
+
 ## macOS 2.0 移植
 
 Windows 1.5.4 的完整源码、用户配置、学习轨迹和语音模型已单独备份。
