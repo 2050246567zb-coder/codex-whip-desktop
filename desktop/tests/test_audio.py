@@ -30,3 +30,12 @@ def test_windows_system_beep_never_blocks_caller(monkeypatch):
     assert elapsed < 0.2
     assert started.wait(0.5)
     release.set()
+
+
+def test_macos_beep_stays_on_ui_thread(monkeypatch):
+    seen = []
+    monkeypatch.setattr(audio.os, "name", "posix")
+    monkeypatch.setattr(audio.sys, "platform", "darwin")
+    monkeypatch.setattr(audio, "_play_system_beep", lambda kind: seen.append((kind, threading.get_ident())))
+    assert audio.system_beep("start")
+    assert seen == [("start", threading.get_ident())]

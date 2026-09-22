@@ -6,7 +6,7 @@ import threading
 
 
 def _play_system_beep(kind: str) -> None:
-    """Play a notification without ever owning the Tk/UI thread."""
+    """Play the platform notification sound."""
     try:
         if os.name == "nt":
             import winsound
@@ -27,7 +27,13 @@ def _play_system_beep(kind: str) -> None:
 
 
 def system_beep(kind: str = "default") -> bool:
-    if os.name != "nt" and sys.platform != "darwin":
+    if os.name != "nt" and sys.platform == "darwin":
+        # NSBeep schedules sound playback. Keep AppKit initialization on the
+        # calling UI thread: importing it in a worker can also collect Tk
+        # objects there, which crashes non-threaded macOS Tcl/Tk builds.
+        _play_system_beep(kind)
+        return True
+    if os.name != "nt":
         return False
     threading.Thread(
         target=_play_system_beep,

@@ -79,8 +79,15 @@ PLIST="$DESKTOP_DIR/dist/CodexWhip.app/Contents/Info.plist"
   "$PLIST" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :NSHighResolutionCapable bool true" "$PLIST" 2>/dev/null || true
 
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST"
+
 IDENTITY="${CODEX_WHIP_CODESIGN_IDENTITY:--}"
-codesign --force --deep --options runtime --sign "$IDENTITY" \
+# Ad-hoc signatures have no Team ID; hardened library validation would reject
+# the bundled Python dylib. Developer ID builds retain hardened runtime.
+SIGN_OPTIONS=(--options 0)
+if [[ "$IDENTITY" != "-" ]]; then SIGN_OPTIONS=(--options runtime); fi
+codesign --force --deep "${SIGN_OPTIONS[@]}" --sign "$IDENTITY" \
   "$DESKTOP_DIR/dist/CodexWhip.app"
 codesign --verify --deep --strict --verbose=2 "$DESKTOP_DIR/dist/CodexWhip.app"
 

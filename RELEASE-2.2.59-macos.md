@@ -7,6 +7,7 @@ Date: 2026-09-22. Mac source branch: `codex/product-macos`.
 - Native transparent AppKit overlays fix black backgrounds and drawing trails; nonactivating input panels support dragging, clicks, right-click clock interaction and Control-click.
 - Overlay status animations reuse the home-page animation implementation. The offscreen Tk scene now retains its Tk parent, and native rendering supports clock numerals as well as vector geometry and transparent images.
 - Faster frame scheduling and bounded display-only pose continuation improve motion response without changing sensor recognition input.
+- Mac notification sounds initialize AppKit on the UI thread, avoiding a Tk crash observed during packaged recording-state tests. Ad-hoc packages disable hardened library validation, while Developer ID builds retain hardened runtime.
 - Native Whisper 1.8.1 build helper with embedded Metal shaders; verified local speech model setup and clearer model preparation errors. Voice diagnostics log lifecycle events without recording recognized text.
 - Firmware 0.7.4 negotiates a host profile with the desktop app, selects connection parameters and batches appropriate to the negotiated BLE interval, and moves transmission off the IMU sampling loop. Platforms identify themselves through an explicit application handshake; unknown hosts use a compatible default.
 - Mac firmware setup, compilation and USB upload scripts are included. Existing local calibration is preserved.
