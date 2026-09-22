@@ -1,7 +1,53 @@
 import asyncio
+import pytest
 
 from codex_whip.ble_client import drain_message_queue
 from codex_whip.models import DeviceMessage
+
+
+@pytest.mark.parametrize('platform,expected', [
+    ('darwin', 'HOST,MACOS'), ('win32', 'HOST,WINDOWS'),
+    ('linux', 'HOST,LINUX'), ('unknown', 'HOST,COMPATIBLE'),
+])
+def test_host_profile_mapping(platform, expected):
+    from codex_whip.ble_client import host_profile_command
+    assert host_profile_command(platform) == expected
+
+
+@pytest.mark.parametrize('caps,expected', [
+    (b'CAPS,HOST_PROFILE,1\n', 1), (b'', 0),
+    (b'CAPS,HOST_PROFILE,2\n', 0),
+])
+def test_host_negotiates_once_per_connection_only_when_supported(monkeypatch, caps, expected):
+    from codex_whip import ble_client
+    from codex_whip.settings import BleSettings
+    monkeypatch.setattr(ble_client.sys, 'platform', 'darwin')
+
+    async def exercise():
+        writes = []
+        stop = asyncio.Event()
+        class Peripheral:
+            is_connected = True
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+            async def start_notify(self, uuid, callback):
+                self.notify = callback
+                callback(None, b'PONG,0.7.4\n' + caps * 3)
+            async def stop_notify(self, uuid): pass
+            async def write_gatt_char(self, uuid, payload, **kwargs):
+                writes.append(payload)
+        peripheral = Peripheral()
+        monkeypatch.setattr(ble_client, 'BleakClient', lambda *a, **k: peripheral)
+        async def handler(item):
+            stop.set()
+        client = ble_client.BleWhipClient(BleSettings())
+        for _ in range(2):
+            stop.clear()
+            await client._run_connection(object(), handler, stop)
+        assert writes.count(b'HOST,MACOS\n') == expected * 2
+        assert writes.count(b'PING\n') == 2
+        assert writes.count(b'ARM,1\n') == 2
+    asyncio.run(exercise())
 
 
 def message(value: str) -> DeviceMessage:

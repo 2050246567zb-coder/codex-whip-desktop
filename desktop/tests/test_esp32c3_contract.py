@@ -37,6 +37,7 @@ def test_all_existing_command_branches_retained():
     xiao_only = {
         'POWERGET', 'POWERTEST', 'POWERHOLD', 'POWER,0', 'POWER,1',
         'BATTERY',  # ESP32-C3 build has no battery-divider ADC wiring yet.
+        'LINK',  # nRF52840 negotiated-link diagnostics, capability-gated.
     }
     assert commands - xiao_only <= set(re.findall(r'command == "([^"]+)"', new))
     for prefix in ('VOICE,START,', 'CFG,'):

@@ -1,4 +1,4 @@
-# Codex Whip 2.2.58 development guide
+# Codex Whip platform development guide
 
 This repository contains the desktop companion and firmware for the physical
 Codex Whip controller. Product branches are deliberately separated by target
@@ -6,12 +6,21 @@ platform:
 
 | Branch | Purpose |
 | --- | --- |
-| `codex/product-windows` | Windows product source, Windows packaging and XIAO firmware development |
-| `codex/product-macos` | Apple Silicon macOS product source and macOS packaging |
+| `codex/product-windows` | Windows product source, Windows UI/automation/audio and Windows packaging |
+| `codex/product-macos` | Apple Silicon macOS product source, native integrations and macOS packaging |
 
-The application logic and configuration schemas are shared. Platform-specific
+The application logic and configuration schemas are shared. The product firmware
+under `firmware/codex_whip` and its tests under `firmware/tests` must be byte-for-byte
+identical on both product branches. Platform-specific
 window automation, overlays, virtual audio devices, permissions and packaging
 are implemented separately so each platform can use its native APIs.
+
+Firmware does not guess the host from a BLE address or MTU. After connecting,
+the desktop detects `sys.platform` and automatically negotiates `HOST,WINDOWS`,
+`HOST,MACOS`, `HOST,LINUX`, or `HOST,COMPATIBLE`. Firmware 0.7.4 then selects
+the matching connection interval and motion batch policy. This is invisible to
+the user and preserves compatibility with older firmware that does not advertise
+the `HOST_PROFILE` capability.
 
 ## Start development on a Mac
 
@@ -35,8 +44,8 @@ The build script creates `macos/.venv-macos`, compiles the pinned
 `whisper.cpp` 1.8.1 runtime when needed, and produces:
 
 - `macos/dist/CodexWhip.app`
-- `macos/dist/CodexWhip-2.2.58-Apple-Silicon.dmg`
-- `macos/dist/CodexWhip-2.2.58-Apple-Silicon.zip`
+- `macos/dist/CodexWhip-2.2.59-Apple-Silicon.dmg`
+- `macos/dist/CodexWhip-2.2.59-Apple-Silicon.zip`
 
 For an editable development environment with the test dependencies:
 
@@ -67,7 +76,7 @@ On the target Mac, grant CodexWhip:
 - any audio permission requested by the selected voice-input path.
 
 Native dictation and virtual-audio routing are retired from the product flow in
-2.2.58. Voice input uses a configured speech API first and the local recognizer
+2.2.59. Voice input uses a configured speech API first and the local recognizer
 when cloud recognition is not configured or an already-prepared local fallback
 is available.
 
@@ -101,12 +110,12 @@ macos/MACOS_ACCEPTANCE.md        real-Mac and real-controller acceptance list
 ```
 
 The ESP32-C3 + MPU6050 files remain an experimental hardware port. Product
-2.2.58 double-tap behavior is defined only for the original XIAO nRF52840 Sense
+2.2.59 double-tap behavior is defined only for the original XIAO nRF52840 Sense
 and its onboard LSM6DS3TR-C.
 
-## Firmware contract used by 2.2.58
+## Shared firmware contract
 
-- Product firmware: `0.7.3`
+- Product firmware: `0.7.4`
 - BLE local name: `CodexWhip`
 - Nordic UART service: `6e400001-b5a3-f393-e0a9-e50e24dcca9e`
 - IMU: onboard LSM6DS3TR-C, ±16 g, ±2000 dps, 416 Hz
@@ -118,6 +127,12 @@ and its onboard LSM6DS3TR-C.
 After changing protocol behavior, update firmware and desktop tests together.
 At minimum, keep `desktop/tests/test_xiao_tap_contract.py` and the firmware
 version gate passing.
+
+Every firmware change must be a platform-neutral commit transferred to both
+product branches before either branch is released. Both GitHub build workflows
+run `scripts/verify-shared-firmware.py` against the opposite product branch and
+refuse to package when the two firmware trees differ. Platform build/upload
+scripts may differ; the firmware source and tests may not.
 
 On Windows, compile and upload the product firmware with:
 
@@ -146,9 +161,10 @@ and serial monitor before uploading or running direct BLE diagnostics.
 
 ## Recommended Git workflow
 
-Develop macOS-specific work on `codex/product-macos`. Keep commits small enough
-to cherry-pick shared changes into `codex/product-windows`, and keep platform
-adapters in separate commits when possible. Before transferring a change:
+Develop OS-specific work only on its product branch. Put shared desktop changes
+in separate commits that can be cherry-picked deliberately. Firmware commits
+are always shared and must be transferred to both branches before packaging.
+Before transferring a change:
 
 ```bash
 git status --short
@@ -160,5 +176,5 @@ Do not commit build output from `dist/`, `build/`, `macos/dist/`, local virtual
 environments or user data. GitHub Actions builds downloadable test artifacts
 from each product branch.
 
-See `RELEASE-2.2.58.md` for the exact source revisions and validation evidence
-for this handoff.
+See the platform-specific `RELEASE-2.2.59-*.md` records for source revisions,
+validation evidence and the remaining physical-device acceptance boundary.
