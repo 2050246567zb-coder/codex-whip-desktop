@@ -242,21 +242,21 @@ def connected(app):
     app.ui.observe("sensor_pose", SensorPose(0, 0, 0, 0))
 
 
-def test_three_settings_groups_preserve_controls_and_reopen(app):
+def test_single_settings_page_preserves_controls_and_reopen(app):
     connected(app)
     ui = app.ui
-    assert list(ui.nav) == ['general','calibration','input']
+    assert ui.nav == {}
     app.voice_text.insert('1.0','未保存的语音文字')
     for section in ('general','input','calibration','general'):
         ui.open_preferences(section)
         app.root.update_idletasks()
         window = app.settings_window
-        assert window.page_title.cget('text') == {'general':'通用','input':'输入','calibration':'手柄'}[section]
-        assert bool(ui._general_body.winfo_manager()) == (section=='general')
-        assert bool(ui._direction_card.winfo_manager()) == (section=='calibration')
-        assert bool(ui._speech_panel.winfo_manager()) == (section=='input')
-        assert bool(window._calibration_panel.winfo_manager()) == (section=='calibration')
-        assert bool(window.voice_feature_card.winfo_manager()) == (section=='input')
+        assert window.page_title.cget('text') == '设置'
+        assert ui._general_body.winfo_manager() == 'pack'
+        assert not ui._direction_card.winfo_manager()
+        assert ui._speech_panel.winfo_manager() == 'pack'
+        assert window._calibration_panel.winfo_manager() == 'pack'
+        assert window.voice_feature_card.winfo_manager() == 'pack'
         assert app.voice_text.get('1.0','end-1c') == '未保存的语音文字'
     ui.hide_preferences()
     ui.open_preferences('input')
@@ -338,12 +338,12 @@ def test_connection_must_have_fresh_sensor_data_before_calibration(app):
     assert ui.stage == "connect"
     connected(app)
     refresh(ui)
-    assert ui.stage == "calibrate"
+    assert ui.stage == "tour"
     assert app.mount_window is None
     assert str(ui.primary["state"]) == "normal"
     ui._sensor_at = time.monotonic() - 2
     refresh(ui)
-    assert str(ui.primary["state"]) == "disabled"
+    assert ui.stage == "tour"  # Brief packet gaps do not restart onboarding.
     assert not app.armed.is_set()
 
 
@@ -352,7 +352,9 @@ def test_skip_learning_preserves_all_existing_profiles_and_never_arms(app, tmp_p
     profile.write_text("keep this byte-for-byte")
     save_mounting_profile(MountingProfile((0, 0, 1), 30, 30), app.mounting_path)
     before = app.mounting_path.read_bytes()
-    app.ui.observe("mount_closed", {"saved": True})
+    app.ui._mount_token = 'test-token'
+    app.ui._calibration_return_stage = 'choices'
+    app.ui.observe("mount_closed", {"token": "test-token", "saved": True})
     assert app.ui.stage == "choices"
     app.ui.skip_learning()
     refresh(app.ui)
@@ -453,6 +455,11 @@ def test_advanced_settings_collapsed_and_preserve_values(app):
     original = {key: value.get() for key, value in window._variables.items()}
     original_voice = window._read_voice_settings()
     for section in sections:
+        assert not section.winfo_manager()
+    app.open_developer_settings()
+    app.root.update_idletasks()
+    for section in sections:
+        assert section.winfo_manager()
         assert not section.expanded
         assert not section.body.winfo_manager()
         section.toggle.invoke()
@@ -543,9 +550,7 @@ def test_redesigned_settings_buttons_fit_minimum_width(app, section):
         if isinstance(widget, ActionButton) and widget.winfo_viewable():
             assert widget.winfo_rootx() >= left, widget.cget("text")
             assert widget.winfo_rootx() + widget.winfo_width() <= right, widget.cget("text")
-    if section != "general":
-        titles = {"messages": "输入", "detector": "手柄", "voice": "输入", "visual": "通用", "calibration": "手柄"}
-        assert app.settings_window.page_title.cget("text") == titles[section]
+    assert app.settings_window.page_title.cget("text") == "设置"
 
 
 def test_native_styled_controls_keep_disabled_and_variable_semantics(host):

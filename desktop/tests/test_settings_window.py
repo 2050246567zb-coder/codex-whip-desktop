@@ -56,7 +56,7 @@ def sample(sequence: int) -> LearningSample:
     )
 
 
-def test_power_switch_is_in_handle_group_and_reverts_failed_save(root, tmp_path):
+def test_legacy_settings_window_does_not_show_power_switch(root, tmp_path):
     values=[]
     window=DetectorSettingsWindow(root, DetectorProfile(), lambda _:True, lambda _:True,
         message_store=MessageProfileStore(('test',),path=tmp_path/'messages.json'),
@@ -65,13 +65,6 @@ def test_power_switch_is_in_handle_group_and_reverts_failed_save(root, tmp_path)
         apply_power_settings=lambda value: values.append(value) or False)
     try:
         window.show_group('calibration')
-        assert window._power_panel.winfo_manager()=='pack'
-        window.power_enabled.set(True)
-        window._toggle_power()
-        assert values==[True] and not window.power_enabled.get()
-        window.show_group('input')
-        assert not window._power_panel.winfo_manager()
-        window.show_group('general')
         assert not window._power_panel.winfo_manager()
     finally:
         window.close()
@@ -227,9 +220,9 @@ def test_hardware_tap_minimum_slider_is_the_only_tap_control(root: tk.Tk, tmp_pa
         voice_model_ready=lambda: True,
     )
     try:
-        window.tap_minimum_slider.set(1.2)
+        window.tap_minimum_slider.set(window._tap_minimum_to_percent(1.2))
         assert window._commit_tap_minimum()
-        assert applied[-1].tap_light_g == 1.2
+        assert applied[-1].tap_light_g == pytest.approx(1.2, abs=.02)
         assert applied[-1].tap_heavy_g == 12.0
         assert applied[-1].impact_dynamic_accel_g == 1.2
         assert applied[-1].min_interval_ms == 80

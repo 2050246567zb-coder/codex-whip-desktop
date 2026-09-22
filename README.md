@@ -6,12 +6,10 @@ Codex 桌面窗口。
 
 ## 当前实现
 
-- 产品版 `2.2.56` 的 Windows 与 macOS 共享同一套功能和配置格式；窗口、蓝牙与
-  音频设备控制分别使用各平台的原生适配层。设置 > 输入 > 语音输入提供互斥的
-  “文字识别”和“Codex 原生听写”：前者保留本地/云端转写，后者把手柄音频送入
-  已知虚拟音频设备并启停 Codex 自带听写，下一鞭只提交已有草稿。Windows 支持
-  Virtual Audio Driver/VB-CABLE，macOS 支持 BlackHole 2ch；未找到已知设备时
-  会拒绝启动，不会把录音回退到扬声器。
+- 产品版 `2.2.57` 的 Windows 与 macOS 共享同一套功能和配置格式；窗口、蓝牙与
+  语音识别分别使用各平台的原生适配层。产品页不再要求用户选择输入方式：
+  已配置的语音 API 优先，否则使用本地识别；云端请求失败且本地模型已就绪时
+  会自动回退。旧的虚拟麦克风 / Codex 原生听写入口已退役。
 
 - 主界面鞭子使用 `4×` RGBA 离屏绘制并以 Lanczos 缩回显示尺寸，手柄、鞭绳与
   高光获得亚像素抗锯齿；Codex 透明覆盖层继续使用无半透明边缘的矢量路径，避免
@@ -145,7 +143,7 @@ scripts/                 环境、测试、编译和上传脚本
 
 - [DEVELOPMENT.md](DEVELOPMENT.md)：Windows/macOS 分支、Apple Silicon 环境、
   构建测试、代码结构、固件协议和跨平台开发规则。
-- [RELEASE-2.2.56.md](RELEASE-2.2.56.md)：当前源码修订、Windows/macOS CI、
+- [RELEASE-2.2.57.md](RELEASE-2.2.57.md)：当前源码修订、Windows/macOS CI、
   实机固件回读和仍需在目标 Mac 验证的边界。
 - [macos/MACOS_ACCEPTANCE.md](macos/MACOS_ACCEPTANCE.md)：Mac 实机逐项验收表。
 

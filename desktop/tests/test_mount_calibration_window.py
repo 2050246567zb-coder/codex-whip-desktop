@@ -80,13 +80,18 @@ def test_main_window_first_use_reopen_and_stale_arm_result(tmp_path, monkeypatch
         window.emit("sensor_pose", SensorPose(0, 0, 0, 0))
         window._drain_events()
         assert window.mount_window is None  # Connect first; user chooses to begin.
+        window.ui.stage = "tour"
+        window.ui._tour_complete = True
         window.ui.advance()
         window._drain_events()
-        assert window.mount_window is not None
+        assert window.mount_window is None
         assert processor._mount_session is not None
-        assert window.mount_window.stage == "neutral"
+        assert window.ui.stage == "calibrate"
+        assert window.ui._mount_inline_state == "neutral"
         old_generation = window._arm_generation - 1
-        window.mount_window.close()
+        token = window.ui._mount_token
+        window._send_mount_command("cancel", token)
+        window._drain_events()
         window.emit("arm_result", (True, {"handle": 1, "pid": 1}, old_generation))
         window.emit("sensor_pose", SensorPose(0, 0, 0, 0))
         window._drain_events()
@@ -94,8 +99,9 @@ def test_main_window_first_use_reopen_and_stale_arm_result(tmp_path, monkeypatch
         assert not window.armed.is_set()
         assert not window.mounting_path.exists()
         window.calibrate_sensor_neutral()
-        assert window.mount_window is not None  # Main button can reopen.
-        window.mount_window.close()
+        assert window.ui.stage == "calibrate"  # Main button can reopen in place.
+        window._send_mount_command("cancel", window.ui._mount_token)
+        window._drain_events()
         save_mounting_profile(MountingProfile((0, 0, 1), 30, 30), window.mounting_path)
     finally:
         window.close()
@@ -104,6 +110,6 @@ def test_main_window_first_use_reopen_and_stale_arm_result(tmp_path, monkeypatch
     next_launch = CodexWhipWindow(root, Settings(), None)
     try:
         assert next_launch._mount_prompted  # No forced onboarding for saved users.
-        assert next_launch.sensor_calibrate_button.cget("text") == "立即归中"
+        assert next_launch.sensor_calibrate_button.cget("text") == "开始校准"
     finally:
         next_launch.close()

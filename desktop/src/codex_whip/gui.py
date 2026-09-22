@@ -730,6 +730,9 @@ class CodexWhipWindow:
     def _build_window(self) -> None:
         from .interface import Interface
         self.ui = Interface(self)
+        # Public in-process hook for Codex/development automation. No product
+        # control links to the developer page.
+        self.root.bind('<<OpenDeveloperSettings>>', lambda _event: self.open_developer_settings())
 
 
     def emit(self, kind: str, payload: Any) -> None:
@@ -841,6 +844,8 @@ class CodexWhipWindow:
 
     def _set_power_status(self, value: str) -> None:
         self.power_status = value
+        if hasattr(self, 'ui') and hasattr(self.ui, 'power_status'):
+            self.ui.power_status.set(value)
         window = self.settings_window
         if window is not None and window.window.winfo_exists():
             window.power_status.set(value)
@@ -874,9 +879,6 @@ class CodexWhipWindow:
         loop.call_soon_threadsafe(processor.calibrate_sensor_neutral)
 
     def open_mount_calibration(self) -> None:
-        if self.mount_window is not None:
-            self.mount_window.window.lift()
-            return
         if self.worker_loop is None or self.processor is None:
             messagebox.showinfo("尚未监听", "请先启动监听并连接手柄，再做方向校准。")
             return
@@ -886,21 +888,14 @@ class CodexWhipWindow:
             messagebox.showinfo("请先结束动作学习", "请先完成或关闭现有挥鞭 / 双敲学习，再做手柄方向校准。")
             return
         self._mount_prompted = True
-        self._arm_generation += 1  # Invalidate a pending pre-calibration arm check.
-        self.armed.clear()
-        self.arm_value.set(False)
-        self.mode_value.set("方向校准 · 暂停发送")
-        self.mount_window = MountCalibrationWindow(self.root, self._send_mount_command,
-                                                   self._mount_dismissed)
-        self.mount_window.window.grab_set()
-        self._send_mount_command("open", self.mount_window.token)
+        self.ui.start_inline_calibration()
 
     def _send_mount_command(self, action: str, token: str) -> None:
         if self.worker_loop is not None and self.processor is not None:
             self.worker_loop.call_soon_threadsafe(self.processor.mount_command, action, token)
-        elif self.mount_window is not None:
-            self.mount_window.update_state({"stage": "neutral", "error": True,
-                                            "detail": "监听已停止，请关闭向导并重新启动监听。"})
+        else:
+            self.emit("mount_state", {"token": token, "stage": "neutral", "error": True,
+                                      "detail": "监听已停止，请重新启动监听。"})
 
     def _mount_dismissed(self) -> None:
         self.mount_window = None
@@ -943,6 +938,7 @@ class CodexWhipWindow:
         return queued
 
     def apply_voice_settings(self, settings: VoiceSettings) -> bool:
+        settings = replace(settings, input_mode="transcription")
         previous = self.voice_store.settings
         try:
             self.voice_store.update(settings)
@@ -960,15 +956,9 @@ class CodexWhipWindow:
                     f"TAPCFG,{self._hardware_tap_minimum(settings):.2f}"
                 )
             self.send_device_command("VOICE,1" if settings.enabled else "VOICE,0")
-        if settings.enabled and settings.input_mode == "transcription":
+        if settings.enabled:
             self.voice_status_value.set("正在准备语音识别")
             self.prepare_voice_model()
-        elif settings.enabled:
-            try:
-                device = self.virtual_microphone.detect()
-                self.voice_status_value.set(f"原生听写已就绪 · {device.name}")
-            except VirtualMicrophoneError as exc:
-                self.voice_status_value.set(str(exc))
         else:
             self.voice_status_value.set("已关闭（可在设置中启用）")
         self.emit("log", "语音双敲模块已开启" if settings.enabled else "语音双敲模块已关闭")
@@ -1126,6 +1116,9 @@ class CodexWhipWindow:
 
     def open_settings(self) -> None:
         self.ui.open_preferences()
+
+    def open_developer_settings(self) -> None:
+        self.ui.open_developer_preferences()
 
     def _ensure_settings(self) -> None:
         if (
@@ -1373,8 +1366,10 @@ class CodexWhipWindow:
                         self._set_power_status('连接手柄后同步')
                         self.voice_module.pause_force_calibration()
                         self._profile_ack_count = 0
-                        if self.mount_window is not None:
-                            self._send_mount_command("disconnect", self.mount_window.token)
+                        token = (self.mount_window.token if self.mount_window is not None
+                                 else getattr(self.ui, "_mount_token", ""))
+                        if token:
+                            self._send_mount_command("disconnect", token)
                     labels = {
                         "scanning": "正在扫描",
                         "connected": "已连接",
@@ -1661,26 +1656,12 @@ class CodexWhipWindow:
                     if not self.firmware_supports_voice:
                         self.voice_status_value.set("需要 0.5.0 固件")
                         self._append_log("双敲录音未启动：当前固件不支持麦克风传输")
-                    elif (self.voice_store.settings.input_mode == "transcription"
-                          and not self.voice_transcriber.ready):
+                    elif not self.voice_transcriber.ready:
                         self.voice_status_value.set("识别服务尚未就绪")
                         self.prepare_voice_model()
                         self._append_log("双敲录音未启动：请检查语音识别服务配置")
                     else:
                         voice = self.voice_store.settings
-                        if voice.input_mode == "virtual_microphone":
-                            if self.voice_module.native_draft_pending:
-                                self.voice_status_value.set("已有听写草稿，挥鞭发送或手动清空")
-                                self._append_log("忽略双敲：Codex 输入框仍有待发送听写草稿")
-                                continue
-                            if self.processor is None or not self._begin_native_dictation(voice):
-                                if self.processor is None:
-                                    self.voice_status_value.set("监听尚未启动")
-                                continue
-                            # The background job opens Codex and the virtual
-                            # microphone first. It will request device audio via
-                            # ``native_dictation_started`` when both are ready.
-                            continue
                         if self.send_device_command(
                             f"VOICE,START,{voice.silence_ms},{voice.max_recording_ms}"
                         ):
@@ -1854,6 +1835,8 @@ class CodexWhipWindow:
         self.armed.clear()
         if self.mount_window is not None:
             self.mount_window.close()
+        elif getattr(self.ui, "_mount_token", ""):
+            self._send_mount_command("cancel", self.ui._mount_token)
         if self._scare_hotkey is not None:
             self._scare_hotkey.stop()
             self._scare_hotkey = None

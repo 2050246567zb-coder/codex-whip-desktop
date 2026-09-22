@@ -115,7 +115,7 @@ class VoiceSettings:
 
     def validated(self) -> "VoiceSettings":
         from .cloud_speech import PRESETS
-        if self.input_mode not in {"transcription", "virtual_microphone"}:
+        if self.input_mode != "transcription":
             raise ValueError("未知语音输入方式")
         if self.speech_provider != 'local' and self.speech_provider not in PRESETS:
             raise ValueError('未知语音识别服务')
@@ -163,6 +163,10 @@ def load_voice_settings(path: Path) -> VoiceSettings:
             for field in asdict(fallback)
             if field in data
         }
+        # Product UI now has a single voice path: API recognition first, with
+        # local recognition as the private fallback. Migrate old dictation
+        # settings without discarding the user's thresholds or provider.
+        values["input_mode"] = "transcription"
         return VoiceSettings(**values).validated()
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return fallback

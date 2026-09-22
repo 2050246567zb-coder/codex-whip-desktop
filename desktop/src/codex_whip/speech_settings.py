@@ -21,20 +21,11 @@ class SpeechServiceCard:
         bg = self.card.cget('bg')
         self.labels = {'local': LOCAL_LABEL, **{k:v.label for k,v in PRESETS.items()}}
         self.choice = tk.StringVar(value=self.labels[store.settings.speech_provider])
-        self.mode = tk.StringVar(value=store.settings.input_mode)
+        self.mode = tk.StringVar(value='transcription')
         self.key = tk.StringVar()
         self.app_id = tk.StringVar()
         self.status = tk.StringVar()
-        tk.Label(self.card,text='语音输入方式',bg=bg,font=('Microsoft YaHei UI',12,'bold')).pack(anchor='w',pady=(0,12))
-        mode_row = tk.Frame(self.card, bg=bg)
-        mode_row.pack(fill='x', pady=(0,20))
-        for value, label in (("transcription", "文字识别"), ("virtual_microphone", "Codex 原生听写")):
-            tk.Radiobutton(
-                mode_row, text=label, variable=self.mode, value=value,
-                command=self.mode_changed, indicatoron=False, relief='flat', bd=0,
-                bg=style.FIELD, activebackground='#E7E7EB', selectcolor='#DCE8FF',
-                font=(style.FONT, 10), padx=16, pady=8, highlightthickness=0,
-            ).pack(side='left', padx=(0,8))
+        tk.Label(self.card,text='语音识别服务',bg=bg,font=('Microsoft YaHei UI',12,'bold')).pack(anchor='w',pady=(0,12))
         self.service_title = tk.Label(self.card,text='识别服务',bg=bg,font=('Microsoft YaHei UI',11,'bold'))
         self.service_title.pack(anchor='w',pady=(0,12))
         self.select = ttk.Combobox(self.card,textvariable=self.choice,state='readonly',
@@ -189,27 +180,11 @@ class SpeechServiceCard:
                 self.status.set(str(exc))
 
     def mode_changed(self):
-        virtual = self.mode.get() == 'virtual_microphone'
-        self.service_title.configure(text='Codex 原生听写' if virtual else '识别服务')
-        self.select.configure(state='disabled' if virtual else 'readonly')
-        if virtual:
-            self.key.set('')
-            self.app_id.set('')
-            self.app_id_row.pack_forget()
-            self.key_row.pack_forget()
-            self.delete_button.pack_forget()
-            if __import__('sys').platform == 'darwin':
-                setup = '安装 BlackHole 2ch，并在 Codex/系统中把 BlackHole 2ch 设为麦克风输入'
-            else:
-                setup = '安装 VB-CABLE，并在 Codex/系统中把 CABLE Output 设为麦克风输入'
-            self.notice.configure(text=(f'双敲后把手柄声音送入 Codex 自带听写；需要先{setup}。'
-                '软件只连接明确识别的虚拟设备，不会把声音播放到扬声器。'))
-            self.driver_panel.pack(fill='x', pady=(14,0), before=self.gain_title)
-            self.status.set('保存后，下一次双敲改用 Codex 原生听写')
-            self.detect_audio_driver()
-        else:
-            self.driver_panel.pack_forget()
-            self.changed()
+        self.mode.set('transcription')
+        self.service_title.configure(text='识别服务')
+        self.select.configure(state='readonly')
+        self.driver_panel.pack_forget()
+        self.changed()
 
     def detect_audio_driver(self):
         if self.mode.get() != 'virtual_microphone':
@@ -274,14 +249,11 @@ class SpeechServiceCard:
                 if credential:
                     self.keys.set(preset,credential)
             if self.apply and self.apply(replace(
-                    self.store.settings, input_mode=self.mode.get(),
+                    self.store.settings, input_mode='transcription',
                     speech_provider=preset, recording_gain=self.gain.get())):
                 self.key.set('')
                 self.app_id.set('')
-                if self.mode.get() == 'virtual_microphone':
-                    self.status.set('已保存 · 下次双敲启动 Codex 原生听写')
-                else:
-                    self.status.set('已保存 · 下次录音生效' if preset == 'local' else '已保存 · 下次录音生效，尚未验证 API 额度')
+                self.status.set('已保存 · 下次录音生效' if preset == 'local' else '已保存 · 下次录音生效，失败时自动切换本地识别')
         except (SpeechError,OSError,ValueError) as exc:
             self.status.set(str(exc))
 
