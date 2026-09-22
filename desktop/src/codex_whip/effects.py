@@ -18,6 +18,7 @@ from typing import Callable
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageTk
 
 from .sensor_pose import SensorPose, SensorPoseTracker
+from .pose_presentation import PoseContinuation
 from .paths import user_data_dir
 
 if os.name == "nt":
@@ -1482,6 +1483,7 @@ class CodexWhipEffects:
     MANUAL_DEBOUNCE_MS = 350
     DRAG_THRESHOLD = 6.0
     SYNC_INTERVAL_MS = 16
+    SENSOR_RESPONSE_SECONDS = .025
     SENSOR_RETURN_DELAY_SECONDS = 3.0
     SENSOR_MOTION_GESTURE_GAP_SECONDS = 0.35
     TRANSPARENT = "#ff00ff"
@@ -1707,6 +1709,20 @@ class CodexWhipEffects:
         self.capture_window.bind("<Motion>", self._handle_manual_motion)
         self.capture_window.bind("<Button-1>", self._handle_manual_strike)
         self.capture_window.bind("<Button-3>", self._handle_manual_cancel)
+        if sys.platform == "darwin":
+            from .macos_overlay import NativeCanvasOverlay, NativeInputOverlay, NativeWhipDrawing
+            self.window = NativeCanvasOverlay(root, self.window, self.canvas)
+            self.damage_window = NativeCanvasOverlay(root, self.damage_window, self.damage_canvas)
+            for item in self._whip_drawing.items:
+                self.canvas.delete(item)
+            self._whip_drawing = NativeWhipDrawing(self.window)
+            self._whip_drawing.draw(self._preview_pose)
+            self.hit_window = NativeInputOverlay(root, self.hit_window, {
+                'press': self._handle_press, 'drag': self._handle_drag,
+                'release': self._handle_release, 'right': self._handle_clock_toggle})
+            self.capture_window = NativeInputOverlay(root, self.capture_window, {
+                'press': self._handle_manual_strike, 'right': self._handle_manual_cancel,
+                'motion': self._handle_manual_motion})
         self._schedule_sync()
 
     def _make_click_through(self) -> None:
@@ -1816,14 +1832,11 @@ class CodexWhipEffects:
         window: tk.Toplevel,
         canvas: tk.Canvas,
     ) -> None:
-        try:
-            window.configure(bg="systemTransparent")
-            canvas.configure(bg="systemTransparent")
-        except tk.TclError:
-            try:
-                window.attributes("-transparent", True)
-            except tk.TclError:
-                pass
+        # Aqua needs transparent backing as well as transparent widget colors.
+        # A valid systemTransparent color does not enable backing transparency.
+        window.attributes("-transparent", True)
+        window.configure(bg="systemTransparent")
+        canvas.configure(bg="systemTransparent")
 
     def _raise_scare(self) -> None:
         if sys.platform == "darwin":
@@ -1956,10 +1969,16 @@ class CodexWhipEffects:
         self._scare_after = self._root.after(self.FRAME_MS, self._scare_frame)
 
     def _sync_damage_overlay(self, rectangle: WindowRectangle) -> None:
+        if not self._damage_items or not getattr(self, "wounds_enabled", True):
+            self.damage_window.withdraw()
+            return
         self._set_geometry(self.damage_window, rectangle)
+        self._draw_damage_overlay(rectangle.width, rectangle.height)
+        if not self._damage_items:
+            self.damage_window.withdraw()
+            return
         if not self.damage_window.winfo_viewable():
             self.damage_window.deiconify()
-        self._draw_damage_overlay(rectangle.width, rectangle.height)
         if os.name == "nt":
             _user32.SetWindowPos(
                 self._damage_hwnd,
@@ -2153,6 +2172,8 @@ class CodexWhipEffects:
         return int(_user32.GetAncestor(window.winfo_id(), GA_ROOT))
 
     def _make_input_window(self, window: tk.Toplevel) -> None:
+        if hasattr(window, "native"):
+            return
         if sys.platform == "darwin":
             from .macos_api import configure_tk_window
 
@@ -2212,8 +2233,9 @@ class CodexWhipEffects:
         if sys.platform == "darwin":
             from .macos_api import raise_tk_window
 
-            raise_tk_window(str(self.damage_window.title()))
-            raise_tk_window(str(self.window.title()))
+            for window in (self.damage_window, self.window):
+                if window.winfo_viewable():
+                    raise_tk_window(str(window.title()))
             return
         if os.name != "nt":
             return
@@ -2280,6 +2302,9 @@ class CodexWhipEffects:
         """Apply the latest relative IMU pose to the parked on-screen whip."""
         now = time.perf_counter()
         self._sensor_pose_updated_at = now
+        if getattr(self, "_pose_continuation", None) is None:
+            self._pose_continuation = PoseContinuation()
+        self._pose_continuation.push(pose, now)
         if pose.moving:
             self._track_sensor_motion_axis(pose, now)
             self._last_sensor_motion_at = now
@@ -2296,7 +2321,12 @@ class CodexWhipEffects:
         target = self._sensor_pose_target
         now = time.perf_counter()
         stream_quiet = now - self._sensor_pose_updated_at
+        continuation = getattr(self, "_pose_continuation", None)
+        if continuation is not None:
+            target = continuation.sample(now) or target
         if stream_quiet >= self.SENSOR_RETURN_DELAY_SECONDS:
+            if continuation is not None:
+                continuation.reset()
             target = SensorPose(0.0, 0.0, 0.0, 0.0)
             self._sensor_pose_target = target
         current = self._sensor_pose_current
@@ -2503,6 +2533,8 @@ class CodexWhipEffects:
             except OSError as exc:
                 self._log(f"鞭子中心位置保存失败：{exc}")
         self._sensor_pose_target = SensorPose(0.0, 0.0, 0.0, 0.0, False)
+        if getattr(self, "_pose_continuation", None) is not None:
+            self._pose_continuation.reset()
         if not preserve_physics:
             self._sensor_return_remaining = 0.0
             self._sensor_pose_current = SensorPose(0.0, 0.0, 0.0, 0.0, False)
@@ -2539,12 +2571,13 @@ class CodexWhipEffects:
         return self._clamp_origin(rectangle, origin)
 
     def _show_idle_hitbox(self) -> None:
-        if self._manual_armed or not self._target_available():
+        if (not getattr(self, "_interaction_enabled", True)
+                or self._manual_armed or not self._target_available()):
             self.hit_window.withdraw()
             return
         padding = 20
         presentation = getattr(self, '_presentation', None)
-        hit_pose = presentation.hit_pose if presentation is not None else self.IDLE
+        hit_pose = presentation.hit_pose if presentation is not None else getattr(self, "_preview_pose", self.IDLE)
         x1 = round(
             self._visual_origin[0]
             + min(hit_pose.handle_start[0], hit_pose.handle_end[0])
@@ -2670,7 +2703,7 @@ class CodexWhipEffects:
         return "break"
 
     def arm_manual(self) -> bool:
-        if not self._target_available():
+        if not getattr(self, "_interaction_enabled", True) or not self._target_available():
             return False
         cursor = _cursor_position()
         if cursor is None:
@@ -2863,6 +2896,13 @@ class CodexWhipEffects:
         delay = max(1, math.ceil(self.SYNC_INTERVAL_MS - spent))
         self._sync_after = self._root.after(delay, self._sync_tick)
 
+    def set_interaction_enabled(self, enabled: bool) -> None:
+        self._interaction_enabled = enabled
+        if not enabled:
+            self.disarm_manual(log=False)
+            self.hit_window.withdraw()
+            self.capture_window.withdraw()
+
     def set_settings_open(self, opened: bool) -> None:
         self._settings_open = opened
         if opened:
@@ -2898,9 +2938,10 @@ class CodexWhipEffects:
                         if rectangle is not None:
                             self._sync_damage_overlay(rectangle)
                 elif self._animation_after is None and not self._dragging:
-                    # Time-based response (~60 ms time constant), independent
-                    # of notification count and arrival bursts. No extrapolation.
-                    self._advance_sensor_pose(1.0 - math.exp(-elapsed / .060))
+                    # Time-based response (~25 ms time constant), independent
+                    # of notification count. Short bounded continuation bridges
+                    # packets; only display targets are predicted.
+                    self._advance_sensor_pose(1.0 - math.exp(-elapsed / self.SENSOR_RESPONSE_SECONDS))
                     self._sync_position()
                     self._show_idle_hitbox()
                 if not self.window.winfo_viewable():

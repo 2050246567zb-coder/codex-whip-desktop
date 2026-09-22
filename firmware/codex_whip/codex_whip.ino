@@ -8,15 +8,15 @@
 #include "voice_audio.h"
 #include "whip_detector.h"
 #include "power_idle.h"
+#include "host_profile.h"
+#include "ble_transport.h"
 
 namespace {
 
-constexpr char kFirmwareVersion[] = "0.7.3";
+constexpr char kFirmwareVersion[] = "0.7.4";
 constexpr char kDeviceName[] = "CodexWhip";
 constexpr uint32_t kSampleRateHz = 416;
 constexpr uint32_t kSamplePeriodUs = 1000000UL / kSampleRateHz;
-constexpr size_t kBlePreferredPayloadBytes = 244;
-constexpr uint32_t kBleChunkTimeoutMs = 650;
 constexpr uint8_t kStatusRegister = LSM6DS3_ACC_GYRO_STATUS_REG;
 constexpr uint8_t kFirstMotionRegister = LSM6DS3_ACC_GYRO_OUTX_L_G;
 constexpr uint8_t kGyroReadyMask = 0x02;
@@ -110,8 +110,11 @@ uint8_t rawBatchCount = 0;
 uint8_t rawBatch[kRawBatchSamples * kRawSampleBytes] = {0};
 uint32_t rawBatchStartMs = 0;
 uint32_t rawBatchSequence = 0;
-String rawTxBuffer;
-size_t rawTxOffset = 0;
+WhipBleTransport transport(bleUart);
+HostProfile activeHost = hostProfile(HostSystem::Compatible);
+std::atomic<bool> linkReset{false};
+uint32_t lastStreamSampleAt = 0;
+uint32_t longestStreamGapMs = 0;
 float streamBiasX = 0.0f;
 float streamBiasY = 0.0f;
 float streamBiasZ = 0.0f;
@@ -313,90 +316,23 @@ void pollHardwareDoubleTap(uint32_t now) {
   }
 }
 
-size_t blePayloadLimit() {
-  size_t payloadLimit = 20;
-  BLEConnection* connection = Bluefruit.Connection(Bluefruit.connHandle());
-  if (connection != nullptr && connection->getMtu() > 3) {
-    payloadLimit = connection->getMtu() - 3;
-    if (payloadLimit > kBlePreferredPayloadBytes) {
-      payloadLimit = kBlePreferredPayloadBytes;
-    }
+void serialDiagnostic(const String& line) {
+  // An attached USB cable without a serial reader must not stall sampling.
+  if (Serial && Serial.availableForWrite() >= static_cast<int>(line.length() + 2)) {
+    Serial.print(line);
+    Serial.print("\r\n");
   }
-  return payloadLimit;
 }
 
 bool sendBlePayload(const uint8_t* data, size_t length) {
-  const size_t payloadLimit = blePayloadLimit();
-  size_t offset = 0;
-  while (offset < length && Bluefruit.connected()) {
-    const size_t remaining = length - offset;
-    const size_t chunkLength =
-        remaining < payloadLimit ? remaining : payloadLimit;
-    const uint32_t startedAt = millis();
-    bool sent = false;
-    while (Bluefruit.connected() && millis() - startedAt < kBleChunkTimeoutMs) {
-      if (bleUart.write(data + offset, chunkLength) == chunkLength) {
-        sent = true;
-        break;
-      }
-      delay(2);
-    }
-    if (!sent) {
-      return false;
-    }
-    offset += chunkLength;
-  }
-  return offset == length;
-}
-
-bool flushRawTransmission() {
-  if (rawTxOffset >= rawTxBuffer.length()) {
-    rawTxBuffer = "";
-    rawTxOffset = 0;
-    return true;
-  }
-  if (!Bluefruit.connected()) {
-    rawTxBuffer = "";
-    rawTxOffset = 0;
-    return false;
-  }
-  const size_t remaining = rawTxBuffer.length() - rawTxOffset;
-  const size_t limit = blePayloadLimit();
-  const size_t chunkLength = remaining < limit ? remaining : limit;
-  const size_t written = bleUart.write(
-      reinterpret_cast<const uint8_t*>(rawTxBuffer.c_str()) + rawTxOffset,
-      chunkLength);
-  if (written == chunkLength) rawTxOffset += written;
-  return rawTxOffset >= rawTxBuffer.length();
-}
-
-void finishRawTransmission() {
-  const uint32_t startedAt = millis();
-  while (rawTxBuffer.length() > 0 && Bluefruit.connected() &&
-         millis() - startedAt < kBleChunkTimeoutMs) {
-    if (flushRawTransmission()) break;
-    delay(1);
-  }
-  if (rawTxBuffer.length() > 0) {
-    rawTxBuffer = "";
-    rawTxOffset = 0;
-    Serial.println("WARN,RAW_TX_PREEMPTED");
-  }
+  return transport.enqueue(data, length);
 }
 
 void sendLine(const String& line) {
-  finishRawTransmission();
-  Serial.println(line);
-  if (!Bluefruit.connected()) {
-    return;
-  }
-
-  String payload = line;
-  payload += '\n';
-  if (!sendBlePayload(reinterpret_cast<const uint8_t*>(payload.c_str()),
-                      payload.length())) {
-    Serial.println("WARN,BLE_TX_FAILED");
-  }
+  serialDiagnostic(line);
+  if (!Bluefruit.connected()) return;
+  String payload = line + '\n';
+  sendBlePayload(reinterpret_cast<const uint8_t*>(payload.c_str()), payload.length());
 }
 
 String encodeBase64(const uint8_t* data, size_t length) {
@@ -440,9 +376,9 @@ void restoreMotionAfterVoice() {
   rawStreaming = voiceSavedRawStreaming;
   rawSuppressEvents = voiceSavedRawSuppressEvents;
   nextRawSampleMs = 0;
+  lastStreamSampleAt = 0;
   rawBatchCount = 0;
-  rawTxBuffer = "";
-  rawTxOffset = 0;
+  transport.discardMotion();
   detector.reset();
 }
 
@@ -451,7 +387,7 @@ bool sendVoicePayload(const String& line) {
   String payload = line;
   payload += '\n';
   if (payload.length() > 256) {
-    Serial.println("WARN,VOICE_LINE_TOO_LONG");
+    serialDiagnostic("WARN,VOICE_LINE_TOO_LONG");
     return false;
   }
   return sendBlePayload(reinterpret_cast<const uint8_t*>(payload.c_str()),
@@ -478,14 +414,12 @@ void startVoiceRecording(uint16_t silenceMs, uint16_t maximumRecordingMs) {
     return;
   }
 
-  finishRawTransmission();
   voiceSavedRawStreaming = rawStreaming;
   voiceSavedRawSuppressEvents = rawSuppressEvents;
   rawStreaming = false;
   rawSuppressEvents = true;
   rawBatchCount = 0;
-  rawTxBuffer = "";
-  rawTxOffset = 0;
+  transport.discardMotion();
 
   voiceSilenceMs = constrain(silenceMs, 400, 4000);
   voiceMaximumRecordingMs = constrain(maximumRecordingMs, 3000, 30000);
@@ -583,9 +517,11 @@ void processVoiceAudio() {
       "," + String(sampleCount) + "," + String(block.predictor) + "," +
       String(block.stepIndex) + "," + encoded;
   if (!sendVoicePayload(line)) {
-    Serial.println(
+    serialDiagnostic(
         "WARN,VOICE_TX_FAILED," + String(voiceChunkSequence) + ",MTU," +
-        String(blePayloadLimit()) + ",RING," + String(voiceRingCount));
+        String(Bluefruit.Connection(Bluefruit.connHandle()) ?
+               Bluefruit.Connection(Bluefruit.connHandle())->getMtu() : 0) +
+        ",RING," + String(voiceRingCount));
     stopVoiceRecording("TX_FAILED");
     return;
   }
@@ -613,6 +549,11 @@ void pack16(uint8_t* destination, uint16_t value) {
   destination[1] = (value >> 8) & 0xff;
 }
 
+uint8_t motionBatchSamples() {
+  BLEConnection* connection = Bluefruit.Connection(Bluefruit.connHandle());
+  return hostBatchSamples(activeHost, connection ? connection->getConnectionInterval() : 12);
+}
+
 void streamMotion(const MotionSample& sample) {
   if (!rawStreaming || !Bluefruit.connected()) return;
   // Decimate by real time, not by a count that assumes every 416 Hz polling
@@ -625,6 +566,11 @@ void streamMotion(const MotionSample& sample) {
     nextRawSampleMs += kRawStreamPeriodMs;
   }
 
+  if (lastStreamSampleAt) {
+    const uint32_t gap = sample.timestampMs - lastStreamSampleAt;
+    if (gap > longestStreamGapMs) longestStreamGapMs = gap;
+  }
+  lastStreamSampleAt = sample.timestampMs;
   if (rawBatchCount && sample.timestampMs - rawBatchStartMs > 200) rawBatchCount = 0;
   if (rawBatchCount == 0) rawBatchStartMs = sample.timestampMs;
   const size_t offset = rawBatchCount * kRawSampleBytes;
@@ -637,16 +583,12 @@ void streamMotion(const MotionSample& sample) {
   pack16(rawBatch + offset + 12, quantize16(sample.accelZ, 1000.0f));
   ++rawBatchCount;
 
-  if (rawBatchCount < kRawBatchSamples) return;
-  const String payload = encodeBase64(rawBatch, sizeof(rawBatch));
-  ++rawBatchSequence;  // Count dropped batches too, so the PC can detect loss.
-  if (rawTxBuffer.length() == 0) {
-    rawTxBuffer = "RAW5," + String(rawBatchSequence) + "," +
-                  String(rawBatchStartMs) + "," + payload + "\n";
-    rawTxOffset = 0;
-  } else {
-    Serial.println("WARN,RAW_TX_BACKLOG");
-  }
+  if (rawBatchCount < motionBatchSamples()) return;
+  const String payload = encodeBase64(rawBatch, rawBatchCount * kRawSampleBytes);
+  ++rawBatchSequence; // Replaced, unsent batches remain visible as sequence gaps.
+  const String line = "RAW5," + String(rawBatchSequence) + "," +
+                      String(rawBatchStartMs) + "," + payload + "\n";
+  transport.enqueue(reinterpret_cast<const uint8_t*>(line.c_str()), line.length(), true);
   rawBatchCount = 0;
 }
 
@@ -654,10 +596,10 @@ void setRawStreaming(bool enabled, bool suppressEvents) {
   rawStreaming = enabled;
   rawSuppressEvents = enabled && suppressEvents;
   nextRawSampleMs = 0;
+  lastStreamSampleAt = 0;
   rawBatchCount = 0;
   if (!enabled) {
-    rawTxBuffer = "";
-    rawTxOffset = 0;
+    transport.discardMotion();
   }
   detector.reset();
   sendLine("RAW," + String(enabled ? (suppressEvents ? 2 : 1) : 0));
@@ -827,13 +769,42 @@ void runDetectorSelfTest() {
   sendLine("SELFTEST,DONE," + String(passed) + ",12");
 }
 
+bool requestHostConnection(uint16_t handle, const HostProfile& profile, bool sleeping) {
+  // Apple-compatible active range: 15-30 ms, latency 0, supervision 4 s.
+  // Sleeping range: 120-135 ms. Units are 1.25 ms and 10 ms respectively.
+  ble_gap_conn_params_t params = {};
+  const HostLinkParameters requested = hostLinkParameters(profile, sleeping);
+  params.min_conn_interval = requested.minimum;
+  params.max_conn_interval = requested.maximum;
+  params.slave_latency = requested.latency;
+  params.conn_sup_timeout = requested.supervisionTimeout;
+  return sd_ble_gap_conn_param_update(handle, &params) == NRF_SUCCESS;
+}
+
 void onBleConnect(uint16_t connectionHandle) {
+  transport.open(connectionHandle);
+  linkReset.store(true);
   BLEConnection* connection = Bluefruit.Connection(connectionHandle);
-  if (connection == nullptr) return;
+  if (!connection) return;
   connection->requestPHY();
   connection->requestDataLengthUpdate();
   connection->requestMtuExchange(247);
-  connection->requestConnectionParameter(powerSleeping ? 80 : 6);
+  requestHostConnection(connectionHandle, hostProfile(HostSystem::Compatible), false);
+}
+
+void onBleDisconnect(uint16_t, uint8_t) {
+  transport.close();
+  linkReset.store(true);
+}
+
+void reportLink() {
+  BLEConnection* connection = Bluefruit.Connection(Bluefruit.connHandle());
+  if (!connection) return;
+  sendLine("LINK," + String(activeHost.name) + "," +
+           String(connection->getConnectionInterval() * 1.25f, 2) + "," +
+           String(connection->getMtu()) + "," + String(longestStreamGapMs) + "," +
+           String(transport.longestWriteMs()) + "," + String(transport.replacedMotion()) +
+           "," + String(motionBatchSamples()));
 }
 
 void advertise() {
@@ -1006,10 +977,8 @@ bool writePowerRegister(uint8_t reg, uint8_t value) {
 
 void clearPowerMotion() {
   // Never cut a partially transmitted RAW line before a POWER status line.
-  finishRawTransmission();
   rawBatchCount = 0;
-  rawTxBuffer = "";
-  rawTxOffset = 0;
+  transport.discardMotion();
   detector.reset();
   learningDetector.reset();
 }
@@ -1032,7 +1001,7 @@ bool wakePower() {
   nextSampleUs = micros();
   Bluefruit.autoConnLed(true);
   BLEConnection* connection = Bluefruit.Connection(Bluefruit.connHandle());
-  if (connection) connection->requestConnectionParameter(6);
+  if (connection) requestHostConnection(connection->handle(), activeHost, false);
   reportPower();
   return true;
 }
@@ -1066,8 +1035,8 @@ void sleepPower(const MotionSample& sample) {
   digitalWrite(LED_GREEN, HIGH);
   digitalWrite(LED_BLUE, HIGH);
   BLEConnection* connection = Bluefruit.Connection(Bluefruit.connHandle());
-  // 100 ms connection interval; central may negotiate a different interval.
-  if (connection) connection->requestConnectionParameter(80);
+  // Compatible low-power range; the central chooses the final interval.
+  if (connection) requestHostConnection(connection->handle(), activeHost, true);
   reportPower();
 }
 
@@ -1141,9 +1110,25 @@ void handleCommand(String command) {
   }
   if (command == "PING") {
     sendLine("PONG," + String(kFirmwareVersion));
+    sendLine("CAPS,HOST_PROFILE,1");
     sendLine("TAPENGINE," + String(hardwareTapReady ? 1 : 0) +
              ",ST_AN5130," + String(hardwareTapThresholdG(), 2) + ",1000");
     reportBattery();
+  } else if (command.startsWith("HOST,")) {
+    HostSystem host;
+    if (!parseHostSystem(command.substring(5).c_str(), host)) {
+      sendLine("HOST,ERROR,UNSUPPORTED");
+      return;
+    }
+    activeHost = hostProfile(host);
+    rawBatchCount = 0;
+    lastStreamSampleAt = 0;
+    transport.discardMotion();
+    const bool requested = requestHostConnection(Bluefruit.connHandle(), activeHost, powerSleeping);
+    sendLine("HOST,OK," + String(activeHost.name) + "," +
+             String(activeHost.batchSamples) + "," + (requested ? "REQUESTED" : "REQUEST_FAILED"));
+  } else if (command == "LINK") {
+    reportLink();
   } else if (command == "BATTERY") {
     reportBattery();
   } else if (command == "SELFTEST") {
@@ -1289,7 +1274,7 @@ void setup() {
   imu.settings.gyroSampleRate = kSampleRateHz;
   imu.settings.gyroBandWidth = 400;
   if (imu.begin() != IMU_SUCCESS) {
-    Serial.println("FATAL,IMU_NOT_FOUND");
+    serialDiagnostic("FATAL,IMU_NOT_FOUND");
     while (true) {
       delay(1000);
     }
@@ -1299,7 +1284,7 @@ void setup() {
   Wire.setClock(400000);
   hardwareTapReady = configureHardwareDoubleTap();
   if (!hardwareTapReady) {
-    Serial.println("WARN,TAP_ENGINE_CONFIG_FAILED");
+    serialDiagnostic("WARN,TAP_ENGINE_CONFIG_FAILED");
   }
 
   Bluefruit.autoConnLed(true);
@@ -1315,7 +1300,15 @@ void setup() {
   }
   Bluefruit.setTxPower(4);
   Bluefruit.setName(kDeviceName);
+  if (!transport.begin()) {
+    serialDiagnostic("FATAL,BLE_TX_TASK");
+    while (true) delay(1000);
+  }
+  Bluefruit.Periph.setConnInterval(12, 24);
+  Bluefruit.Periph.setConnSlaveLatency(0);
+  Bluefruit.Periph.setConnSupervisionTimeoutMS(4000);
   Bluefruit.Periph.setConnectCallback(onBleConnect);
+  Bluefruit.Periph.setDisconnectCallback(onBleDisconnect);
 
   deviceInfo.setManufacturer("Codex Whip");
   deviceInfo.setModel("XIAO nRF52840 Sense");
@@ -1331,8 +1324,24 @@ void setup() {
 }
 
 void loop() {
+  if (linkReset.exchange(false)) {
+    const uint32_t session = transport.session();
+    // All per-peer state is reset in the sampling task, never in BLE callbacks.
+    if (voiceRecording) { voiceRecording = false; PDM.end(); }
+    activeHost = hostProfile(HostSystem::Compatible);
+    rawStreaming = false;
+    rawSuppressEvents = false;
+    rawBatchCount = 0;
+    nextRawSampleMs = 0;
+    lastStreamSampleAt = longestStreamGapMs = 0;
+    commandBuffer = "";
+    learningMode = false;
+    voiceEnabled = false;
+    detector.reset();
+    learningDetector.reset();
+    transport.acceptSession(session);
+  }
   pollCommands();
-  flushRawTransmission();
   pollChargeStatus();
 
   if (Bluefruit.connected() && !voiceRecording &&

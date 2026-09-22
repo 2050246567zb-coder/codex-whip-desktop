@@ -15,7 +15,7 @@ class OverlayPresentation:
         self.canvas = effects.canvas
         # Offscreen widgets own the same animation algorithms as the home page.
         # Only their vector geometry/text masks are painted onto the transparent overlay.
-        self.host = tk.Frame(effects.window, bg=BG)
+        self.host = tk.Frame(self.canvas.master, bg=BG)
         self.host.place(x=10000, y=10000, width=440, height=520)
         self.hero = Hero(self.host, size=400, frame_provider=self.frame,
                          interactive=False, direct_pose=True, external_clock=True)

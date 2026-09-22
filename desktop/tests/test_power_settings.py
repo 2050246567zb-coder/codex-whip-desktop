@@ -106,3 +106,17 @@ def test_closed_calibration_window_cannot_keep_board_awake(exists,expected):
     app.send_device_command=Mock()
     app._keep_awake_for_calibration()
     assert app.send_device_command.called == expected
+
+
+def test_inline_direction_calibration_keeps_controller_awake():
+    from types import SimpleNamespace
+    app = object.__new__(CodexWhipWindow)
+    app.ui = SimpleNamespace(stage='calibrate')
+    app.settings_window = None
+    app.mount_window = None
+    app.voice_module = SimpleNamespace(calibration_active=False)
+    app.ble_connected = True
+    app.firmware_version = '0.6.1'
+    app.send_device_command = Mock()
+    app._keep_awake_for_calibration()
+    app.send_device_command.assert_called_once_with('POWERHOLD')

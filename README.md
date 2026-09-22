@@ -1,3 +1,5 @@
+> macOS 最新源码：**2.2.59**（`codex/product-macos`）。本次 Mac 更新说明见 [RELEASE-2.2.59-macos.md](RELEASE-2.2.59-macos.md)。
+
 # Codex 鞭子
 
 挥动握柄后，由 XIAO nRF52840 Sense 在本地识别动作，通过 BLE 向 Windows/macOS

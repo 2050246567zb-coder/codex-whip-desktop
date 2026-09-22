@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-whip"
-version = "2.2.58"
+version = "2.2.59"
 description = "Receive BLE whip gestures and send a configurable nudge to Codex on Windows or macOS."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,6 +16,7 @@ dependencies = [
   "sounddevice>=0.5,<1",
   "pywinauto>=0.6.9,<1; sys_platform == 'win32'",
   "pyobjc-framework-Cocoa>=11,<13; sys_platform == 'darwin'",
+  "pyobjc-framework-ApplicationServices>=11,<13; sys_platform == 'darwin'",
   "pyobjc-framework-Quartz>=11,<13; sys_platform == 'darwin'",
   "opencc-python-reimplemented>=0.1.7,<1; sys_platform == 'darwin'",
 ]

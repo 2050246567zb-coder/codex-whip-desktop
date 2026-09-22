@@ -91,7 +91,9 @@ class Hero(tk.Canvas):
         self._frame_provider = frame_provider
         self.direct_pose = direct_pose
         self.external_clock = external_clock
-        self._whip_drawing = (SupersampledWhipDrawing(self, supersample=4)
+        # Retina needs 2x antialiasing; 4x rasterization competes with the
+        # sensor/overlay frame clock on Tk's single UI thread.
+        self._whip_drawing = (SupersampledWhipDrawing(self, supersample=2 if sys.platform == "darwin" else 4)
                               if high_resolution else WhipDrawing(self))
         self._preview_key = None
         self.clock_enabled = False
@@ -264,13 +266,16 @@ class Hero(tk.Canvas):
         self._wake()
 
     def _draw(self):
+        started = time.perf_counter()
         if self._timer is not None:
             self.after_cancel(self._timer)
         self._timer = None
         if self._closed:
             return
         self._draw_live_whip()
-        self._timer = self.after(100 if self.reduce_motion else 16, self._draw)
+        interval = 100 if self.reduce_motion else 16
+        spent_ms = (time.perf_counter() - started) * 1000
+        self._timer = self.after(max(1, math.ceil(interval - spent_ms)), self._draw)
     def _draw_live_whip(self):
         self.delete("voice_art")
         frame = self._frame_provider() if self._frame_provider else None
@@ -500,6 +505,10 @@ class Interface:
         self.pending.bind("<Button-1>", lambda _e: self.open_preferences("general"))
         self.footer = tk.Frame(shell, bg=BG, height=16)
         self.footer.pack(side="bottom", pady=(18, 0))
+        self.direction_button = button(self.footer, "校准手柄方向", self.start_inline_calibration)
+        if load_mounting_profile(self.app.mounting_path) is None:
+            self.direction_button.pack()
+
 
     def _whip_frame(self):
         effects = getattr(self.app, "effects", None)
@@ -765,6 +774,7 @@ class Interface:
         self._render_key = None
 
     def skip_setup(self):
+        self.app.effects.set_interaction_enabled(True)
         if self._mount_token:
             self.app._send_mount_command('cancel', self._mount_token)
             self._mount_token = ''
@@ -802,6 +812,8 @@ class Interface:
         self._mount_inline_state = 'neutral'
         self._mount_centered = False
         self._mount_detail = ''
+        self._mount_error = False
+        self.app.effects.set_interaction_enabled(False)
         self.stage = 'calibrate'
         self.app._send_mount_command('open', self._mount_token)
         self._render_key = None
@@ -815,6 +827,9 @@ class Interface:
         }
         action = actions.get(self._mount_inline_state)
         if action and self._mount_token:
+            self._mount_error = False
+            self._mount_detail = '正在记录，请稍候…'
+            self._render_key = None
             self.app._send_mount_command(action, self._mount_token)
 
     def _advance_tour(self):
@@ -915,8 +930,11 @@ class Interface:
             self._mount_inline_state = str(payload.get("stage", "neutral"))
             self._mount_centered = bool(payload.get("centered", False))
             self._mount_detail = str(payload.get("detail", ""))
+            self._mount_error = bool(payload.get("error", False))
             self._render_key = None
         elif kind == "mount_progress" and payload[0] == self._mount_token:
+            if getattr(self, "_mount_error", False):
+                return
             angle, stability = payload[1], payload[2]
             self._mount_detail = (
                 f"{angle:.0f}°  ·  {stability.detail}"
@@ -924,7 +942,10 @@ class Interface:
             )
             self._render_key = None
         elif kind == "mount_closed" and payload.get("token") == self._mount_token:
+            self.app.effects.set_interaction_enabled(True)
             saved = bool(payload.get("saved"))
+            if saved:
+                self.direction_button.pack_forget()
             self._mount_token = ""
             self.app.mode_value.set("安全监听")
             self.stage = self._calibration_return_stage if saved else (
@@ -947,9 +968,12 @@ class Interface:
                 self._voice_state = ""
         elif kind in {"voice_error", "voice_model_error", "send_error"}:
             self._voice_state = "" if kind != "send_error" else self._voice_state
-            self._notice = ("发送已暂停，请在设置中查看原因" if kind == "send_error"
-                            else "录音没完成，再敲两下试试；详情见设置")
-            self._notice_until = time.monotonic() + (10 if kind == "send_error" else 3)
+            if kind == "voice_model_error":
+                self._notice = "语音识别尚未就绪，请在设置中查看准备失败的原因"
+            else:
+                self._notice = ("发送已暂停，请在设置中查看原因" if kind == "send_error"
+                                else "录音没完成，再敲两下试试；详情见设置")
+            self._notice_until = time.monotonic() + (10 if kind != "voice_error" else 3)
         elif kind == "voice_calibration":
             self._tap_count = int(payload.get("done", 0))
         elif kind in {"voice_calibration_done", "tap_calibration_saved"}:

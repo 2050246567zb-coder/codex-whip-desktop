@@ -37,7 +37,7 @@ class MacDictationSession:
 class MacOSCodexSender:
     """Fail-closed Accessibility adapter for the visible macOS Codex window."""
 
-    def __init__(self, settings: CodexSettings, *, prompt_permission: bool = True) -> None:
+    def __init__(self, settings: CodexSettings, *, prompt_permission: bool = False) -> None:
         if sys.platform != "darwin":
             raise CodexTargetError("Mac 发送器只能在 macOS 上运行")
         self._settings = settings
@@ -56,35 +56,35 @@ class MacOSCodexSender:
 
     @staticmethod
     def _frame(element: Any) -> tuple[float, float, float, float] | None:
-        _appkit, quartz = macos_api._frameworks()
+        _appkit, services = macos_api._frameworks()
         position = macos_api._ax_point(
-            macos_api.ax_copy(element, quartz.kAXPositionAttribute)
+            macos_api.ax_copy(element, services.kAXPositionAttribute)
         )
         size = macos_api._ax_size(
-            macos_api.ax_copy(element, quartz.kAXSizeAttribute)
+            macos_api.ax_copy(element, services.kAXSizeAttribute)
         )
         if position is None or size is None:
             return None
         return position[0], position[1], size[0], size[1]
 
     def _candidate(self, element: Any) -> _Candidate | None:
-        _appkit, quartz = macos_api._frameworks()
-        role = str(macos_api.ax_copy(element, quartz.kAXRoleAttribute) or "")
+        _appkit, services = macos_api._frameworks()
+        role = str(macos_api.ax_copy(element, services.kAXRoleAttribute) or "")
         if role not in {"AXTextArea", "AXTextField"}:
             return None
         frame = self._frame(element)
         if frame is None:
             return None
-        title = str(macos_api.ax_copy(element, quartz.kAXTitleAttribute) or "")
+        title = str(macos_api.ax_copy(element, services.kAXTitleAttribute) or "")
         description = str(
-            macos_api.ax_copy(element, quartz.kAXDescriptionAttribute) or ""
+            macos_api.ax_copy(element, services.kAXDescriptionAttribute) or ""
         )
-        help_text = str(macos_api.ax_copy(element, quartz.kAXHelpAttribute) or "")
+        help_text = str(macos_api.ax_copy(element, services.kAXHelpAttribute) or "")
         name = " ".join(value for value in (title, description, help_text) if value)
-        raw_value = macos_api.ax_copy(element, quartz.kAXValueAttribute)
+        raw_value = macos_api.ax_copy(element, services.kAXValueAttribute)
         value = None if raw_value is None else str(raw_value).strip()
         placeholder_attribute = getattr(
-            quartz,
+            services,
             "kAXPlaceholderValueAttribute",
             "AXPlaceholderValue",
         )
@@ -180,18 +180,18 @@ class MacOSCodexSender:
         }
 
     def _send_button(self, window: macos_api.MacWindow) -> Any | None:
-        _appkit, quartz = macos_api._frameworks()
+        _appkit, services = macos_api._frameworks()
         matches: list[Any] = []
         for element in macos_api.ax_descendants(window.element):
-            role = str(macos_api.ax_copy(element, quartz.kAXRoleAttribute) or "")
+            role = str(macos_api.ax_copy(element, services.kAXRoleAttribute) or "")
             if role != "AXButton":
                 continue
             name = " ".join(
                 str(macos_api.ax_copy(element, attribute) or "")
                 for attribute in (
-                    quartz.kAXTitleAttribute,
-                    quartz.kAXDescriptionAttribute,
-                    quartz.kAXHelpAttribute,
+                    services.kAXTitleAttribute,
+                    services.kAXDescriptionAttribute,
+                    services.kAXHelpAttribute,
                 )
             ).casefold()
             frame = self._frame(element)
@@ -202,16 +202,16 @@ class MacOSCodexSender:
         return matches[0] if len(matches) == 1 else None
 
     def _dictation_button(self, window: macos_api.MacWindow) -> Any:
-        _appkit, quartz = macos_api._frameworks()
+        _appkit, services = macos_api._frameworks()
         accepted = {"听写", "dictate", "dictation", "voice input", "语音输入"}
         matches: list[Any] = []
         for element in macos_api.ax_descendants(window.element):
-            if str(macos_api.ax_copy(element, quartz.kAXRoleAttribute) or "") != "AXButton":
+            if str(macos_api.ax_copy(element, services.kAXRoleAttribute) or "") != "AXButton":
                 continue
             name = " ".join(
                 str(macos_api.ax_copy(element, attribute) or "")
-                for attribute in (quartz.kAXTitleAttribute, quartz.kAXDescriptionAttribute,
-                                  quartz.kAXHelpAttribute)
+                for attribute in (services.kAXTitleAttribute, services.kAXDescriptionAttribute,
+                                  services.kAXHelpAttribute)
             ).strip().casefold()
             frame = self._frame(element)
             if frame is not None and frame[1] >= window.top + window.height * 0.52 and name in accepted:
@@ -222,9 +222,9 @@ class MacOSCodexSender:
 
     @staticmethod
     def _press(element: Any, detail: str) -> None:
-        _appkit, quartz = macos_api._frameworks()
-        error = quartz.AXUIElementPerformAction(element, quartz.kAXPressAction)
-        if int(error) != int(quartz.kAXErrorSuccess):
+        _appkit, services = macos_api._frameworks()
+        error = services.AXUIElementPerformAction(element, services.kAXPressAction)
+        if int(error) != int(services.kAXErrorSuccess):
             raise CodexTargetError(detail)
 
     def start_dictation(self) -> MacDictationSession:
@@ -258,16 +258,16 @@ class MacOSCodexSender:
             raise CodexTargetError("无法确认 Codex 听写草稿")
         if not existing:
             raise CodexTargetError("Codex 听写尚未生成可发送文字")
-        _appkit, quartz = macos_api._frameworks()
+        _appkit, services = macos_api._frameworks()
         if not macos_api.activate_application(window.pid):
             raise CodexTargetError("macOS 拒绝激活 Codex 窗口")
         time.sleep(0.12)
-        if not macos_api.ax_set(composer.element, quartz.kAXFocusedAttribute, True):
+        if not macos_api.ax_set(composer.element, services.kAXFocusedAttribute, True):
             raise CodexTargetError("无法聚焦 Codex 输入框")
         button = self._send_button(window)
         if button is not None:
-            error = quartz.AXUIElementPerformAction(button, quartz.kAXPressAction)
-            if int(error) != int(quartz.kAXErrorSuccess):
+            error = services.AXUIElementPerformAction(button, services.kAXPressAction)
+            if int(error) != int(services.kAXErrorSuccess):
                 macos_api.post_return()
         else:
             macos_api.post_return()
@@ -283,11 +283,11 @@ class MacOSCodexSender:
                 raise CodexTargetError("无法确认 Codex 输入框是否为空")
             if existing:
                 raise CodexTargetError("Codex 输入框已有未发送草稿")
-        _appkit, quartz = macos_api._frameworks()
+        _appkit, services = macos_api._frameworks()
         if not macos_api.activate_application(window.pid):
             raise CodexTargetError("macOS 拒绝激活 Codex 窗口")
         time.sleep(0.16)
-        if not macos_api.ax_set(composer.element, quartz.kAXFocusedAttribute, True):
+        if not macos_api.ax_set(composer.element, services.kAXFocusedAttribute, True):
             raise CodexTargetError("无法聚焦 Codex 输入框")
         time.sleep(0.08)
         if macos_api.frontmost_pid() != window.pid:
@@ -296,13 +296,13 @@ class MacOSCodexSender:
         time.sleep(0.06)
         if macos_api.frontmost_pid() != window.pid:
             raise CodexTargetError("提交前 Codex 已失去前台焦点")
-        inserted = macos_api.ax_copy(composer.element, quartz.kAXValueAttribute)
+        inserted = macos_api.ax_copy(composer.element, services.kAXValueAttribute)
         if inserted is None or str(inserted) != prompt:
             raise CodexTargetError("Codex 输入内容未能验证，已拒绝提交")
         button = self._send_button(window)
         if button is not None:
-            error = quartz.AXUIElementPerformAction(button, quartz.kAXPressAction)
-            if int(error) != int(quartz.kAXErrorSuccess):
+            error = services.AXUIElementPerformAction(button, services.kAXPressAction)
+            if int(error) != int(services.kAXErrorSuccess):
                 macos_api.post_return()
         else:
             macos_api.post_return()

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import faulthandler
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 import os
 import queue
 import sys
@@ -736,6 +738,11 @@ class CodexWhipWindow:
 
 
     def emit(self, kind: str, payload: Any) -> None:
+        # Record lifecycle only: never persist audio or recognized text.
+        if kind == "voice_state":
+            logging.getLogger(__name__).info("Voice state: %s", payload.get("state", ""))
+        elif kind in {"voice_trigger", "voice_model_ready", "voice_model_error", "voice_error"}:
+            logging.getLogger(__name__).info("Voice event: %s", kind)
         self.events.put((kind, payload))
 
     def _hang_heartbeat(self) -> None:
@@ -1270,7 +1277,8 @@ class CodexWhipWindow:
         # A lease refreshed only during calibration, so a crash/disconnect can
         # never leave the board permanently inhibited from entering sleep.
         window = self.settings_window
-        calibrating = (self.mount_window is not None or self.voice_module.calibration_active or
+        calibrating = (getattr(getattr(self, "ui", None), "stage", None) == "calibrate" or
+                       self.mount_window is not None or self.voice_module.calibration_active or
                        (window is not None and window.window.winfo_exists() and
                         window._stage in {'positive', 'negative'}))
         if (calibrating and self.ble_connected and supports_power_saving(self.firmware_version)
@@ -1303,6 +1311,7 @@ class CodexWhipWindow:
         self, ok: bool, detail: object, *, automatic: bool
     ) -> None:
         if ok:
+            self._effect_target_error = None
             target = detail
             if not isinstance(target, dict) or "handle" not in target:
                 return
@@ -1317,6 +1326,9 @@ class CodexWhipWindow:
                 )
             return
 
+        if str(detail) != getattr(self, "_effect_target_error", None):
+            logging.getLogger(__name__).warning("Overlay target unavailable: %s", detail)
+            self._effect_target_error = str(detail)
         if self._effect_target_handle is not None:
             self.effects.detach()
             self._effect_target_handle = None
@@ -1859,10 +1871,23 @@ class CodexWhipWindow:
 
 
 def main() -> int:
+    if sys.platform == "darwin":
+        # The bundled Tcl/Tk is non-threaded. _tkinter otherwise sleeps 20 ms
+        # between event polls, delaying both sensor delivery and 16 ms frames.
+        import _tkinter
+        _tkinter.setbusywaitinterval(1)
     if "--ui-smoke" in sys.argv:
         from .ui_smoke import main as smoke_main
         return smoke_main(sys.argv[sys.argv.index("--ui-smoke") + 1:])
     factory_calibration = import_factory_calibration_once()
+    log_path = user_data_dir() / "runtime.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(log_path, maxBytes=512_000, backupCount=1, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger = logging.getLogger("codex_whip")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.info("Starting Codex Whip %s", __version__)
     migration = import_bundled_profile_once()
     config_path = find_config_path()
     try:
@@ -1875,6 +1900,9 @@ def main() -> int:
         return 2
 
     root = tk.Tk()
+    def report_callback_exception(exc_type, exc_value, traceback):
+        logger.error("UI callback failed", exc_info=(exc_type, exc_value, traceback))
+    root.report_callback_exception = report_callback_exception
     window = CodexWhipWindow(root, settings, config_path)
     if factory_calibration.imported:
         window.emit(

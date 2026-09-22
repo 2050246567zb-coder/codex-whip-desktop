@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
+import sys
 from collections.abc import Awaitable, Callable
 
 from bleak import BleakClient, BleakScanner
@@ -14,6 +16,11 @@ from .settings import BleSettings
 NUS_RX_CHARACTERISTIC = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_TX_CHARACTERISTIC = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 BATTERY_POLL_SECONDS = 1.0
+
+
+def host_profile_command(platform: str) -> str:
+    host = {"darwin": "MACOS", "win32": "WINDOWS", "linux": "LINUX"}.get(platform, "COMPATIBLE")
+    return f"HOST,{host}"
 
 MessageHandler = Callable[[ProtocolMessage], Awaitable[None]]
 LogHandler = Callable[[str], None]
@@ -82,13 +89,22 @@ class BleWhipClient:
         disconnected = asyncio.Event()
         queue: asyncio.Queue[ProtocolMessage] = asyncio.Queue()
         decoder = LineDecoder()
+        host_profile_pending = False
+        host_profile_sent = False
+        link_report_at: float | None = None
 
         def on_disconnect(_: BleakClient) -> None:
             disconnected.set()
 
         def on_notification(_: object, data: bytearray) -> None:
+            nonlocal host_profile_pending
             try:
                 for message in decoder.feed(data):
+                    if isinstance(message, DeviceMessage):
+                        if message.kind == "CAPS" and message.fields == ("HOST_PROFILE", "1"):
+                            host_profile_pending = True
+                        elif message.kind in {"HOST", "LINK", "TAP2", "TAPENGINE"}:
+                            logging.getLogger(__name__).info("BLE %s: %s", message.kind, ",".join(message.fields))
                     queue.put_nowait(message)
             except ProtocolError as exc:
                 queue.put_nowait(
@@ -112,6 +128,15 @@ class BleWhipClient:
 
             while client.is_connected and not stop.is_set():
                 now = asyncio.get_running_loop().time()
+                # Negotiate once per connection and only with firmware that
+                # advertises support. Old firmware never receives unknown HOST.
+                if host_profile_pending and not host_profile_sent:
+                    await self._write_command(client, host_profile_command(sys.platform))
+                    host_profile_sent = True
+                    link_report_at = now + 2.0
+                if link_report_at is not None and now >= link_report_at:
+                    await self._write_command(client, "LINK")
+                    link_report_at = None
                 if now >= next_battery_poll:
                     await self._write_command(client, "BATTERY")
                     next_battery_poll = now + BATTERY_POLL_SECONDS

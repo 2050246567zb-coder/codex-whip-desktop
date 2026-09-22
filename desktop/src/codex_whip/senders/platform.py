@@ -9,8 +9,10 @@ from ..settings import CodexSettings
 def create_live_sender(
     settings: CodexSettings,
     *,
-    prompt_permission: bool = True,
+    prompt_permission: bool = False,
 ) -> Any:
+    # Construction also runs during background window polling. Never request
+    # system permissions unless a caller explicitly opts in.
     if sys.platform == "win32":
         from .windows_uia import WindowsCodexSender
 

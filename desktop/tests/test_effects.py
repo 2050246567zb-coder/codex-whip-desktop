@@ -980,7 +980,7 @@ def test_sync_frame_advances_pose_once_without_duplicate_draw(monkeypatch):
     monkeypatch.setattr(module, '_cursor_position', lambda: (0, 0))
     effect._sync_tick()
     effect._advance_sensor_pose.assert_called_once()
-    assert effect._advance_sensor_pose.call_args.args[0] == pytest.approx(1-math.exp(-.016/.060))
+    assert effect._advance_sensor_pose.call_args.args[0] == pytest.approx(1-math.exp(-.016/.025))
     effect._sync_position.assert_called_once()
     effect._whip_drawing.draw.assert_not_called()
     effect._presentation.render.assert_called_once()
@@ -1082,3 +1082,42 @@ def test_settings_blocks_all_overlay_reposition_paths():
     assert effects._move_visual((1, 2)) is None
     assert effects._raise_visual() is None
     assert effects.play() is False
+
+
+def test_macos_transparency_enables_backing_even_when_color_is_supported():
+    from unittest.mock import Mock
+    window, canvas = Mock(), Mock()
+    CodexWhipEffects._enable_macos_transparency(window, canvas)
+    window.attributes.assert_called_once_with('-transparent', True)
+    window.configure.assert_called_once_with(bg='systemTransparent')
+    canvas.configure.assert_called_once_with(bg='systemTransparent')
+
+
+@pytest.mark.parametrize('enabled,items', [(True, []), (False, [object()])])
+def test_damage_overlay_stays_hidden_without_enabled_damage(enabled, items):
+    from unittest.mock import Mock
+    effect = object.__new__(CodexWhipEffects)
+    effect._damage_items = items
+    effect.wounds_enabled = enabled
+    effect.damage_window = Mock()
+    effect._set_geometry = Mock()
+    effect._sync_damage_overlay(WindowRectangle(0, 0, 1000, 800))
+    effect.damage_window.withdraw.assert_called_once()
+    effect.damage_window.deiconify.assert_not_called()
+    effect._set_geometry.assert_not_called()
+
+
+def test_macos_raise_visual_does_not_reveal_hidden_damage(monkeypatch):
+    from unittest.mock import Mock
+    from codex_whip import effects, macos_api
+    effect = object.__new__(CodexWhipEffects)
+    effect.window = Mock()
+    effect.window.title.return_value = 'whip'
+    effect.window.winfo_viewable.return_value = True
+    effect.damage_window = Mock()
+    effect.damage_window.winfo_viewable.return_value = False
+    raise_window = Mock()
+    monkeypatch.setattr(effects.sys, 'platform', 'darwin')
+    monkeypatch.setattr(macos_api, 'raise_tk_window', raise_window)
+    effect._raise_visual()
+    raise_window.assert_called_once_with('whip')

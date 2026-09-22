@@ -20,6 +20,7 @@ outputs/
 macos/migration-data/
 macos/.build/
 macos/.venv-macos/
+desktop/assets/stt/whispercpp-*/whisper-cli
 *.spec
 *.dmp
 .env

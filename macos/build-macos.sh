@@ -6,7 +6,6 @@ DESKTOP_DIR="$ROOT_DIR/desktop"
 MAC_DIR="$ROOT_DIR/macos"
 VENV_DIR="$MAC_DIR/.venv-macos"
 WHISPER_VERSION="1.8.1"
-WHISPER_ROOT="$MAC_DIR/.build/whisper.cpp-$WHISPER_VERSION"
 WHISPER_ASSET="$DESKTOP_DIR/assets/stt/whispercpp-$WHISPER_VERSION/whisper-cli"
 OUTPUT_DIR="$MAC_DIR/dist"
 
@@ -49,24 +48,7 @@ PY
 mkdir -p "$MAC_DIR/.build" "$OUTPUT_DIR" "$(dirname "$WHISPER_ASSET")"
 
 if [[ ! -x "$WHISPER_ASSET" ]]; then
-  if ! command -v cmake >/dev/null 2>&1; then
-    echo "cmake is required. Install it with Homebrew or from cmake.org."
-    exit 3
-  fi
-  if [[ ! -d "$WHISPER_ROOT/.git" ]]; then
-    safe_remove_tree "$WHISPER_ROOT" "$MAC_DIR/.build"
-    git clone --depth 1 --branch "v$WHISPER_VERSION" \
-      https://github.com/ggml-org/whisper.cpp.git "$WHISPER_ROOT"
-  fi
-  cmake -S "$WHISPER_ROOT" -B "$WHISPER_ROOT/build" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DWHISPER_METAL=ON \
-    -DWHISPER_COREML=OFF \
-    -DBUILD_SHARED_LIBS=OFF
-  cmake --build "$WHISPER_ROOT/build" --config Release \
-    -j "$(sysctl -n hw.logicalcpu)"
-  cp "$WHISPER_ROOT/build/bin/whisper-cli" "$WHISPER_ASSET"
-  chmod +x "$WHISPER_ASSET"
+  "$MAC_DIR/prepare-speech.sh"
 fi
 
 "$PYTHON_BIN" -m venv "$VENV_DIR"
@@ -86,6 +68,7 @@ cd "$DESKTOP_DIR"
   --add-data "assets:assets" \
   --collect-submodules AppKit \
   --collect-submodules Quartz \
+  --collect-submodules ApplicationServices \
   --collect-submodules Foundation \
   --collect-all sounddevice \
   codex_whip_gui.py

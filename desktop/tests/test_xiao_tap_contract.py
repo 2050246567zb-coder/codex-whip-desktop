@@ -11,7 +11,7 @@ SOURCE = (ROOT / "firmware/codex_whip/codex_whip.ino").read_text(encoding="utf-8
 
 
 def test_xiao_firmware_uses_one_second_st_double_tap_only() -> None:
-    assert 'kFirmwareVersion[] = "0.7.3"' in SOURCE
+    assert 'kFirmwareVersion[] = "0.7.4"' in SOURCE
     assert "writeImuRegisterVerified(kTapDurationRegister, 0xDF)" in SOURCE
     assert 'command.startsWith("TAPCFG,")' in SOURCE
     assert 'sendLine("TAP2," + String(now)' in SOURCE

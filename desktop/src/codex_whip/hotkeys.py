@@ -150,7 +150,7 @@ class GlobalHotkey:
 
             from .macos_api import accessibility_trusted
 
-            if not accessibility_trusted(prompt=True):
+            if not accessibility_trusted(prompt=False):
                 raise HotkeyRegistrationError(
                     "需要在 系统设置 > 隐私与安全性 > 辅助功能 中允许 Codex Whip"
                 )

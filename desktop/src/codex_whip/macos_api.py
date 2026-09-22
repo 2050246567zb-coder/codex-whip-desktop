@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -30,44 +31,46 @@ def _frameworks() -> tuple[Any, Any]:
         raise MacOSAPIError("macOS API requested outside macOS")
     try:
         import AppKit
-        import Quartz
+        import ApplicationServices
     except ImportError as exc:
-        raise MacOSAPIError("Mac 版缺少 PyObjC/AppKit 运行时") from exc
-    return AppKit, Quartz
+        raise MacOSAPIError("Mac 版缺少 PyObjC/AppKit/ApplicationServices 运行时") from exc
+    # ApplicationServices includes both Accessibility (HIServices) and CoreGraphics.
+    # Quartz alone does not expose AXIsProcessTrusted or AXUIElement APIs.
+    return AppKit, ApplicationServices
 
 
 def accessibility_trusted(*, prompt: bool = False) -> bool:
-    _appkit, quartz = _frameworks()
+    _appkit, services = _frameworks()
     if prompt:
         return bool(
-            quartz.AXIsProcessTrustedWithOptions(
-                {quartz.kAXTrustedCheckOptionPrompt: True}
+            services.AXIsProcessTrustedWithOptions(
+                {services.kAXTrustedCheckOptionPrompt: True}
             )
         )
-    return bool(quartz.AXIsProcessTrusted())
+    return bool(services.AXIsProcessTrusted())
 
 
 def ax_copy(element: Any, attribute: str) -> Any | None:
-    _appkit, quartz = _frameworks()
-    result = quartz.AXUIElementCopyAttributeValue(element, attribute, None)
+    _appkit, services = _frameworks()
+    result = services.AXUIElementCopyAttributeValue(element, attribute, None)
     if isinstance(result, tuple) and len(result) == 2:
         error, value = result
-        return value if int(error) == int(quartz.kAXErrorSuccess) else None
+        return value if int(error) == int(services.kAXErrorSuccess) else None
     return None
 
 
 def ax_set(element: Any, attribute: str, value: Any) -> bool:
-    _appkit, quartz = _frameworks()
-    return int(quartz.AXUIElementSetAttributeValue(element, attribute, value)) == int(
-        quartz.kAXErrorSuccess
+    _appkit, services = _frameworks()
+    return int(services.AXUIElementSetAttributeValue(element, attribute, value)) == int(
+        services.kAXErrorSuccess
     )
 
 
 def _ax_point(value: Any) -> tuple[float, float] | None:
-    _appkit, quartz = _frameworks()
+    _appkit, services = _frameworks()
     if value is None:
         return None
-    result = quartz.AXValueGetValue(value, quartz.kAXValueCGPointType, None)
+    result = services.AXValueGetValue(value, services.kAXValueCGPointType, None)
     if isinstance(result, tuple) and len(result) == 2 and result[0]:
         point = result[1]
         return float(point.x), float(point.y)
@@ -75,10 +78,10 @@ def _ax_point(value: Any) -> tuple[float, float] | None:
 
 
 def _ax_size(value: Any) -> tuple[float, float] | None:
-    _appkit, quartz = _frameworks()
+    _appkit, services = _frameworks()
     if value is None:
         return None
-    result = quartz.AXValueGetValue(value, quartz.kAXValueCGSizeType, None)
+    result = services.AXValueGetValue(value, services.kAXValueCGSizeType, None)
     if isinstance(result, tuple) and len(result) == 2 and result[0]:
         size = result[1]
         return float(size.width), float(size.height)
@@ -86,7 +89,7 @@ def _ax_size(value: Any) -> tuple[float, float] | None:
 
 
 def _candidate_applications() -> Iterable[Any]:
-    appkit, _quartz = _frameworks()
+    appkit, _services = _frameworks()
     for application in appkit.NSWorkspace.sharedWorkspace().runningApplications():
         name = str(application.localizedName() or "").casefold()
         bundle = str(application.bundleIdentifier() or "").casefold()
@@ -104,21 +107,25 @@ def is_official_codex_identity(name: str, bundle_identifier: str) -> bool:
 
 
 def _windows_for_pid(pid: int) -> list[Any]:
-    _appkit, quartz = _frameworks()
-    application = quartz.AXUIElementCreateApplication(int(pid))
-    value = ax_copy(application, quartz.kAXWindowsAttribute)
+    _appkit, services = _frameworks()
+    application = services.AXUIElementCreateApplication(int(pid))
+    value = ax_copy(application, services.kAXWindowsAttribute)
     return list(value or ())
 
 
 def _window_from_element(pid: int, element: Any) -> MacWindow | None:
-    _appkit, quartz = _frameworks()
-    if bool(ax_copy(element, quartz.kAXMinimizedAttribute)):
+    _appkit, services = _frameworks()
+    # AXWindows also contains floating system dialogs (e.g. Computer Use).
+    # Only document windows are valid targets for the overlay and composer.
+    if ax_copy(element, services.kAXSubroleAttribute) != services.kAXStandardWindowSubrole:
         return None
-    position = _ax_point(ax_copy(element, quartz.kAXPositionAttribute))
-    size = _ax_size(ax_copy(element, quartz.kAXSizeAttribute))
+    if bool(ax_copy(element, services.kAXMinimizedAttribute)):
+        return None
+    position = _ax_point(ax_copy(element, services.kAXPositionAttribute))
+    size = _ax_size(ax_copy(element, services.kAXSizeAttribute))
     if position is None or size is None or size[0] < 160 or size[1] < 120:
         return None
-    title = str(ax_copy(element, quartz.kAXTitleAttribute) or "").strip()
+    title = str(ax_copy(element, services.kAXTitleAttribute) or "").strip()
     return MacWindow(
         int(pid),
         title,
@@ -141,7 +148,21 @@ def codex_windows() -> list[MacWindow]:
     return windows
 
 
+_window_cache: dict[int, tuple[float, MacWindow | None]] = {}
+
+
 def window_for_pid(pid: int) -> MacWindow | None:
+    # Multiple overlay checks within a frame should share one AX snapshot.
+    now = time.monotonic()
+    cached = _window_cache.get(pid)
+    if cached is not None and now - cached[0] < 0.05:
+        return cached[1]
+    value = _read_window_for_pid(pid)
+    _window_cache[pid] = (time.monotonic(), value)
+    return value
+
+
+def _read_window_for_pid(pid: int) -> MacWindow | None:
     values = [
         value
         for element in _windows_for_pid(pid)
@@ -149,10 +170,10 @@ def window_for_pid(pid: int) -> MacWindow | None:
     ]
     if len(values) == 1:
         return values[0]
-    _appkit, quartz = _frameworks()
+    _appkit, services = _frameworks()
     focused = ax_copy(
-        quartz.AXUIElementCreateApplication(int(pid)),
-        quartz.kAXFocusedWindowAttribute,
+        services.AXUIElementCreateApplication(int(pid)),
+        services.kAXFocusedWindowAttribute,
     )
     if focused is not None:
         selected = _window_from_element(pid, focused)
@@ -166,7 +187,7 @@ def window_is_available(pid: int) -> bool:
 
 
 def window_is_fullscreen(pid: int) -> bool:
-    _appkit, quartz = _frameworks()
+    _appkit, services = _frameworks()
     window = window_for_pid(pid)
     if window is None:
         return False
@@ -174,24 +195,24 @@ def window_is_fullscreen(pid: int) -> bool:
 
 
 def move_window(pid: int, left: int, top: int) -> bool:
-    _appkit, quartz = _frameworks()
+    _appkit, services = _frameworks()
     window = window_for_pid(pid)
     if window is None:
         return False
-    point = quartz.CGPoint(float(left), float(top))
-    wrapped = quartz.AXValueCreate(quartz.kAXValueCGPointType, point)
-    return ax_set(window.element, quartz.kAXPositionAttribute, wrapped)
+    point = services.CGPoint(float(left), float(top))
+    wrapped = services.AXValueCreate(services.kAXValueCGPointType, point)
+    return ax_set(window.element, services.kAXPositionAttribute, wrapped)
 
 
 def cursor_position() -> tuple[int, int]:
-    _appkit, quartz = _frameworks()
-    event = quartz.CGEventCreate(None)
-    point = quartz.CGEventGetLocation(event)
+    _appkit, services = _frameworks()
+    event = services.CGEventCreate(None)
+    point = services.CGEventGetLocation(event)
     return round(point.x), round(point.y)
 
 
 def virtual_screen_rectangle() -> tuple[int, int, int, int]:
-    appkit, _quartz = _frameworks()
+    appkit, _services = _frameworks()
     screens = list(appkit.NSScreen.screens())
     if not screens:
         return 0, 0, 1, 1
@@ -213,7 +234,7 @@ def virtual_screen_rectangle() -> tuple[int, int, int, int]:
 
 
 def animations_enabled() -> bool:
-    appkit, _quartz = _frameworks()
+    appkit, _services = _frameworks()
     workspace = appkit.NSWorkspace.sharedWorkspace()
     try:
         return not bool(workspace.accessibilityDisplayShouldReduceMotion())
@@ -222,13 +243,13 @@ def animations_enabled() -> bool:
 
 
 def frontmost_pid() -> int | None:
-    appkit, _quartz = _frameworks()
+    appkit, _services = _frameworks()
     application = appkit.NSWorkspace.sharedWorkspace().frontmostApplication()
     return int(application.processIdentifier()) if application is not None else None
 
 
 def activate_application(pid: int) -> bool:
-    appkit, _quartz = _frameworks()
+    appkit, _services = _frameworks()
     application = appkit.NSRunningApplication.runningApplicationWithProcessIdentifier_(
         int(pid)
     )
@@ -239,41 +260,41 @@ def activate_application(pid: int) -> bool:
 
 
 def post_unicode_text(text: str) -> None:
-    _appkit, quartz = _frameworks()
+    _appkit, services = _frameworks()
     for chunk_start in range(0, len(text), 32):
         chunk = text[chunk_start : chunk_start + 32]
-        down = quartz.CGEventCreateKeyboardEvent(None, 0, True)
-        quartz.CGEventKeyboardSetUnicodeString(down, len(chunk), chunk)
-        quartz.CGEventPost(quartz.kCGHIDEventTap, down)
-        up = quartz.CGEventCreateKeyboardEvent(None, 0, False)
-        quartz.CGEventKeyboardSetUnicodeString(up, len(chunk), chunk)
-        quartz.CGEventPost(quartz.kCGHIDEventTap, up)
+        down = services.CGEventCreateKeyboardEvent(None, 0, True)
+        services.CGEventKeyboardSetUnicodeString(down, len(chunk), chunk)
+        services.CGEventPost(services.kCGHIDEventTap, down)
+        up = services.CGEventCreateKeyboardEvent(None, 0, False)
+        services.CGEventKeyboardSetUnicodeString(up, len(chunk), chunk)
+        services.CGEventPost(services.kCGHIDEventTap, up)
 
 
 def post_return() -> None:
-    _appkit, quartz = _frameworks()
+    _appkit, services = _frameworks()
     for pressed in (True, False):
-        event = quartz.CGEventCreateKeyboardEvent(None, 36, pressed)
-        quartz.CGEventPost(quartz.kCGHIDEventTap, event)
+        event = services.CGEventCreateKeyboardEvent(None, 36, pressed)
+        services.CGEventPost(services.kCGHIDEventTap, event)
 
 
 def escape_pressed() -> bool:
-    _appkit, quartz = _frameworks()
+    _appkit, services = _frameworks()
     return bool(
-        quartz.CGEventSourceKeyState(
-            quartz.kCGEventSourceStateCombinedSessionState,
+        services.CGEventSourceKeyState(
+            services.kCGEventSourceStateCombinedSessionState,
             53,
         )
     )
 
 
 def ax_descendants(root: Any, *, maximum: int = 1800) -> list[Any]:
-    _appkit, quartz = _frameworks()
+    _appkit, services = _frameworks()
     pending = [root]
     result: list[Any] = []
     while pending and len(result) < maximum:
         current = pending.pop(0)
-        children = ax_copy(current, quartz.kAXChildrenAttribute)
+        children = ax_copy(current, services.kAXChildrenAttribute)
         for child in list(children or ()):
             result.append(child)
             pending.append(child)
@@ -289,7 +310,7 @@ def configure_tk_window(
     transparent: bool,
     alpha: float = 1.0,
 ) -> bool:
-    appkit, _quartz = _frameworks()
+    appkit, _services = _frameworks()
     for window in appkit.NSApp.windows():
         if str(window.title() or "") != title:
             continue
@@ -307,13 +328,14 @@ def configure_tk_window(
             | getattr(appkit, "NSWindowCollectionBehaviorFullScreenAuxiliary", 1 << 8)
         )
         window.setCollectionBehavior_(behavior)
-        window.orderFrontRegardless()
+        # Configuring a withdrawn Tk window must not show it. In particular,
+        # the black scare layer is created at startup but should stay hidden.
         return True
     return False
 
 
 def raise_tk_window(title: str) -> bool:
-    appkit, _quartz = _frameworks()
+    appkit, _services = _frameworks()
     for window in appkit.NSApp.windows():
         if str(window.title() or "") == title:
             window.orderFrontRegardless()
@@ -323,13 +345,13 @@ def raise_tk_window(title: str) -> bool:
 
 def beep(kind: str = "default") -> bool:
     del kind
-    appkit, _quartz = _frameworks()
+    appkit, _services = _frameworks()
     appkit.NSBeep()
     return True
 
 
 def play_wav(data: bytes) -> bool:
-    appkit, _quartz = _frameworks()
+    appkit, _services = _frameworks()
     try:
         import Foundation
 

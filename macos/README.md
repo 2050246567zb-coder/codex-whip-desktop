@@ -1,4 +1,4 @@
-# Codex Whip 产品版 2.2.58 for macOS
+# Codex Whip 产品版 2.2.59 for macOS
 
 macOS 与 Windows 共用动作识别、校准、设置、界面动画、鞭绳物理、伤口、消息和
 语音状态机；窗口控制使用 macOS Accessibility/AppKit/Quartz，BLE 使用
@@ -25,6 +25,8 @@ API Key、录音、消息、设备地址或单块开发板专属的陀螺仪零�
 
 双敲后开始录音，软件优先使用已配置的语音 API，否则使用本地 Whisper。
 识别文字保留到下一次挥鞭发送。产品界面不再包含 BlackHole 或 Codex 原生听写入口。
+
+从源码运行时，先执行 `bash macos/prepare-speech.sh` 准备 Mac 原生 Whisper（需 CMake 和 Xcode Command Line Tools）。完整打包脚本也会自动执行此步骤。首次启用本地识别时，应用下载并校验语音模型；准备完成后才能双敲录音。
 
 ## 验证
 

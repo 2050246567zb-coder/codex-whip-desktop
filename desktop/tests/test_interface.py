@@ -596,7 +596,8 @@ def test_minimal_header_and_footer(app):
     refresh(app.ui)
     assert app.ui.connection_label.cget("text") == "●"
     assert app.ui.connection_label.master is app.settings_button.master
-    assert not app.ui.footer.winfo_children()
+    assert app.ui.direction_button.cget("text") == "校准手柄方向"
+    assert app.ui.direction_button.winfo_manager() == "pack"
     assert not hasattr(app.ui, "mode")
     header_text = [
         w.cget("text")
@@ -677,3 +678,28 @@ def test_settings_layout_stacking_and_group_ownership(app):
     assert not hasattr(win, 'tap_auto_button')
     ui.hide_preferences()
     app.effects.set_settings_open.assert_called_with(False)
+
+
+def test_inline_calibration_primary_button_sends_neutral_and_releases_capture(app):
+    app.ble_connected = True
+    app.worker_loop = Mock()
+    app.processor = Mock()
+    app._send_mount_command = Mock()
+    assert app.ui.start_inline_calibration()
+    app.effects.set_interaction_enabled.assert_called_with(False)
+    refresh(app.ui)
+    assert app.ui.primary.cget('text') == '记录这个姿势'
+    assert str(app.ui.primary.cget('state')) == 'normal'
+    app.ui.primary.invoke()
+    app._send_mount_command.assert_called_with('neutral', app.ui._mount_token)
+    token = app.ui._mount_token
+    app.ui.observe('mount_closed', {'token': token, 'saved': False})
+    app.effects.set_interaction_enabled.assert_called_with(True)
+
+
+def test_calibration_error_is_not_erased_by_sensor_progress(app):
+    app.ui._mount_token = 'test'
+    app.ui.observe('mount_state', {'token':'test','stage':'neutral','error':True,
+                                  'detail':'请先等待姿态数据'})
+    app.ui.observe('mount_progress', ('test', 0, SimpleNamespace(detail='实时数据')))
+    assert app.ui._mount_detail == '请先等待姿态数据'

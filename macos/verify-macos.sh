@@ -14,7 +14,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 2
 fi
 
-"$PYTHON_BIN" -m pytest -q "$ROOT_DIR/desktop/tests"
+"$PYTHON_BIN" -m pytest -q "$ROOT_DIR/desktop/tests" --ignore="$ROOT_DIR/desktop/tests/test_windows_scoring.py"
 PYTHONPATH="$ROOT_DIR/desktop/src${PYTHONPATH:+:$PYTHONPATH}" \
   "$PYTHON_BIN" -m codex_whip.cli doctor --strict
 
