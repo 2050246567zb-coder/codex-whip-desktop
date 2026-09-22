@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "enabled": false,
+  "input_mode": "transcription",
+  "speech_provider": "local",
+  "recording_gain": 2.0,
+  "impact_dynamic_accel_g": 9.5,
+  "max_tap_gyro_dps": 2000.0,
+  "min_interval_ms": 80,
+  "max_interval_ms": 1000,
+  "pre_still_ms": 120,
+  "settle_ms": 50,
+  "max_pulse_ms": 180,
+  "silence_ms": 1200,
+  "max_recording_ms": 15000,
+  "tap_force_calibrated": true,
+  "tap_light_g": 9.5,
+  "tap_heavy_g": 12.0
+}

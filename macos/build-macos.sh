@@ -112,4 +112,4 @@ hdiutil create -volname "CodexWhip" -srcfolder "$OUTPUT_DIR/CodexWhip.app" \
 echo "Built: $OUTPUT_DIR/CodexWhip.app"
 echo "Built: $DMG"
 ditto -c -k --sequesterRsrc --keepParent "$OUTPUT_DIR/CodexWhip.app" "$OUTPUT_DIR/CodexWhip-$VERSION-Apple-Silicon.zip"
-echo "Personal profiles are not bundled. This is an ad-hoc signed test build unless a signing identity was supplied."
+echo "Sanitized factory calibration is bundled; personal secrets and device-specific bias are excluded."

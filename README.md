@@ -6,7 +6,7 @@ Codex 桌面窗口。
 
 ## 当前实现
 
-- 产品版 `2.2.57` 的 Windows 与 macOS 共享同一套功能和配置格式；窗口、蓝牙与
+- 产品版 `2.2.58` 的 Windows 与 macOS 共享同一套功能和配置格式；窗口、蓝牙与
   语音识别分别使用各平台的原生适配层。产品页不再要求用户选择输入方式：
   已配置的语音 API 优先，否则使用本地识别；云端请求失败且本地模型已就绪时
   会自动回退。旧的虚拟麦克风 / Codex 原生听写入口已退役。
@@ -143,7 +143,7 @@ scripts/                 环境、测试、编译和上传脚本
 
 - [DEVELOPMENT.md](DEVELOPMENT.md)：Windows/macOS 分支、Apple Silicon 环境、
   构建测试、代码结构、固件协议和跨平台开发规则。
-- [RELEASE-2.2.57.md](RELEASE-2.2.57.md)：当前源码修订、Windows/macOS CI、
+- [RELEASE-2.2.58.md](RELEASE-2.2.58.md)：当前源码修订、Windows/macOS CI、
   实机固件回读和仍需在目标 Mac 验证的边界。
 - [macos/MACOS_ACCEPTANCE.md](macos/MACOS_ACCEPTANCE.md)：Mac 实机逐项验收表。
 

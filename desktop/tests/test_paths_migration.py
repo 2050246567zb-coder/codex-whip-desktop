@@ -5,7 +5,11 @@ import json
 from pathlib import Path
 
 from codex_whip import paths
-from codex_whip.migration import import_migration_data
+from codex_whip.migration import (
+    bundled_factory_calibration_dir,
+    import_factory_calibration_once,
+    import_migration_data,
+)
 
 
 def _manifest_for(source: Path, relative: str, data: bytes) -> None:
@@ -72,3 +76,51 @@ def test_migration_rejects_hash_mismatch(tmp_path: Path) -> None:
     assert not result.imported
     assert result.errors
     assert not (target / "profile.json").exists()
+
+
+def test_factory_calibration_is_sanitized_and_verified() -> None:
+    source = bundled_factory_calibration_dir()
+    assert source is not None
+    manifest = json.loads((source / "migration-manifest.json").read_text(encoding="utf-8"))
+    entries = manifest["files"]
+    expected = {
+        "detector-profile.json",
+        "double-tap-profile-v2.json",
+        "mounting-profile.json",
+        "voice-settings.json",
+        "whip-sensitivity.json",
+    }
+    assert {entry["path"] for entry in entries} == expected
+    for entry in entries:
+        path = source / entry["path"]
+        assert path.stat().st_size == entry["size"]
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == entry["sha256"]
+    combined = "\n".join((source / name).read_text(encoding="utf-8") for name in expected)
+    assert "api_key" not in combined.lower()
+    assert "message-profile" not in combined
+    assert "last-voice-recording" not in combined
+    assert "E2:30:F0:9F:D1:21" not in combined
+    voice = json.loads((source / "voice-settings.json").read_text(encoding="utf-8"))
+    assert voice["enabled"] is False
+    assert voice["tap_force_calibrated"] is True
+
+
+def test_factory_calibration_seeds_empty_profile_and_preserves_user_data(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CODEX_WHIP_DATA_DIR", str(tmp_path))
+    first = import_factory_calibration_once()
+    assert set(first.imported) == {
+        "detector-profile.json",
+        "double-tap-profile-v2.json",
+        "mounting-profile.json",
+        "voice-settings.json",
+        "whip-sensitivity.json",
+    }
+    assert not first.errors
+
+    custom = tmp_path / "mounting-profile.json"
+    custom.write_text('{"custom": true}', encoding="utf-8")
+    second = import_factory_calibration_once()
+    assert "mounting-profile.json" in second.preserved
+    assert custom.read_text(encoding="utf-8") == '{"custom": true}'

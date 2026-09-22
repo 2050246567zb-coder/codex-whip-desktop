@@ -30,7 +30,7 @@ from .effects import CodexWhipEffects
 from .gate import EventGate
 from .hotkeys import GlobalHotkey, HotkeyRegistrationError, parse_hotkey
 from .messages import MessageProfileStore, PromptSelector
-from .migration import import_bundled_profile_once
+from .migration import import_bundled_profile_once, import_factory_calibration_once
 from .models import (
     AudioChunk,
     AudioEnd,
@@ -1862,6 +1862,7 @@ def main() -> int:
     if "--ui-smoke" in sys.argv:
         from .ui_smoke import main as smoke_main
         return smoke_main(sys.argv[sys.argv.index("--ui-smoke") + 1:])
+    factory_calibration = import_factory_calibration_once()
     migration = import_bundled_profile_once()
     config_path = find_config_path()
     try:
@@ -1875,6 +1876,13 @@ def main() -> int:
 
     root = tk.Tk()
     window = CodexWhipWindow(root, settings, config_path)
+    if factory_calibration.imported:
+        window.emit(
+            "log",
+            f"已加载出厂校准：{len(factory_calibration.imported)} 个文件",
+        )
+    for error in factory_calibration.errors:
+        window.emit("log", f"出厂校准加载失败：{error}")
     if migration.imported:
         window.emit("log", f"已继承 Windows 数据：{len(migration.imported)} 个文件")
     for error in migration.errors:

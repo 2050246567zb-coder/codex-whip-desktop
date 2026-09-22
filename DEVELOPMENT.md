@@ -1,4 +1,4 @@
-# Codex Whip 2.2.57 development guide
+# Codex Whip 2.2.58 development guide
 
 This repository contains the desktop companion and firmware for the physical
 Codex Whip controller. Product branches are deliberately separated by target
@@ -35,8 +35,8 @@ The build script creates `macos/.venv-macos`, compiles the pinned
 `whisper.cpp` 1.8.1 runtime when needed, and produces:
 
 - `macos/dist/CodexWhip.app`
-- `macos/dist/CodexWhip-2.2.57-Apple-Silicon.dmg`
-- `macos/dist/CodexWhip-2.2.57-Apple-Silicon.zip`
+- `macos/dist/CodexWhip-2.2.58-Apple-Silicon.dmg`
+- `macos/dist/CodexWhip-2.2.58-Apple-Silicon.zip`
 
 For an editable development environment with the test dependencies:
 
@@ -67,7 +67,7 @@ On the target Mac, grant CodexWhip:
 - any audio permission requested by the selected voice-input path.
 
 Native dictation and virtual-audio routing are retired from the product flow in
-2.2.57. Voice input uses a configured speech API first and the local recognizer
+2.2.58. Voice input uses a configured speech API first and the local recognizer
 when cloud recognition is not configured or an already-prepared local fallback
 is available.
 
@@ -101,10 +101,10 @@ macos/MACOS_ACCEPTANCE.md        real-Mac and real-controller acceptance list
 ```
 
 The ESP32-C3 + MPU6050 files remain an experimental hardware port. Product
-2.2.57 double-tap behavior is defined only for the original XIAO nRF52840 Sense
+2.2.58 double-tap behavior is defined only for the original XIAO nRF52840 Sense
 and its onboard LSM6DS3TR-C.
 
-## Firmware contract used by 2.2.57
+## Firmware contract used by 2.2.58
 
 - Product firmware: `0.7.3`
 - BLE local name: `CodexWhip`
@@ -160,5 +160,5 @@ Do not commit build output from `dist/`, `build/`, `macos/dist/`, local virtual
 environments or user data. GitHub Actions builds downloadable test artifacts
 from each product branch.
 
-See `RELEASE-2.2.57.md` for the exact source revisions and validation evidence
+See `RELEASE-2.2.58.md` for the exact source revisions and validation evidence
 for this handoff.

@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "kind": "factory-calibration",
+  "hardware": "XIAO nRF52840 Sense / LSM6DS3TR-C",
+  "files": [
+    {
+      "path": "detector-profile.json",
+      "size": 546,
+      "sha256": "7bb1c4f92e205f5dc75d3e8e42b54dbbec15bc40402e64366bd803851cd7e363"
+    },
+    {
+      "path": "double-tap-profile-v2.json",
+      "size": 29109,
+      "sha256": "b07561ae821db965845bbface0ef1580073c9561ba5123de83527ea0f6455e06"
+    },
+    {
+      "path": "mounting-profile.json",
+      "size": 226,
+      "sha256": "fe652c82ce80242b3b02578f152d9b6e3220923dd4420cb3aa0f157e40f75d06"
+    },
+    {
+      "path": "voice-settings.json",
+      "size": 461,
+      "sha256": "da033560abf3fffb696a17a296ed834c2ac88f1eaf91410113e9b4917cfb705f"
+    },
+    {
+      "path": "whip-sensitivity.json",
+      "size": 521,
+      "sha256": "26b096f7bc74abbd92a2117e5fe30548019a339b000011bc6414cfa0f84bbbbb"
+    }
+  ]
+}

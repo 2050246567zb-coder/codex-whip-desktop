@@ -1,4 +1,4 @@
-# Codex Whip 产品版 2.2.57 for macOS
+# Codex Whip 产品版 2.2.58 for macOS
 
 macOS 与 Windows 共用动作识别、校准、设置、界面动画、鞭绳物理、伤口、消息和
 语音状态机；窗口控制使用 macOS Accessibility/AppKit/Quartz，BLE 使用
@@ -17,6 +17,9 @@ bash macos/build-macos.sh
 
 首次使用需在“系统设置 > 隐私与安全性”授予蓝牙和辅助功能权限。辅助功能权限
 用于查找唯一的 Codex 窗口、附着鞭子层和发送已确认的文字。
+
+首次启动会导入公开的出厂校准，已有的本机校准不会被覆盖。出厂校准不包含
+API Key、录音、消息、设备地址或单块开发板专属的陀螺仪零偏。
 
 ## 语音输入
 
