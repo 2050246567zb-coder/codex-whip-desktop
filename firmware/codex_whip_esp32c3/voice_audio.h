@@ -5,7 +5,7 @@
 struct ImaAdpcmBlock {
   int16_t predictor = 0;
   uint8_t stepIndex = 0;
-  uint8_t data[160] = {0};
+  uint8_t data[220] = {0};
   size_t byteCount = 0;
 };
 
@@ -23,7 +23,7 @@ inline size_t encodeImaAdpcmBlock(const int16_t* samples, size_t sampleCount,
       27086, 29794, 32767};
   static const int8_t kIndexTable[8] = {-1, -1, -1, -1, 2, 4, 6, 8};
 
-  if (samples == nullptr || sampleCount == 0 || sampleCount > 320) return 0;
+  if (samples == nullptr || sampleCount == 0 || sampleCount > 440) return 0;
   block.predictor = samples[0];
   block.stepIndex = carriedStepIndex > 88 ? 88 : carriedStepIndex;
   block.byteCount = 0;

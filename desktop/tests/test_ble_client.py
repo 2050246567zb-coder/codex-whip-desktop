@@ -1,10 +1,12 @@
 import asyncio
+import struct
 from types import SimpleNamespace
 import pytest
 
 from codex_whip.ble_preference import BleDevicePreferenceStore, choose_device
 from codex_whip.ble_client import drain_message_queue
 from codex_whip.models import DeviceMessage
+from codex_whip.protocol import crc16_ccitt
 
 
 @pytest.mark.parametrize('platform,expected', [
@@ -223,5 +225,38 @@ def test_idle_connection_polls_battery_without_waiting_for_notifications(monkeyp
         )
         assert writes[:2] == [b"PING\n", b"ARM,1\n"]
         assert b"BATTERY\n" in writes
+
+    asyncio.run(exercise())
+
+
+def test_binary_audio_is_acknowledged_without_waiting_for_cloud_processing(monkeypatch) -> None:
+    from codex_whip import ble_client
+    from codex_whip.settings import BleSettings
+
+    async def exercise():
+        stop = asyncio.Event()
+        writes = []
+        payload = b'\x12\x34'
+        body = struct.pack('<BBHIIHhB', 1, 1, 13 + len(payload), 9, 0, 5, 0, 0) + payload
+        frame = b'\xA5\x5A' + body + struct.pack('<H', crc16_ccitt(body))
+
+        class Peripheral:
+            is_connected = True
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+            async def start_notify(self, _uuid, callback):
+                callback(None, b'VOICE,START,9,16000,IMA_ADPCM4\n' + frame)
+            async def stop_notify(self, _uuid): pass
+            async def write_gatt_char(self, _uuid, data, **_kwargs):
+                writes.append(data)
+                if data == b'VOICE,ACK,9,0\n':
+                    stop.set()
+
+        monkeypatch.setattr(ble_client, 'BleakClient', lambda *a, **k: Peripheral())
+        client = ble_client.BleWhipClient(BleSettings())
+        async def handler(_item): pass
+        await asyncio.wait_for(client._run_connection(object(), handler, stop), timeout=.5)
+        assert b'VOICE,ACK,9,0\n' in writes
+        assert b'BATTERY\n' not in writes
 
     asyncio.run(exercise())

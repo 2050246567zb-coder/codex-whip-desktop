@@ -14,6 +14,9 @@ void runFor(uint32_t ms) {
 bool send(WhipBleTransport& t,const std::string& s,bool motion=false) {
  return t.enqueue(reinterpret_cast<const uint8_t*>(s.data()),s.size(),motion);
 }
+bool sendAudio(WhipBleTransport& t,const std::string& s) {
+ return t.enqueueAudio(reinterpret_cast<const uint8_t*>(s.data()),s.size());
+}
 void connect(WhipBleTransport& t,uint16_t handle=1) {
  Bluefruit={};Bluefruit.active=handle;t.open(handle);t.acceptSession(t.session());
 }
@@ -65,6 +68,14 @@ int main() {
   for(int i=0;i<48;++i)assert(send(t,"STATUS\n"));
   assert(!send(t,"VOICE,END\n"));runFor(10);
   assert(Bluefruit.disconnects==1);assert(uart.delivered.empty());
+ }
+ {
+  BLEUart uart;WhipBleTransport t(uart);assert(t.begin());connect(t);
+  for(int i=0;i<45;++i)assert(send(t,"STATUS\n"));
+  assert(!sendAudio(t,"framed-audio")); // Three control slots stay reserved.
+  assert(send(t,"VOICE,END,1,0,TX_BACKPRESSURE\n"));
+  runFor(10);
+  assert(Bluefruit.disconnects==0);
  }
  {
   BLEUart uart;uart.failAfter=1;WhipBleTransport t(uart);assert(t.begin());connect(t);

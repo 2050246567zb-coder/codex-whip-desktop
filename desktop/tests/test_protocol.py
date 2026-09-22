@@ -13,7 +13,16 @@ from codex_whip.models import (
     RawMotionFrame,
     WhipEvent,
 )
-from codex_whip.protocol import LineDecoder, ProtocolError, parse_line
+from codex_whip.protocol import (
+    LineDecoder, ProtocolError, crc16_ccitt, parse_line, parse_voice_frame,
+)
+
+
+def binary_audio_frame(session=3, sequence=0, samples=5, predictor=-12,
+                       step_index=7, payload=b"\x12\x34"):
+    body = struct.pack('<BBHIIHhB', 1, 1, 13 + len(payload), session,
+                       sequence, samples, predictor, step_index) + payload
+    return b'\xA5\x5A' + body + struct.pack('<H', crc16_ccitt(body))
 
 
 def test_parse_whip_event() -> None:
@@ -75,6 +84,30 @@ def test_parse_voice_audio_messages() -> None:
         3, 0, 3, 0, 0, b"\x11"
     )
     assert parse_line("VOICE,END,3,3,SILENCE") == AudioEnd(3, 3, "SILENCE")
+
+
+def test_binary_voice_frame_is_checksummed_and_flow_controlled() -> None:
+    frame = binary_audio_frame()
+    assert parse_voice_frame(frame) == AudioChunk(
+        3, 0, 5, -12, 7, b"\x12\x34", True
+    )
+    damaged = bytearray(frame)
+    damaged[-3] ^= 1
+    with pytest.raises(ProtocolError, match='checksum'):
+        parse_voice_frame(damaged)
+
+
+def test_decoder_reassembles_mixed_text_and_binary_voice_fragments() -> None:
+    data = b'VOICE,START,3,16000,IMA_ADPCM4\n' + binary_audio_frame() + b'VOICE,END,3,5,SILENCE\n'
+    decoder = LineDecoder()
+    actual = []
+    for offset in range(0, len(data), 11):
+        actual.extend(decoder.feed(data[offset:offset + 11]))
+    assert actual == [
+        AudioStart(3, 16000, 'IMA_ADPCM4'),
+        AudioChunk(3, 0, 5, -12, 7, b"\x12\x34", True),
+        AudioEnd(3, 5, 'SILENCE'),
+    ]
 
 
 def test_parse_raw3_batch() -> None:

@@ -136,6 +136,9 @@ class SensorPoseTracker:
     BIAS_TRIM_GYRO_RMS_DPS = 0.9
     BIAS_TRIM_MEAN_CHANGE_DPS = 0.5
     BIAS_TRIM_ACCEL_RMS_G = 0.06
+    IDLE_BIAS_MAX_CORRECTION_DPS = 12.0
+    IDLE_BIAS_GYRO_RMS_DPS = 1.8
+    IDLE_BIAS_ACCEL_RMS_G = 0.08
 
     def __init__(self, mounting: MountingProfile | None = None) -> None:
         self.mounting = mounting.validated() if mounting is not None else None
@@ -222,6 +225,38 @@ class SensorPoseTracker:
         self._bias_trim_anchor = None
         self._bias_trim_ms = 0
 
+    def _learn_bias_from_idle_window(self) -> bool:
+        """Use the same deliberate three-second hold that triggers recentering.
+
+        A board-specific residual offset otherwise starts integrating again as
+        soon as the display has been recentered.  Learning happens only at the
+        completed product gesture, never continuously while the user moves.
+        """
+        frames = tuple(self._recent)
+        if len(frames) < 20:
+            return False
+        elapsed = (frames[-1].timestamp_ms - frames[0].timestamp_ms) & 0xFFFFFFFF
+        if elapsed < 350:
+            return False
+        gyros = [(f.gyro_x_dps, f.gyro_y_dps, f.gyro_z_dps) for f in frames]
+        accels = [(f.accel_x_g, f.accel_y_g, f.accel_z_g) for f in frames]
+        candidate = tuple(statistics.median(v[i] for v in gyros) for i in range(3))
+        mean_accel = tuple(sum(v[i] for v in accels) / len(accels) for i in range(3))
+        gyro_rms = math.sqrt(sum(math.dist(v, candidate) ** 2 for v in gyros) / len(gyros))
+        accel_rms = math.sqrt(sum(math.dist(v, mean_accel) ** 2 for v in accels) / len(accels))
+        correction = math.dist(candidate, self._bias)
+        if (correction > self.IDLE_BIAS_MAX_CORRECTION_DPS
+                or gyro_rms > self.IDLE_BIAS_GYRO_RMS_DPS
+                or accel_rms > self.IDLE_BIAS_ACCEL_RMS_G
+                or not 0.88 <= math.sqrt(_dot(mean_accel, mean_accel)) <= 1.12):
+            return False
+        changed = correction >= 0.05
+        self._bias = candidate
+        self._bias_trim_requested = False
+        self._reset_bias_trim_window()
+        self._batch_bias_trimmed = self._batch_bias_trimmed or changed
+        return changed
+
     def _trim_requested_bias(self, delta: int) -> bool:
         """Remove a stable residual rate once after connect/wake.
 
@@ -298,6 +333,7 @@ class SensorPoseTracker:
         samples = tuple(self._recent)
         gravity = tuple(sum(getattr(f, name) for f in samples) / len(samples)
                         for name in ('accel_x_g', 'accel_y_g', 'accel_z_g'))
+        self._learn_bias_from_idle_window()
         try:
             self._mounting_right(gravity)  # Validate before mutating the frame.
         except ValueError:

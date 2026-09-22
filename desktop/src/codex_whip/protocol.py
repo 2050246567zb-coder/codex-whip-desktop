@@ -18,10 +18,60 @@ from .models import (
 )
 
 MAX_LINE_BYTES = 256
+VOICE_FRAME_MAGIC = b"\xA5\x5A"
+VOICE_FRAME_TYPE_AUDIO = 1
+VOICE_FRAME_VERSION = 1
+VOICE_FRAME_HEADER_BYTES = 19
+VOICE_FRAME_OVERHEAD_BYTES = 21
+MAX_VOICE_FRAME_BYTES = 244
 
 
 class ProtocolError(ValueError):
     """Raised when a complete device line is malformed."""
+
+
+def crc16_ccitt(data: bytes | bytearray | memoryview) -> int:
+    """CRC-16/CCITT-FALSE used by firmware voice frames."""
+    crc = 0xFFFF
+    for value in data:
+        crc ^= int(value) << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def parse_voice_frame(frame: bytes | bytearray) -> AudioChunk:
+    """Decode one self-contained binary ADPCM frame.
+
+    The frame is deliberately self-framing and checksummed so a dropped audio
+    packet can abort only the recording, never poison the following text
+    protocol or force a BLE reconnect.
+    """
+    raw = bytes(frame)
+    if len(raw) < VOICE_FRAME_OVERHEAD_BYTES or raw[:2] != VOICE_FRAME_MAGIC:
+        raise ProtocolError("invalid binary voice frame")
+    kind, version, payload_length = struct.unpack_from("<BBH", raw, 2)
+    if kind != VOICE_FRAME_TYPE_AUDIO or version != VOICE_FRAME_VERSION:
+        raise ProtocolError("unsupported binary voice frame")
+    total = 6 + payload_length + 2
+    if total != len(raw) or total > MAX_VOICE_FRAME_BYTES or payload_length < 14:
+        raise ProtocolError("binary voice frame length is invalid")
+    expected_crc = struct.unpack_from("<H", raw, total - 2)[0]
+    if crc16_ccitt(raw[2:total - 2]) != expected_crc:
+        raise ProtocolError("binary voice frame checksum failed")
+    session, sequence, sample_count, predictor, step_index = struct.unpack_from(
+        "<IIHhB", raw, 6
+    )
+    payload = raw[VOICE_FRAME_HEADER_BYTES:total - 2]
+    if not 1 <= sample_count <= 440:
+        raise ProtocolError("binary voice sample count is outside the accepted range")
+    if not 0 <= step_index <= 88:
+        raise ProtocolError("binary voice ADPCM state is invalid")
+    if not payload or len(payload) > 220 or sample_count > len(payload) * 2 + 1:
+        raise ProtocolError("binary voice payload has an invalid length")
+    return AudioChunk(
+        session, sequence, sample_count, predictor, step_index, payload, True
+    )
 
 
 def parse_line(line: str) -> ProtocolMessage:
@@ -295,7 +345,7 @@ def _parse_learning_sample(parts: list[str]) -> LearningSample:
 
 
 class LineDecoder:
-    """Reassemble newline-delimited messages split across BLE packets."""
+    """Reassemble mixed newline messages and checksummed binary voice frames."""
 
     def __init__(self, max_line_bytes: int = MAX_LINE_BYTES) -> None:
         self._buffer = bytearray()
@@ -303,12 +353,33 @@ class LineDecoder:
 
     def feed(self, data: bytes | bytearray) -> list[ProtocolMessage]:
         self._buffer.extend(data)
-        if len(self._buffer) > self._max_line_bytes and b"\n" not in self._buffer:
+        if (not self._buffer.startswith(VOICE_FRAME_MAGIC)
+                and len(self._buffer) > self._max_line_bytes
+                and b"\n" not in self._buffer):
             self._buffer.clear()
             raise ProtocolError("unterminated device line exceeded maximum length")
 
         messages: list[ProtocolMessage] = []
-        while b"\n" in self._buffer:
+        while self._buffer:
+            if self._buffer.startswith(VOICE_FRAME_MAGIC):
+                if len(self._buffer) < 6:
+                    break
+                payload_length = struct.unpack_from("<H", self._buffer, 4)[0]
+                total = 6 + payload_length + 2
+                if total < VOICE_FRAME_OVERHEAD_BYTES or total > MAX_VOICE_FRAME_BYTES:
+                    self._buffer.clear()
+                    raise ProtocolError("binary voice frame length is invalid")
+                if len(self._buffer) < total:
+                    break
+                frame = bytes(self._buffer[:total])
+                del self._buffer[:total]
+                messages.append(parse_voice_frame(frame))
+                continue
+            if b"\n" not in self._buffer:
+                if len(self._buffer) > self._max_line_bytes:
+                    self._buffer.clear()
+                    raise ProtocolError("unterminated device line exceeded maximum length")
+                break
             raw_line, _, remainder = self._buffer.partition(b"\n")
             self._buffer = bytearray(remainder)
             raw_line = raw_line.rstrip(b"\r")
