@@ -61,6 +61,23 @@ def test_recognizing_reduced_motion_is_static(app):
     assert hero._display_pose == first
 
 
+@pytest.mark.parametrize('state, expected_mode, expected_title', [
+    ('recording', 'recording', 'recording'),
+    ('recognizing', 'recognizing', 'recognizing voice'),
+])
+def test_voice_animation_is_not_replaced_by_connecting_loader(
+    app, state, expected_mode, expected_title
+):
+    connected(app)
+    ui = app.ui
+    ui.stage = 'ready'
+    ui.observe('voice_state', {'state': state})
+    app.ble_connected = False
+    refresh(ui)
+    assert ui.hero.mode == expected_mode
+    assert ui.title.cget('text') == expected_title
+
+
 def test_mic_head_grows_solid_and_error_returns_directly_to_whip(app, monkeypatch):
     connected(app)
     ui = app.ui

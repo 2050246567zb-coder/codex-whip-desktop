@@ -328,6 +328,7 @@ class GuiEventProcessor:
         path = (self._mounting_path.parent if self._mounting_path else user_data_dir()) / "sensor-bias-profiles.json"
         bias = load_sensor_bias(path, identity)
         self._sensor_pose.set_device_bias(bias)
+        self._sensor_pose.request_idle_bias_trim()
         self._last_sensor_batch_at = 0.0
         if any(bias):
             self._emit("log", "已加载当前手柄的静止零偏补偿："
@@ -407,8 +408,11 @@ class GuiEventProcessor:
             if message.kind == 'POWER' and len(message.fields) >= 2:
                 state = message.fields[1]
                 if state in ('SLEEP', 'ACTIVE') and state != getattr(self, '_power_state', None):
+                    previous_power_state = getattr(self, '_power_state', None)
                     self._power_state = state
                     self._sensor_pose.reset()
+                    if state == 'ACTIVE' and previous_power_state == 'SLEEP':
+                        self._sensor_pose.request_idle_bias_trim()
                     self._last_sensor_batch_at = 0.0
                     if self._motion_engine is not None:
                         self._motion_engine.reset_stream()
@@ -1486,7 +1490,11 @@ class CodexWhipWindow:
                 elif kind == "sensor_pose":
                     if payload.auto_centered:
                         self.effects.auto_center_sensor()
-                        self._append_log("静止三秒：已自动归中并更新手持零点")
+                        self._append_log(
+                            "静止三秒：已自动归中并修正本次连接的陀螺仪漂移"
+                            if payload.bias_trimmed
+                            else "静止三秒：已自动归中并更新手持零点"
+                        )
                     self.effects.set_sensor_pose(payload)
                     if self.mount_window is not None:
                         if self.mount_window.stage == "review":

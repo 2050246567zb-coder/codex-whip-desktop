@@ -1079,7 +1079,12 @@ class Interface:
                 mode = "sleep"
                 dots = sleep_dot_count(time.monotonic() - self._sleep_at)
                 title, subtitle = "deep sleep" + "." * dots, ""
-        if not connected and self.stage not in {"tour"}:
+        # Audio transfer temporarily makes pose samples stale and a brief BLE
+        # recovery can overlap transcription.  Once voice has started, its
+        # recording/recognizing presentation owns the hero until completion;
+        # never replace it with the connection loader mid-flow.
+        if (not connected and self.stage not in {"tour"}
+                and self._voice_state not in {"recording", "recognizing"}):
             mode = 'connecting'
             title = 'Connecting'
         if self.stage == 'ready' and not (connected and self._pending and self._voice_state not in {'recording','recognizing'}):
