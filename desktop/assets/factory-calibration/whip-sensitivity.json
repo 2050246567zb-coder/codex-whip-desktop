@@ -1,0 +1,19 @@
+{
+  "base": {
+    "start_gyro_dps": 100.0,
+    "start_dynamic_accel_g": 0.2,
+    "confirm_gyro_dps": 150.0,
+    "confirm_dynamic_accel_g": 0.3,
+    "hard_dynamic_accel_g": 8.0,
+    "hard_accel_min_gyro_dps": 200.0,
+    "confirm_samples": 8,
+    "minimum_angular_travel_deg": 50.0,
+    "minimum_direction_consistency": 0.1,
+    "minimum_dominant_axis_ratio": 0.3,
+    "maximum_peak_gap_ms": 72,
+    "minimum_duration_ms": 100,
+    "maximum_event_ms": 1500,
+    "cooldown_ms": 400
+  },
+  "percent": 60.0
+}

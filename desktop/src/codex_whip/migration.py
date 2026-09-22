@@ -12,6 +12,7 @@ from .paths import user_data_dir
 
 
 MIGRATION_MANIFEST = "migration-manifest.json"
+FACTORY_CALIBRATION_DIRECTORY = "factory-calibration"
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,36 @@ def bundled_migration_dir() -> Path | None:
         candidates.append(Path(getattr(sys, "_MEIPASS")) / "migration-data")
         candidates.append(Path(sys.executable).resolve().parent / "migration-data")
     candidates.append(Path(__file__).resolve().parents[3] / "macos" / "migration-data")
+    return next(
+        (
+            candidate
+            for candidate in candidates
+            if (candidate / MIGRATION_MANIFEST).is_file()
+        ),
+        None,
+    )
+
+
+def bundled_factory_calibration_dir() -> Path | None:
+    """Locate the public, sanitized factory calibration shipped with the app."""
+
+    override = os.environ.get("CODEX_WHIP_FACTORY_CALIBRATION")
+    candidates: list[Path] = []
+    if override:
+        candidates.append(Path(override).expanduser())
+    if getattr(sys, "frozen", False):
+        root = Path(getattr(sys, "_MEIPASS"))
+        candidates.append(root / "assets" / FACTORY_CALIBRATION_DIRECTORY)
+        candidates.append(
+            Path(sys.executable).resolve().parent
+            / "assets"
+            / FACTORY_CALIBRATION_DIRECTORY
+        )
+    candidates.append(
+        Path(__file__).resolve().parents[2]
+        / "assets"
+        / FACTORY_CALIBRATION_DIRECTORY
+    )
     return next(
         (
             candidate
@@ -108,6 +139,15 @@ def import_migration_data(
 
 def import_bundled_profile_once() -> MigrationResult:
     source = bundled_migration_dir()
+    if source is None:
+        return MigrationResult(None, (), (), ())
+    return import_migration_data(source)
+
+
+def import_factory_calibration_once() -> MigrationResult:
+    """Seed a new user profile without replacing later user calibration."""
+
+    source = bundled_factory_calibration_dir()
     if source is None:
         return MigrationResult(None, (), (), ())
     return import_migration_data(source)
