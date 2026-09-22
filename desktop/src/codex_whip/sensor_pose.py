@@ -22,6 +22,7 @@ class SensorPose:
     activity: float
     moving: bool = False
     auto_centered: bool = False
+    bias_trimmed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +127,15 @@ class SensorPoseTracker:
     IDLE_ACCEL_DEVIATION_G = 0.20
     IDLE_MAX_SWAY_DEGREES = 3.0
     IDLE_MAX_SAMPLE_GAP_MS = 120
+    # A new board, or an IMU that has just resumed from deep sleep, can retain
+    # a small constant gyro offset even after the firmware's boot calibration.
+    # The desktop is allowed to learn that offset only once after connect/wake,
+    # and only from a continuous three-second, low-variance held window.
+    BIAS_TRIM_DELAY_MS = 3000
+    BIAS_TRIM_MAX_RESIDUAL_DPS = 8.0
+    BIAS_TRIM_GYRO_RMS_DPS = 0.9
+    BIAS_TRIM_MEAN_CHANGE_DPS = 0.5
+    BIAS_TRIM_ACCEL_RMS_G = 0.06
 
     def __init__(self, mounting: MountingProfile | None = None) -> None:
         self.mounting = mounting.validated() if mounting is not None else None
@@ -144,11 +154,17 @@ class SensorPoseTracker:
         self._idle_anchor: Quaternion | None = None
         self._idle_ms = 0
         self._batch_auto_centered = False
+        self._batch_bias_trimmed = False
+        self._bias_trim_requested = False
+        self._bias_trim_anchor: Vector | None = None
+        self._bias_trim_ms = 0
 
     def reset(self) -> None:
         bias = self._bias
+        trim_requested = self._bias_trim_requested
         self.__init__(self.mounting)
         self._bias = bias
+        self._bias_trim_requested = trim_requested
 
     def set_device_bias(self, bias: Vector) -> None:
         """Install an explicitly measured bias and discard old-device attitude."""
@@ -156,6 +172,19 @@ class SensorPoseTracker:
             raise ValueError("Invalid stationary gyro bias")
         self.__init__(self.mounting)
         self._bias = tuple(float(v) for v in bias)
+
+    def request_idle_bias_trim(self) -> None:
+        """Arm one session-only zero-rate correction after connect or wake.
+
+        A six-axis IMU cannot distinguish constant yaw from gyro bias while it
+        is moving.  The product gesture resolves that ambiguity: point the
+        handle at the screen and hold it for three seconds.  This flag keeps
+        the correction bounded to that explicit connect/wake window instead
+        of continuously learning away intentional slow turns.
+        """
+        self._bias_trim_requested = True
+        self._bias_trim_anchor = None
+        self._bias_trim_ms = 0
 
     @property
     def orientation(self) -> Quaternion:
@@ -188,6 +217,60 @@ class SensorPoseTracker:
     def _reset_idle(self) -> None:
         self._idle_anchor = None
         self._idle_ms = 0
+
+    def _reset_bias_trim_window(self) -> None:
+        self._bias_trim_anchor = None
+        self._bias_trim_ms = 0
+
+    def _trim_requested_bias(self, delta: int) -> bool:
+        """Remove a stable residual rate once after connect/wake.
+
+        This deliberately uses raw gyro means because ``_bias`` is the
+        desktop-side correction.  It is not persisted: the firmware performs
+        a fresh calibration on each power cycle, so carrying the residual into
+        a later boot could double-correct a different hardware state.
+        """
+        if not self._bias_trim_requested:
+            return False
+        frames = tuple(self._recent)
+        elapsed = ((frames[-1].timestamp_ms - frames[0].timestamp_ms) & 0xFFFFFFFF) if len(frames) >= 2 else 0
+        if (delta <= 0 or delta > self.IDLE_MAX_SAMPLE_GAP_MS
+                or len(frames) < 10 or elapsed < 400):
+            self._reset_bias_trim_window()
+            return False
+        gyros = [(f.gyro_x_dps, f.gyro_y_dps, f.gyro_z_dps) for f in frames]
+        accels = [(f.accel_x_g, f.accel_y_g, f.accel_z_g) for f in frames]
+        mean_gyro = tuple(sum(v[i] for v in gyros) / len(gyros) for i in range(3))
+        mean_accel = tuple(sum(v[i] for v in accels) / len(accels) for i in range(3))
+        residual = tuple(mean_gyro[i] - self._bias[i] for i in range(3))
+        residual_speed = math.sqrt(_dot(residual, residual))
+        gyro_rms = math.sqrt(sum(math.dist(v, mean_gyro) ** 2 for v in gyros) / len(gyros))
+        accel_rms = math.sqrt(sum(math.dist(v, mean_accel) ** 2 for v in accels) / len(accels))
+        accel_norm = math.sqrt(_dot(mean_accel, mean_accel))
+        if (residual_speed > self.BIAS_TRIM_MAX_RESIDUAL_DPS
+                or gyro_rms > self.BIAS_TRIM_GYRO_RMS_DPS
+                or accel_rms > self.BIAS_TRIM_ACCEL_RMS_G
+                or not 0.88 <= accel_norm <= 1.12):
+            self._reset_bias_trim_window()
+            return False
+        if (self._bias_trim_anchor is None
+                or math.dist(residual, self._bias_trim_anchor) > self.BIAS_TRIM_MEAN_CHANGE_DPS):
+            self._bias_trim_anchor = residual
+            self._bias_trim_ms = 0
+            return False
+        self._bias_trim_anchor = tuple(
+            self._bias_trim_anchor[i] * 0.9 + residual[i] * 0.1 for i in range(3)
+        )
+        self._bias_trim_ms += delta
+        if self._bias_trim_ms < self.BIAS_TRIM_DELAY_MS:
+            return False
+        self._bias = mean_gyro
+        self._bias_trim_requested = False
+        self._reset_bias_trim_window()
+        self._set_neutral(mean_accel)
+        self._batch_auto_centered = True
+        self._batch_bias_trimmed = True
+        return True
 
     def _auto_center_if_idle(self, delta: int, speed: float, accel_norm: float) -> None:
         if (delta <= 0 or delta > self.IDLE_MAX_SAMPLE_GAP_MS
@@ -339,6 +422,7 @@ class SensorPoseTracker:
     def feed_batch(self, batch: RawMotionBatch, *, auto_center: bool = False) -> SensorPose:
         """Auto centering is opt-in so calibration/learning can retain its origin."""
         self._batch_auto_centered = False
+        self._batch_bias_trimmed = False
         if not auto_center:
             self._reset_idle()
         activity = 0.0
@@ -350,7 +434,8 @@ class SensorPoseTracker:
                 activity = max(activity, frame_activity)
                 moving = moving or frame_moving
         return SensorPose(self._pose.offset_x, self._pose.offset_y,
-                          self._pose.angle_degrees, activity, moving, self._batch_auto_centered)
+                          self._pose.angle_degrees, activity, moving,
+                          self._batch_auto_centered, self._batch_bias_trimmed)
 
     def _feed_frame(self, frame: RawMotionFrame, *, auto_center: bool = False) -> tuple[float, bool] | None:
         gyro = (frame.gyro_x_dps, frame.gyro_y_dps, frame.gyro_z_dps)
@@ -431,5 +516,6 @@ class SensorPoseTracker:
             activity, moving,
         )
         if auto_center:
-            self._auto_center_if_idle(delta, speed, norm)
+            if not self._trim_requested_bias(delta):
+                self._auto_center_if_idle(delta, speed, norm)
         return activity, moving

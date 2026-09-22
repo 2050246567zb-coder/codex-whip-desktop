@@ -8,7 +8,7 @@ import pytest
 
 from codex_whip.ble_client import BleWhipClient
 from codex_whip.gui import GuiEventProcessor
-from codex_whip.models import RawMotionBatch, RawMotionFrame
+from codex_whip.models import DeviceMessage, RawMotionBatch, RawMotionFrame
 from codex_whip.sensor_bias import load_sensor_bias
 from codex_whip.sensor_pose import SensorPoseTracker
 from codex_whip.settings import BleSettings, Settings
@@ -102,3 +102,38 @@ def test_connection_selects_device_before_subscribing(monkeypatch):
         await client._run_connection(SimpleNamespace(address=IDENTITY), receive, stop)
     asyncio.run(run())
     assert order == [IDENTITY, 'subscribe']
+
+
+def test_new_connection_trims_constant_residual_once_then_preserves_real_turns(tmp_path):
+    processor = GuiEventProcessor(
+        Settings(), threading.Event(), lambda *_: None,
+        mounting_path=tmp_path/'mounting-profile.json',
+    )
+    processor.select_sensor_device('NEW-XIAO')
+    tracker = processor._sensor_pose
+    residual = (0.35, -2.2, 0.4)
+    centered = None
+    trimmed = False
+    for t in range(0, 3800, 10):
+        centered = tracker.feed_batch(RawMotionBatch(
+            t, t, (RawMotionFrame(t, *residual, 0, 1, 0),)
+        ), auto_center=True)
+        trimmed |= centered.bias_trimmed
+    assert centered is not None and trimmed
+    assert tracker.gyro_bias == pytest.approx(residual, abs=.02)
+    pose = None
+    for t in range(3800, 4800, 10):
+        pose = tracker.feed_batch(RawMotionBatch(
+            t, t, (RawMotionFrame(t, residual[0], residual[1] + 12, residual[2], 0, 1, 0),)
+        ), auto_center=True)
+    assert pose is not None and pose.offset_x > 70
+    assert tracker.gyro_bias == pytest.approx(residual, abs=.02)
+
+
+def test_wake_requests_a_fresh_session_bias_trim(tmp_path):
+    processor = GuiEventProcessor(Settings(), threading.Event(), lambda *_: None)
+    processor._sensor_pose._bias_trim_requested = False
+    asyncio.run(processor.handle(DeviceMessage('POWER', ('1', 'SLEEP', '300'), '')))
+    assert not processor._sensor_pose._bias_trim_requested
+    asyncio.run(processor.handle(DeviceMessage('POWER', ('1', 'ACTIVE', '300'), '')))
+    assert processor._sensor_pose._bias_trim_requested
