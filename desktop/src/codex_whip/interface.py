@@ -561,26 +561,15 @@ class Interface:
             return frame
 
         device = group("连接")
-        for text, value in (("手柄", a.ble_value), ("目标", a.codex_value)):
-            row = tk.Frame(device, bg=CARD)
-            row.pack(fill="x", pady=4)
-            if text == '目标':
-                from tkinter import ttk
-                self.target_app = tk.StringVar(value=a.settings.codex.target_app)
-                self.target_selector = ttk.Combobox(row, textvariable=self.target_app,
-                    values=('Codex', 'Claude'), state='readonly', width=12)
-                self.target_selector.pack(side='left')
-                def choose_target(_event):
-                    if not a.select_target_app(self.target_app.get()):
-                        self.target_app.set(a.settings.codex.target_app)
-                self.target_selector.bind('<<ComboboxSelected>>', choose_target)
-            else:
-                label(row, text).pack(side="left")
-            label(row, textvariable=value, color=MUTED, size=9).pack(side="right")
-        row = tk.Frame(device, bg=CARD)
-        row.pack(fill="x", pady=(12, 0))
-        a.listen_button = button(row, "停止监听", a.stop_listening)
-        a.listen_button.pack(side='right')
+        status_row = tk.Frame(device, bg=CARD)
+        status_row.pack(fill="x", pady=4)
+        label(status_row, "手柄：", size=10).pack(side="left")
+        label(status_row, textvariable=a.ble_value, color=MUTED, size=9).pack(side="left")
+        label(status_row, "Codex：", size=10).pack(side="left", padx=(28,0))
+        label(status_row, textvariable=a.codex_value, color=MUTED, size=9).pack(side="left")
+        # Listening starts automatically and is intentionally not exposed as a
+        # product control. Keep a null compatibility anchor for the controller.
+        a.listen_button = None
         self.power_enabled = tk.BooleanVar(master=self.root, value=a.power_store.enabled)
         self.power_status = tk.StringVar(master=self.root, value=a.power_status)
         def toggle_power():

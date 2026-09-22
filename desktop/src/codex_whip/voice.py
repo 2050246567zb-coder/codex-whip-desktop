@@ -98,7 +98,7 @@ IMA_INDEX_TABLE = (-1, -1, -1, -1, 2, 4, 6, 8)
 class VoiceSettings:
     enabled: bool = False
     input_mode: str = "transcription"
-    speech_provider: str = 'local'
+    speech_provider: str = 'doubao-v2'
     recording_gain: float = 2.0
     impact_dynamic_accel_g: float = 1.25
     max_tap_gyro_dps: float = 700.0
@@ -117,7 +117,7 @@ class VoiceSettings:
         from .cloud_speech import PRESETS
         if self.input_mode != "transcription":
             raise ValueError("未知语音输入方式")
-        if self.speech_provider != 'local' and self.speech_provider not in PRESETS:
+        if self.speech_provider not in PRESETS:
             raise ValueError('未知语音识别服务')
         if type(self.recording_gain) not in (int, float) or not math.isfinite(self.recording_gain) or not 1 <= self.recording_gain <= 8:
             raise ValueError('录音增益必须在 1–8 倍')
@@ -163,10 +163,11 @@ def load_voice_settings(path: Path) -> VoiceSettings:
             for field in asdict(fallback)
             if field in data
         }
-        # Product UI now has a single voice path: API recognition first, with
-        # local recognition as the private fallback. Migrate old dictation
-        # settings without discarding the user's thresholds or provider.
+        # Product UI has one voice path: bundled Doubao 2.0 first, with local
+        # recognition as the automatic fallback. Migrate every older provider
+        # without discarding thresholds or gain.
         values["input_mode"] = "transcription"
+        values["speech_provider"] = "doubao-v2"
         return VoiceSettings(**values).validated()
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return fallback

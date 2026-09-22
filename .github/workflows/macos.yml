@@ -16,6 +16,8 @@ jobs:
           brew install python@3.12 python-tk@3.12
           echo "CODEX_WHIP_PYTHON=$(brew --prefix python@3.12)/bin/python3.12" >> "$GITHUB_ENV"
       - name: Build native app
+        env:
+          CODEX_WHIP_DOUBAO_API_KEY: ${{ secrets.CODEX_WHIP_DOUBAO_API_KEY }}
         run: bash macos/build-macos.sh
       - name: Install test tools
         run: macos/.venv-macos/bin/python -m pip install -e 'desktop[dev]'

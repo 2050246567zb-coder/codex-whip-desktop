@@ -2,10 +2,10 @@
 from dataclasses import replace
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox
 
 from .audio_driver_installer import AudioDriverInstaller, AudioDriverInstallError
-from .cloud_speech import PRESETS, LOCAL_LABEL, SpeechKeys, SpeechError, encode_doubao_credentials
+from .cloud_speech import PRESETS, SpeechKeys, SpeechError, bundled_doubao_key
 from . import settings_style as style
 from .tick_slider import TickSlider
 from .voice_replay import RecordingPlayer, recording_path, recording_duration
@@ -19,24 +19,13 @@ class SpeechServiceCard:
         self.card = style.RoundedCard(parent, padx=24, pady=24)
         self.card.pack(fill='x', pady=(0,14))
         bg = self.card.cget('bg')
-        self.labels = {'local': LOCAL_LABEL, **{k:v.label for k,v in PRESETS.items()}}
-        self.choice = tk.StringVar(value=self.labels[store.settings.speech_provider])
+        self.labels = {k:v.label for k,v in PRESETS.items()}
         self.mode = tk.StringVar(value='transcription')
         self.key = tk.StringVar()
-        self.app_id = tk.StringVar()
         self.status = tk.StringVar()
         tk.Label(self.card,text='语音识别服务',bg=bg,font=('Microsoft YaHei UI',12,'bold')).pack(anchor='w',pady=(0,12))
-        self.service_title = tk.Label(self.card,text='识别服务',bg=bg,font=('Microsoft YaHei UI',11,'bold'))
-        self.service_title.pack(anchor='w',pady=(0,12))
-        self.select = ttk.Combobox(self.card,textvariable=self.choice,state='readonly',
-                                   values=list(self.labels.values()),font=('Microsoft YaHei UI',10))
-        self.select.pack(fill='x')
-        self.select.bind('<<ComboboxSelected>>',self.changed)
-        self.app_id_row = tk.Frame(self.card,bg=bg)
-        tk.Label(self.app_id_row,text='App ID',bg=bg,font=(style.FONT,9)).pack(anchor='w',pady=(0,6))
-        self.app_id_entry = tk.Entry(self.app_id_row,textvariable=self.app_id,relief='flat',
-            bg=style.FIELD,font=(style.FONT,10),highlightthickness=0)
-        self.app_id_entry.pack(fill='x',ipady=8)
+        tk.Label(self.card,text='豆包录音文件识别 2.0',bg=bg,fg=style.TEXT,
+                 font=(style.FONT,10,'bold')).pack(anchor='w')
         self.key_row = tk.Frame(self.card,bg=bg)
         self.key_label = tk.Label(self.key_row,text='API Key',bg=bg,font=(style.FONT,9))
         self.key_label.pack(anchor='w',pady=(0,6))
@@ -152,37 +141,25 @@ class SpeechServiceCard:
 
     @property
     def selected(self):
-        return next(k for k,v in self.labels.items() if v == self.choice.get())
+        return 'doubao-v2'
 
     def changed(self, _event=None):
         if self.mode.get() != 'transcription':
             return
         self.key.set('')  # Never carry a typed credential to a different provider.
-        self.app_id.set('')
-        self.app_id_row.pack_forget()
-        self.key_label.configure(text='Access Token' if self.selected == 'doubao-legacy' else 'API Key')
-        if self.selected == 'local':
-            self.key_row.pack_forget()
-            self.delete_button.pack_forget()
-            self.notice.configure(text='录音留在本机，无需 API Key。首次使用需下载本地模型。')
-            self.status.set('')
-        else:
-            self.key_row.pack(fill='x',pady=(16,0),before=self.notice)
-            if self.selected == 'doubao-legacy':
-                self.app_id_row.pack(fill='x',pady=(16,0),before=self.key_row)
-            self.delete_button.pack(side='left')
-            self.notice.configure(text=('使用豆包语音控制台凭据，需开通录音极速识别；不是方舟聊天模型的 Key。录音将上传，可能产生费用。'
-                if self.selected.startswith('doubao') else '录音将发送至所选服务，可能产生 API 费用。密钥仅保存在本机系统凭据中。'))
-            try:
-                saved = bool(self.keys.get(self.selected))
-                self.status.set('已保存密钥 · 留空可继续使用' if saved else '尚未填写 API Key')
-            except SpeechError as exc:
-                self.status.set(str(exc))
+        self.key_label.configure(text='API Key')
+        self.key_row.pack(fill='x',pady=(16,0),before=self.notice)
+        self.delete_button.pack_forget()
+        self.notice.configure(text='豆包录音文件识别 2.0 优先；服务不可用时自动切换本地识别。')
+        try:
+            saved = bool(self.keys.get(self.selected))
+            self.status.set('安装包内置密钥已就绪' if bundled_doubao_key()
+                            else '已保存密钥' if saved else '安装包尚未写入 API Key')
+        except SpeechError as exc:
+            self.status.set(str(exc))
 
     def mode_changed(self):
         self.mode.set('transcription')
-        self.service_title.configure(text='识别服务')
-        self.select.configure(state='readonly')
         self.driver_panel.pack_forget()
         self.changed()
 
@@ -236,12 +213,10 @@ class SpeechServiceCard:
     def save(self):
         preset = self.selected
         try:
-            if self.mode.get() == 'transcription' and preset != 'local':
+            if self.mode.get() == 'transcription':
                 credential = self.key.get().strip()
-                if preset == 'doubao-legacy' and (credential or self.app_id.get().strip()):
-                    credential = encode_doubao_credentials(self.app_id.get(), credential)
                 if not credential and not self.keys.get(preset):
-                    raise SpeechError('请填写 App ID 和 Access Token' if preset == 'doubao-legacy' else '请填写 API Key')
+                    raise SpeechError('请填写 API Key，或在打包前写入内置 Key 文件')
                 if preset != self.store.settings.speech_provider and not messagebox.askyesno(
                         '启用云端语音识别', f'之后的录音将上传至 {self.labels[preset]} 进行转写，可能产生费用。\n是否启用？',
                         parent=self.card.winfo_toplevel()):
@@ -252,25 +227,17 @@ class SpeechServiceCard:
                     self.store.settings, input_mode='transcription',
                     speech_provider=preset, recording_gain=self.gain.get())):
                 self.key.set('')
-                self.app_id.set('')
-                self.status.set('已保存 · 下次录音生效' if preset == 'local' else '已保存 · 下次录音生效，失败时自动切换本地识别')
+                self.status.set('已保存 · 下次录音生效，失败时自动切换本地识别')
         except (SpeechError,OSError,ValueError) as exc:
             self.status.set(str(exc))
 
     def delete(self):
         preset = self.selected
-        if preset == 'local':
-            return
-        if not messagebox.askyesno('清除密钥','清除此服务的本机密钥并切回本地识别？',parent=self.card.winfo_toplevel()):
+        if not messagebox.askyesno('清除密钥','清除此服务的本机密钥？安装包内置密钥不会被删除。',parent=self.card.winfo_toplevel()):
             return
         try:
-            # First switch away, so any failed vault deletion cannot leave an
-            # active cloud configuration with no usable credential.
-            if not self.apply or not self.apply(replace(self.store.settings,speech_provider='local')):
-                return
             self.keys.delete(preset)
-            self.choice.set(LOCAL_LABEL)
             self.changed()
-            self.status.set('已清除密钥，已切回本地识别')
+            self.status.set('已清除本机密钥')
         except SpeechError as exc:
             self.status.set(str(exc))

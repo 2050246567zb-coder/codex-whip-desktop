@@ -24,3 +24,4 @@ macos/.venv-macos/
 *.dmp
 .env
 .env.*
+desktop/assets/private/doubao-api-key.txt

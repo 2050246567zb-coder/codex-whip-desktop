@@ -635,13 +635,9 @@ class CodexWhipWindow:
 
     def __init__(self, root: tk.Tk, settings: Settings, config_path: Path | None) -> None:
         self.root = root
-        self.settings = settings
-        try:
-            target = json.loads((user_data_dir() / 'target-app.json').read_text(encoding='utf-8'))['target']
-            if target in ('Codex', 'Claude'):
-                self.settings = replace(settings, codex=replace(settings.codex, target_app=target))
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
+        # Product builds support Codex only. Ignore obsolete target-app files
+        # left by versions that exposed a Claude selector.
+        self.settings = replace(settings, codex=replace(settings.codex, target_app='Codex'))
         self.config_path = config_path
         self.events = UiEventBuffer()
         self.armed = threading.Event()
@@ -693,8 +689,8 @@ class CodexWhipWindow:
         self._hang_heartbeat_after: str | None = None
 
         self.arm_value = tk.BooleanVar(value=False)
-        self.ble_value = tk.StringVar(value="尚未启动")
-        self.codex_value = tk.StringVar(value="正在检查")
+        self.ble_value = tk.StringVar(value="连接中")
+        self.codex_value = tk.StringVar(value="未连接")
         self.mode_value = tk.StringVar(value="安全监听")
         self.last_event_value = tk.StringVar(value="等待第一次挥动")
         self.voice_status_value = tk.StringVar(
@@ -809,7 +805,8 @@ class CodexWhipWindow:
         if self.worker_thread is not None and self.worker_thread.is_alive():
             return
         self.ble_value.set("正在启动")
-        self.listen_button.configure(text="停止监听", command=self.stop_listening)
+        if self.listen_button is not None:
+            self.listen_button.configure(text="停止监听", command=self.stop_listening)
         self.worker_thread = threading.Thread(
             target=self._worker_main,
             name="codex-whip-ble",
@@ -824,7 +821,8 @@ class CodexWhipWindow:
         if self.worker_loop is not None and self.worker_stop is not None:
             self.worker_loop.call_soon_threadsafe(self.worker_stop.set)
         self.ble_value.set("正在停止")
-        self.listen_button.configure(state="disabled")
+        if self.listen_button is not None:
+            self.listen_button.configure(state="disabled")
 
     def send_device_command(self, command: str) -> bool:
         if (
@@ -1208,7 +1206,7 @@ class CodexWhipWindow:
             self.emit("arm_result", (False, str(exc), generation))
 
     def check_codex(self) -> None:
-        self.codex_value.set("正在检查")
+        self.codex_value.set("未连接")
         self.check_button.configure(state="disabled")
 
         selected = self.settings.codex
@@ -1230,34 +1228,7 @@ class CodexWhipWindow:
         threading.Thread(target=check, daemon=True).start()
 
     def select_target_app(self, target: str) -> bool:
-        if target not in ('Codex', 'Claude'):
-            return False
-        try:
-            path = user_data_dir() / 'target-app.json'
-            path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = path.with_suffix('.tmp')
-            temporary.write_text(json.dumps({'target': target}), encoding='utf-8')
-            temporary.replace(path)
-        except OSError as exc:
-            messagebox.showerror('无法保存目标', str(exc))
-            return False
-        self.armed.clear()
-        self.arm_value.set(False)
-        self._arm_generation += 1
-        self.settings = replace(self.settings, codex=replace(self.settings.codex, target_app=target))
-        self.mode_value.set('安全监听')
-        self.effects.detach()
-        self._effect_target_handle = None
-        if self.processor is not None and self.worker_loop is not None:
-            selected = self.settings.codex
-            def update_sender():
-                self.processor._codex_settings = selected
-                self.processor._live_sender = None
-            self.worker_loop.call_soon_threadsafe(update_sender)
-        self.arm_check.configure(text=f'允许挥动后向 {target} 发送消息')
-        self.check_button.configure(text=f'重新检查 {target}')
-        self.check_codex()
-        return True
+        return target == 'Codex'
 
     def _schedule_effect_target_refresh(self, delay_ms: int = 1500) -> None:
         if self.closing or self._effect_refresh_after is not None:
@@ -1582,9 +1553,10 @@ class CodexWhipWindow:
                     if self.mount_window is not None:
                         self.mount_window.close(notify=False)
                     self.ble_value.set("已停止")
-                    self.listen_button.configure(
-                        text="启动监听", command=self.start_listening, state="normal"
-                    )
+                    if self.listen_button is not None:
+                        self.listen_button.configure(
+                            text="启动监听", command=self.start_listening, state="normal"
+                        )
                     self.sensor_calibrate_button.configure(
                         state="normal", text="校准手持零点"
                     )
@@ -1604,7 +1576,7 @@ class CodexWhipWindow:
                         self.armed.set()
                         self.arm_value.set(True)
                         self.mode_value.set("实际发送已武装")
-                        self.codex_value.set("目标已就绪")
+                        self.codex_value.set("已连接")
                         self._append_log(f"已武装：Codex PID {detail['pid']}")
                     else:
                         self.armed.clear()
@@ -1616,10 +1588,10 @@ class CodexWhipWindow:
                     ok, detail = payload
                     self.check_button.configure(state="normal")
                     if ok:
-                        self.codex_value.set("已找到且输入框就绪")
+                        self.codex_value.set("已连接")
                         self._append_log(f"{self.settings.codex.target_app} 已就绪：PID {detail['pid']}")
                     else:
-                        self.codex_value.set("暂不可发送")
+                        self.codex_value.set("未连接")
                         self._append_log(f"{self.settings.codex.target_app} 检查：{detail}")
                 elif kind == "effect_target":
                     ok, detail = payload
