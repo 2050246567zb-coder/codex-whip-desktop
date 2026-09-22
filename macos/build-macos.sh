@@ -47,6 +47,11 @@ PY
 
 mkdir -p "$MAC_DIR/.build" "$OUTPUT_DIR" "$(dirname "$WHISPER_ASSET")"
 
+if [[ -n "${CODEX_WHIP_DOUBAO_API_KEY:-}" ]]; then
+  mkdir -p "$DESKTOP_DIR/assets/private"
+  printf '%s' "$CODEX_WHIP_DOUBAO_API_KEY" > "$DESKTOP_DIR/assets/private/doubao-api-key.txt"
+fi
+
 if [[ ! -x "$WHISPER_ASSET" ]]; then
   "$MAC_DIR/prepare-speech.sh"
 fi

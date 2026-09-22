@@ -11,14 +11,14 @@ automatically and remains in safe-listening mode until the user explicitly
 checks the live-send arm control. A packaged build can be created from the
 repository root with `scripts\build-desktop.ps1`.
 
-## Current: desktop 2.2.58 / firmware 0.7.3
+## Current product branch: desktop 2.2.60 / shared firmware 0.7.4
 
-Product 2.2.58 uses the XIAO nRF52840 Sense LSM6DS3TR-C hardware
+The 2.2.60 Windows/macOS product uses the XIAO nRF52840 Sense LSM6DS3TR-C hardware
 Shock/Quiet/Duration state machine for double taps. The desktop exposes only a
 minimum-impact setting, maps it to `TAP_THS`, and accepts two impacts anywhere
 inside the fixed one-second hardware window. The old raw-motion custom detector
 is not used as a fallback. See the repository-level `DEVELOPMENT.md` and
-`RELEASE-2.2.58.md` for current build instructions and validation evidence.
+`RELEASE-2.2.60.md` for current build instructions and validation evidence.
 
 New installations are seeded once with the public factory calibration in
 `assets/factory-calibration`. Existing user profiles always win, so later

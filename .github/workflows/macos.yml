@@ -20,6 +20,8 @@ jobs:
           git fetch --no-tags origin codex/product-windows
           "$CODEX_WHIP_PYTHON" scripts/verify-shared-firmware.py origin/codex/product-windows
       - name: Build native app
+        env:
+          CODEX_WHIP_DOUBAO_API_KEY: ${{ secrets.CODEX_WHIP_DOUBAO_API_KEY }}
         run: bash macos/build-macos.sh
       - name: Install test tools
         run: macos/.venv-macos/bin/python -m pip install -e 'desktop[dev]'

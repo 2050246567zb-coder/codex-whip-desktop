@@ -25,3 +25,4 @@ desktop/assets/stt/whispercpp-*/whisper-cli
 *.dmp
 .env
 .env.*
+desktop/assets/private/doubao-api-key.txt
