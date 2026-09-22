@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from bleak import BleakClient, BleakScanner
 from bleak.exc import BleakError
 
+from .ble_preference import BleDevicePreferenceStore, choose_device
 from .models import DeviceMessage, ProtocolMessage
 from .protocol import LineDecoder, ProtocolError
 from .settings import BleSettings
@@ -51,12 +52,14 @@ class BleWhipClient:
         state_handler: StateHandler | None = None,
         command_queue: asyncio.Queue[str] | None = None,
         device_handler: Callable[[str], None] | None = None,
+        device_preference: BleDevicePreferenceStore | None = None,
     ) -> None:
         self._settings = settings
         self._log = log_handler
         self._state_handler = state_handler
         self._command_queue = command_queue
         self._device_handler = device_handler
+        self._device_preference = device_preference
 
     def _set_state(self, state: str) -> None:
         if self._state_handler is not None:
@@ -67,10 +70,7 @@ class BleWhipClient:
             try:
                 self._set_state("scanning")
                 self._log(f"[BLE] scanning for {self._settings.device_name!r}...")
-                device = await BleakScanner.find_device_by_name(
-                    self._settings.device_name,
-                    timeout=self._settings.scan_timeout_seconds,
-                )
+                device = await self._scan_preferred_device()
                 if device is None:
                     self._set_state("not_found")
                     self._log("[BLE] device not found")
@@ -82,6 +82,20 @@ class BleWhipClient:
 
             if not stop.is_set():
                 await self._wait_or_stop(self._settings.reconnect_seconds, stop)
+
+    async def _scan_preferred_device(self) -> object | None:
+        discovered = await BleakScanner.discover(
+            timeout=self._settings.scan_timeout_seconds,
+            return_adv=True,
+        )
+        candidates = [
+            (device, advertisement)
+            for device, advertisement in discovered.values()
+            if (getattr(advertisement, "local_name", None)
+                or getattr(device, "name", None)) == self._settings.device_name
+        ]
+        remembered = self._device_preference.load() if self._device_preference else ""
+        return choose_device(candidates, remembered)
 
     async def _run_connection(
         self, device: object, handler: MessageHandler, stop: asyncio.Event
@@ -112,9 +126,12 @@ class BleWhipClient:
                 )
 
         async with BleakClient(device, disconnected_callback=on_disconnect) as client:
+            identity = str(getattr(device, "address", "") or "")
+            if self._device_preference is not None:
+                self._device_preference.remember(identity)
             # Select per-board calibration before accepting any sensor frames.
             if self._device_handler is not None:
-                self._device_handler(str(getattr(device, "address", "")))
+                self._device_handler(identity)
             self._set_state("connected")
             self._log(f"[BLE] connected to {self._settings.device_name}")
             await client.start_notify(NUS_TX_CHARACTERISTIC, on_notification)

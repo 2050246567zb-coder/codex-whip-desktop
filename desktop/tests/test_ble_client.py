@@ -1,6 +1,8 @@
 import asyncio
+from types import SimpleNamespace
 import pytest
 
+from codex_whip.ble_preference import BleDevicePreferenceStore, choose_device
 from codex_whip.ble_client import drain_message_queue
 from codex_whip.models import DeviceMessage
 
@@ -12,6 +14,47 @@ from codex_whip.models import DeviceMessage
 def test_host_profile_mapping(platform, expected):
     from codex_whip.ble_client import host_profile_command
     assert host_profile_command(platform) == expected
+
+
+def _candidate(identity: str, rssi: int):
+    return SimpleNamespace(address=identity, name='CodexWhip'), SimpleNamespace(
+        local_name='CodexWhip', rssi=rssi)
+
+
+def test_nearest_device_wins_and_recent_device_breaks_close_tie():
+    near = _candidate('NEAR', -41)
+    recent = _candidate('RECENT', -45)
+    assert choose_device((near, recent), '') is near[0]
+    assert choose_device((near, recent), 'recent') is recent[0]
+    far_recent = _candidate('RECENT', -61)
+    assert choose_device((near, far_recent), 'RECENT') is near[0]
+
+
+def test_device_preference_is_hidden_and_persistent(tmp_path):
+    store = BleDevicePreferenceStore(tmp_path / 'ble-device-preference.json')
+    assert store.load() == ''
+    store.remember('AA:BB:CC')
+    assert store.load() == 'AA:BB:CC'
+    assert 'AA:BB:CC' in store.path.read_text(encoding='utf-8')
+
+
+def test_scan_filters_name_then_selects_signal_and_memory(monkeypatch, tmp_path):
+    from codex_whip import ble_client
+    from codex_whip.settings import BleSettings
+
+    async def exercise():
+        recent = _candidate('RECENT', -47)
+        strongest = _candidate('STRONG', -43)
+        unrelated = (SimpleNamespace(address='OTHER', name='Other'),
+                     SimpleNamespace(local_name='Other', rssi=-20))
+        async def discover(**_kwargs):
+            return {'recent': recent, 'strong': strongest, 'other': unrelated}
+        monkeypatch.setattr(ble_client.BleakScanner, 'discover', discover)
+        store = BleDevicePreferenceStore(tmp_path / 'preference.json')
+        store.remember('RECENT')
+        client = ble_client.BleWhipClient(BleSettings(), device_preference=store)
+        assert await client._scan_preferred_device() is recent[0]
+    asyncio.run(exercise())
 
 
 @pytest.mark.parametrize('caps,expected', [
