@@ -11,7 +11,16 @@ automatically and remains in safe-listening mode until the user explicitly
 checks the live-send arm control. A packaged build can be created from the
 repository root with `scripts\build-desktop.ps1`.
 
-## Current: desktop 2.2.6 / firmware 0.6.0
+## Current: desktop 2.2.56 / firmware 0.7.3
+
+Product 2.2.56 uses the XIAO nRF52840 Sense LSM6DS3TR-C hardware
+Shock/Quiet/Duration state machine for double taps. The desktop exposes only a
+minimum-impact setting, maps it to `TAP_THS`, and accepts two impacts anywhere
+inside the fixed one-second hardware window. The old raw-motion custom detector
+is not used as a fallback. See the repository-level `DEVELOPMENT.md` and
+`RELEASE-2.2.56.md` for current build instructions and validation evidence.
+
+### Historical: desktop 2.2.6 interval control (superseded)
 
 2.2.6 adds a 0.20–1.00 second double-tap maximum-interval slider to Calibration.
 Steps are 0.05 seconds with five labeled ticks (0.2, 0.4, 0.6, 0.8, 1.0).
