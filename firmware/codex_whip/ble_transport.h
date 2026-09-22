@@ -59,6 +59,19 @@ class WhipBleTransport {
     return false;
   }
 
+  // Audio shares the ordered FIFO, but must leave room for END and control
+  // replies. The sole producer retains PCM until capacity is available.
+  bool audioReady() const {
+    return reliable_ && acceptedEpoch_.load() == epoch_.load() &&
+           handle_.load() != BLE_CONN_HANDLE_INVALID &&
+           uxQueueMessagesWaiting(reliable_) < 44;
+  }
+
+  bool enqueueAudio(const uint8_t* data, size_t length) {
+    if (!audioReady()) return false;
+    return enqueue(data, length);
+  }
+
   uint32_t replacedMotion() const { return replacedMotion_.load(); }
   uint32_t longestWriteMs() const { return longestWriteMs_.load(); }
 

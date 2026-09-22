@@ -13,7 +13,7 @@
 
 namespace {
 
-constexpr char kFirmwareVersion[] = "0.7.4";
+constexpr char kFirmwareVersion[] = "0.7.5";
 constexpr char kDeviceName[] = "CodexWhip";
 constexpr uint32_t kSampleRateHz = 416;
 constexpr uint32_t kSamplePeriodUs = 1000000UL / kSampleRateHz;
@@ -390,8 +390,8 @@ bool sendVoicePayload(const String& line) {
     serialDiagnostic("WARN,VOICE_LINE_TOO_LONG");
     return false;
   }
-  return sendBlePayload(reinterpret_cast<const uint8_t*>(payload.c_str()),
-                        payload.length());
+  return transport.enqueueAudio(reinterpret_cast<const uint8_t*>(payload.c_str()),
+                                payload.length());
 }
 
 void stopVoiceRecording(const char* reason) {
@@ -462,7 +462,7 @@ void processVoiceAudio() {
     stopVoiceRecording("MIC_STALLED");
     return;
   }
-  if (voiceRingCount < kVoicePcmSamples) return;
+  if (voiceRingCount < kVoicePcmSamples || !transport.audioReady()) return;
 
   int16_t pcm[kVoicePcmSamples] = {0};
   NVIC_DisableIRQ(PDM_IRQn);
@@ -1288,7 +1288,7 @@ void setup() {
   }
 
   Bluefruit.autoConnLed(true);
-  Bluefruit.configPrphBandwidth(BANDWIDTH_HIGH);
+  Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
   Bluefruit.begin();
   powerFsReady = InternalFS.begin();
   if (powerFsReady) {

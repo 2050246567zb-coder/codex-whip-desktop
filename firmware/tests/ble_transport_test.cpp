@@ -73,5 +73,19 @@ int main() {
   assert(Bluefruit.disconnects==1); // No next CSV line after partial failure.
   assert(t.longestWriteMs()==100);
  }
+ {
+  BLEUart uart;WhipBleTransport t(uart);assert(t.begin());connect(t);
+  const std::string audio="AUD1,payload\n";
+  for(int i=0;i<44;++i)assert(t.enqueueAudio(reinterpret_cast<const uint8_t*>(audio.data()),audio.size()));
+  assert(!t.audioReady());
+  assert(!t.enqueueAudio(reinterpret_cast<const uint8_t*>(audio.data()),audio.size()));
+  assert(send(t,"VOICE,END\n"));
+  runFor(10);
+  assert(Bluefruit.disconnects==0);
+  std::string expected;
+  for(int i=0;i<44;++i)expected+=audio;
+  assert(uart.delivered==expected+"VOICE,END\n");
+  assert(t.audioReady());
+ }
  std::cout << "Host profiles and transport scenarios passed\n";
 }
