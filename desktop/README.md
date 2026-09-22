@@ -11,9 +11,9 @@ automatically and remains in safe-listening mode until the user explicitly
 checks the live-send arm control. A packaged build can be created from the
 repository root with `scripts\build-desktop.ps1`.
 
-## Current product branch: desktop 2.2.62 / shared firmware 0.7.4
+## Current product branch: desktop 2.2.63 / shared firmware 0.8.0
 
-The 2.2.62 Windows/macOS product uses the XIAO nRF52840 Sense LSM6DS3TR-C hardware
+The 2.2.63 Windows/macOS product uses the XIAO nRF52840 Sense LSM6DS3TR-C hardware
 Shock/Quiet/Duration state machine for double taps. The desktop exposes only a
 minimum-impact setting, maps it to `TAP_THS`, and accepts two impacts anywhere
 inside the fixed one-second hardware window. The old raw-motion custom detector
@@ -22,12 +22,17 @@ after BLE connection;
 the same firmware selects the appropriate transport profile. See the
 repository-level `DEVELOPMENT.md` for the branch and firmware-sharing rules.
 
-After a new controller connects, and again after it wakes from deep sleep, the
-next continuous three-second held window performs a session-only residual gyro
-bias trim together with recentering. This removes one-direction drift caused by
-board-to-board or wake-up offset without persisting a correction across boots.
+Every completed three-second held recenter also measures the current board's
+residual gyro bias. This removes recurring one-direction drift caused by
+board-to-board or wake-up offset without continuously learning away real turns.
 Recording and recognizing presentation also remains authoritative during a
 temporary motion-stream pause, rather than flashing the connection loader.
+
+Firmware 0.8.0 sends CRC-checked binary ADPCM frames sized to one negotiated
+BLE notification. The desktop acknowledges reception in bounded windows and
+assembles the complete recording before cloud/local recognition. Backpressure,
+host stalls and unsupported MTU end only that recording; they do not deliberately
+disconnect BLE.
 
 New installations are seeded once with the public factory calibration in
 `assets/factory-calibration`. Existing user profiles always win, so later

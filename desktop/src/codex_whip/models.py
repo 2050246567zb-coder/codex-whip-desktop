@@ -58,6 +58,7 @@ class AudioChunk:
     predictor: int
     step_index: int
     payload: bytes
+    flow_controlled: bool = False
 
 
 @dataclass(frozen=True, slots=True)

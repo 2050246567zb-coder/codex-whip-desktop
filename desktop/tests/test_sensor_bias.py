@@ -137,3 +137,23 @@ def test_wake_requests_a_fresh_session_bias_trim(tmp_path):
     assert not processor._sensor_pose._bias_trim_requested
     asyncio.run(processor.handle(DeviceMessage('POWER', ('1', 'ACTIVE', '300'), '')))
     assert processor._sensor_pose._bias_trim_requested
+
+
+def test_each_completed_idle_recenter_learns_residual_board_bias():
+    tracker = SensorPoseTracker()
+    residual = (0.15, 0.6, -0.2)
+    centered = False
+    trimmed = False
+    for t in range(0, 3800, 10):
+        pose = tracker.feed_batch(RawMotionBatch(
+            t, t, (RawMotionFrame(t, *residual, 0, 1, 0),)
+        ), auto_center=True)
+        centered |= pose.auto_centered
+        trimmed |= pose.bias_trimmed
+    assert centered and trimmed
+    assert tracker.gyro_bias == pytest.approx(residual, abs=.02)
+    for t in range(3800, 8800, 10):
+        pose = tracker.feed_batch(RawMotionBatch(
+            t, t, (RawMotionFrame(t, *residual, 0, 1, 0),)
+        ), auto_center=True)
+    assert abs(pose.offset_x) < .1 and abs(pose.offset_y) < .1
