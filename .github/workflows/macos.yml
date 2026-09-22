@@ -15,6 +15,10 @@ jobs:
         run: |
           brew install python@3.12 python-tk@3.12 cmake
           echo "CODEX_WHIP_PYTHON=$(brew --prefix python@3.12)/bin/python3.12" >> "$GITHUB_ENV"
+      - name: Verify shared firmware matches Windows product branch
+        run: |
+          git fetch --no-tags origin codex/product-windows
+          "$CODEX_WHIP_PYTHON" scripts/verify-shared-firmware.py origin/codex/product-windows
       - name: Build native app
         run: bash macos/build-macos.sh
       - name: Install test tools

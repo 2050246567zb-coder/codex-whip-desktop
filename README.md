@@ -1,4 +1,4 @@
-> macOS 最新源码：**2.2.59**（`codex/product-macos`）。本次 Mac 更新说明见 [RELEASE-2.2.59-macos.md](RELEASE-2.2.59-macos.md)。
+> Windows 最新源码：**2.2.59**（`codex/product-windows`）；macOS 最新源码：**2.2.59**（`codex/product-macos`）。两个产品分支独立开发，固件目录保持一致。
 
 # Codex 鞭子
 
@@ -8,7 +8,7 @@ Codex 桌面窗口。
 
 ## 当前实现
 
-- 产品版 `2.2.58` 的 Windows 与 macOS 共享同一套功能和配置格式；窗口、蓝牙与
+- 产品版 `2.2.59` 的 Windows 与 macOS 共享同一套协议和配置格式；窗口、蓝牙与
   语音识别分别使用各平台的原生适配层。产品页不再要求用户选择输入方式：
   已配置的语音 API 优先，否则使用本地识别；云端请求失败且本地模型已就绪时
   会自动回退。旧的虚拟麦克风 / Codex 原生听写入口已退役。
@@ -18,13 +18,17 @@ Codex 桌面窗口。
   Windows 色键透明产生紫边。离线动态绘制 95 分位约 `13.8 ms`，仍在 60 FPS
   的 `16.7 ms` 帧预算内。
 
-- 固件 `0.7.3` 在原 XIAO nRF52840 Sense 的 LSM6DS3TR-C 上使用 ST AN5130
+- 共享固件 `0.7.4` 在原 XIAO nRF52840 Sense 的 LSM6DS3TR-C 上使用 ST AN5130
   公开的 Shock/Quiet/Duration 硬件双击状态机。电脑端只把“最低冲击”映射到
   芯片 `TAP_THS`（±16 g 下按 0.5 g 向上量化），两次冲击窗口固定为 1 秒；不再
   限制最大力度或暴露间隔设置，也不运行自研双敲检测作为后备。该方案不用于
   ESP32-C3 + MPU6050 版本。
 
-- 固件 `0.7.3` 通过 XIAO nRF52840 Sense 板载电池分压电路读取锂电池，
+- 桌面端连接后自动识别当前系统并发送 `HOST,WINDOWS`、`HOST,MACOS`、
+  `HOST,LINUX` 或兼容模式；同一份固件据此选择 BLE 连接间隔和动作数据批次，
+  用户无需选择系统，旧固件也不会收到未知命令。
+
+- 固件 `0.7.4` 通过 XIAO nRF52840 Sense 板载电池分压电路读取锂电池，
   充电引脚状态改变后立即上报，桌面端同时每秒查询作为兼容旧固件的兜底。主界面
   普通状态使用与鞭子一致的黑色苹果式电池胶囊，充电时显示绿色电量与白色闪电；低于 20% 变红，悬停只显示
   剩余百分比，不显示电压。断开手柄后立即清除旧读数。
@@ -145,8 +149,10 @@ scripts/                 环境、测试、编译和上传脚本
 
 - [DEVELOPMENT.md](DEVELOPMENT.md)：Windows/macOS 分支、Apple Silicon 环境、
   构建测试、代码结构、固件协议和跨平台开发规则。
-- [RELEASE-2.2.58.md](RELEASE-2.2.58.md)：当前源码修订、Windows/macOS CI、
-  实机固件回读和仍需在目标 Mac 验证的边界。
+- [RELEASE-2.2.59-windows.md](RELEASE-2.2.59-windows.md)：Windows 当前源码、
+  共享固件、自动平台识别和验证边界。
+- `codex/product-macos` 分支中的 `RELEASE-2.2.59-macos.md`：macOS 原生适配、
+  云端构建和仍需目标 Mac 实机验证的边界。
 - [macos/MACOS_ACCEPTANCE.md](macos/MACOS_ACCEPTANCE.md)：Mac 实机逐项验收表。
 
 ## macOS 2.0 移植
