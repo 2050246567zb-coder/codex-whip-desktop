@@ -96,7 +96,7 @@ def test_doubao_legacy_credentials_gain_and_switch_clear(tmp_path, monkeypatch):
         root.destroy()
 
 
-def test_virtual_microphone_mode_shows_driver_install_controls(tmp_path):
+def test_native_dictation_mode_is_retired_and_driver_controls_stay_hidden(tmp_path):
     root=tk.Tk()
     root.configure(bg='#F5F5F7')
     root.withdraw()
@@ -107,11 +107,7 @@ def test_virtual_microphone_mode_shows_driver_install_controls(tmp_path):
         assert not card.driver_panel.winfo_manager()
         card.mode.set('virtual_microphone')
         card.mode_changed()
-        assert card.driver_panel.winfo_manager() == 'pack'
-        assert card.install_driver_button.cget('text') == '安装音频驱动'
-        assert 'Test Virtual Audio' in card.driver_status.get()
-        card.mode.set('transcription')
-        card.mode_changed()
+        assert card.mode.get() == 'transcription'
         assert not card.driver_panel.winfo_manager()
     finally:
         root.destroy()

@@ -23,14 +23,14 @@ from codex_whip.voice import (
 )
 
 
-def test_voice_settings_supports_two_exclusive_input_modes(tmp_path):
-    from dataclasses import replace
-    from codex_whip.voice import VoiceSettings, VoiceSettingsStore
-    store = VoiceSettingsStore(tmp_path / "voice.json")
-    store.update(replace(VoiceSettings(), input_mode="virtual_microphone"))
-    assert VoiceSettingsStore(tmp_path / "voice.json").settings.input_mode == "virtual_microphone"
+def test_legacy_virtual_microphone_setting_migrates_to_recognition(tmp_path):
+    path = tmp_path / "voice.json"
+    path.write_text('{"schema_version":1,"input_mode":"virtual_microphone","recording_gain":3}')
+    restored = load_voice_settings(path)
+    assert restored.input_mode == "transcription"
+    assert restored.recording_gain == 3
     with pytest.raises(ValueError, match="输入方式"):
-        replace(VoiceSettings(), input_mode="both").validated()
+        VoiceSettings(input_mode="virtual_microphone").validated()
 
 
 def _frame(timestamp: int, dynamic: float = 0.0, gyro: float = 0.0) -> RawMotionFrame:

@@ -47,8 +47,12 @@ def main(argv=None) -> int:
                 time.sleep(.008)
             try:
                 target = widget or root
+                target.lift()
+                target.attributes("-topmost", True)
+                root.update()
                 x, y = target.winfo_rootx(), target.winfo_rooty()
                 ImageGrab.grab(bbox=(x, y, x + target.winfo_width(), y + target.winfo_height())).save(args.output / f"{name}.png")
+                target.attributes("-topmost", False)
                 report["screenshots"].append(name)
             except Exception as exc:
                 report["capture_errors"].append(f"{name}: {exc}")
@@ -60,7 +64,10 @@ def main(argv=None) -> int:
             app.ui.observe("battery", {"percent": 68, "charging": False})
             settle_and_capture("02-whip")
             app.ui.open_preferences("calibration")
+            app.ui.settings.geometry("1060x820+100+40")
             settle_and_capture("02a-hardware-tap-settings", .3, app.ui.settings)
+            app.ui._advanced_canvas.yview_moveto(.43)
+            settle_and_capture("02a-settings-middle", .2, app.ui.settings)
             app.ui._advanced_canvas.yview_moveto(1.0)
             settle_and_capture("02a-hardware-tap-settings-bottom", .2, app.ui.settings)
             app.ui.hide_preferences()

@@ -13,6 +13,7 @@ import sys
 import math
 import time
 import tkinter as tk
+import uuid
 from types import SimpleNamespace
 from tkinter import messagebox
 
@@ -403,6 +404,15 @@ class Hero(tk.Canvas):
 
 
 class Interface:
+    TOUR = (
+        ('whip', '方向跟随', '转动手柄，屏幕上的鞭子会跟随你的方向移动。'),
+        ('strike', '抽打', '快速挥动会播放抽打效果，并执行你允许的输入。'),
+        ('recording', '正在录音', '双敲手柄后，麦克风形态表示正在收音。'),
+        ('recognizing', '正在识别', '无限形态表示正在把声音识别成文字。'),
+        ('sleep', '省电模式', '长时间不动会变成 Z；移动手柄即可唤醒。'),
+        ('clock', '时间表盘', '右键点击目标窗口上的鞭子，可以查看时间。'),
+    )
+
     def __init__(self, app):
         self.app = app
         self.root = app.root
@@ -428,6 +438,14 @@ class Interface:
         self._battery_charging = False
         self._power_state = "ACTIVE"
         self._sleep_at = 0.0
+        self._tour_index = 0
+        self._tour_started = time.monotonic()
+        self._tour_complete = False
+        self._mount_token = ''
+        self._mount_inline_state = 'neutral'
+        self._mount_centered = False
+        self._mount_detail = ''
+        self._calibration_return_stage = 'choices'
         self._advanced_section = "general"
         self._build_home()
         self._build_preferences()
@@ -503,19 +521,10 @@ class Interface:
         self.settings.protocol("WM_DELETE_WINDOW", self.hide_preferences)
         self.settings.bind("<Escape>", lambda _e: self.hide_preferences())
         sidebar = tk.Frame(self.settings, bg=SOFT, width=184, padx=16, pady=28)
-        sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
-        label(sidebar, "Codex Whip", size=13, bold=True).pack(anchor="w", padx=10)
-        label(sidebar, "偏好设置", size=9, color=MUTED).pack(anchor="w", padx=10, pady=(5, 28))
         self.nav = {}
-        for key, title in (("general", "通用"), ("calibration", "手柄"), ("input", "输入")):
-            b = button(sidebar, title, lambda k=key: self.open_preferences(k), navigation=True, bg=SOFT)
-            b.configure(anchor="center")
-            b.pack(fill="x", pady=5)
-            self.nav[key] = b
-        label(sidebar, f"Codex Whip\n{__version__}", size=9, color=MUTED, justify="left").pack(side="bottom", anchor="w", padx=10)
         self.host = tk.Frame(self.settings, bg=BG)
-        self.host.pack(side="right", fill="both", expand=True)
+        self.host.pack(fill="both", expand=True)
         self.general = tk.Frame(self.host, bg=BG)
         # Scroll all general controls together so small screens never hide actions.
         canvas = tk.Canvas(self.general, bg=BG, highlightthickness=0)
@@ -571,13 +580,18 @@ class Interface:
         row = tk.Frame(device, bg=CARD)
         row.pack(fill="x", pady=(12, 0))
         a.listen_button = button(row, "停止监听", a.stop_listening)
-        self._direction_card = style.RoundedCard(self.host, padx=24,pady=24)
-        label(self._direction_card,'方向与归中',size=12,bold=True).pack(anchor='w',pady=(0,16))
-        row = tk.Frame(self._direction_card,bg=CARD)
-        row.pack(fill='x')
-        a.sensor_calibrate_button = button(row, "立即归中", a.calibrate_sensor_neutral)
-        a.sensor_calibrate_button.pack(side="left", padx=8)
-        button(row, "方向引导…", a.open_mount_calibration).pack(side="left")
+        a.listen_button.pack(side='right')
+        self.power_enabled = tk.BooleanVar(master=self.root, value=a.power_store.enabled)
+        self.power_status = tk.StringVar(master=self.root, value=a.power_status)
+        def toggle_power():
+            enabled = self.power_enabled.get()
+            if not a.apply_power_settings(enabled):
+                self.power_enabled.set(not enabled)
+        style.Switch(device, text='省电模式', variable=self.power_enabled,
+                     command=toggle_power).pack(anchor='w', pady=(18,0))
+        # Retained only as an internal compatibility anchor; the old
+        # direction/recenter card is intentionally not displayed.
+        self._direction_card = tk.Frame(self.host, bg=BG)
 
         sending = self._sending_card = style.RoundedCard(self.host, padx=24, pady=24)
         label(sending, "发送控制", size=12, bold=True).pack(anchor="w", pady=(0,12))
@@ -586,8 +600,6 @@ class Interface:
                                     bg=CARD, activebackground=CARD, fg=TEXT, selectcolor=CARD,
                                     font=(FONT, 10), cursor="hand2", takefocus=True)
         a.arm_check.pack(anchor="w")
-        label(sending, "每次启动默认关闭；目标不明确或有未发送草稿时会拒绝发送。",
-              color=MUTED, size=9, wraplength=650, justify="left").pack(anchor="w", pady=(6, 0))
 
         speech_disclosure = self._speech_panel = Disclosure(self.host, "下一鞭的语音文字", bg=BG)
         speech = style.RoundedCard(speech_disclosure.body, padx=20, pady=16)
@@ -621,6 +633,23 @@ class Interface:
                          bg=CARD, fg=TEXT, selectcolor=CARD, activebackground=CARD,
                          font=(FONT, 10)).pack(anchor="w", pady=(12,0))
 
+        self._calibration_action_card = style.RoundedCard(self.host, padx=24, pady=24)
+        label(self._calibration_action_card, "校准", size=12, bold=True).pack(
+            side='left', anchor='w')
+        a.sensor_calibrate_button = button(
+            self._calibration_action_card, "开始校准", a.open_mount_calibration, primary=True)
+        a.sensor_calibrate_button.pack(side='right')
+
+        def section_title(text):
+            frame = tk.Frame(self.host, bg=BG)
+            label(frame, text, size=15, bold=True).pack(anchor='w', pady=(4,10))
+            return frame
+        self._input_heading = section_title('输入')
+        self._recognition_heading = section_title('识别')
+        self._feedback_heading = section_title('外观与反馈')
+        self._developer_back = tk.Frame(self.host, bg=BG)
+        button(self._developer_back, '返回设置', self.open_preferences).pack(anchor='w')
+
 
         from .disclosure import Disclosure
         self.diagnostics = Disclosure(self.host, "帮助与诊断", bg=BG)
@@ -646,44 +675,55 @@ class Interface:
         style.restyle_fields(self.settings)
 
     def open_preferences(self, section="general"):
-        section = {'messages':'input','voice':'input','detector':'calibration','visual':'general'}.get(section,section)
-        if self.stage == "learning" and section != 'calibration':
+        developer = section == 'developer'
+        if self.stage == "learning" and not developer:
             messagebox.showinfo("正在录入动作", "请先完成或跳过当前动作录入，再打开设置。", parent=self.root)
             return
-        self._advanced_section = section
+        self._advanced_section = 'developer' if developer else 'settings'
         self.general.pack_forget()
         self._advanced_panel.pack_forget()
-        for panel in (self._general_body,self._direction_card,self._speech_panel,
-                      self._sending_card,self._experience_card,self.diagnostics):
+        external = (self._general_body,self._direction_card,self._speech_panel,
+                    self._sending_card,self._experience_card,self.diagnostics,
+                    self._input_heading,self._recognition_heading,self._feedback_heading,
+                    self._calibration_action_card,self._developer_back)
+        for panel in external:
             panel.pack_forget()
         self.app._ensure_settings()
         window = self.app.settings_window
         window.section_router = self.open_preferences
         self._advanced_panel.pack(fill="both", expand=True)
-        window.show_group(section)
-        if section == 'general':
-            self._general_body.pack(in_=window._content,fill='x',before=window._visual_panel)
-            self._experience_card.pack(in_=window._content,fill='x',pady=(0,16),before=window._visual_panel)
-            self.diagnostics.pack(in_=window._content,fill='x',pady=(0,16))
-        elif section == 'calibration':
-            self._direction_card.pack(in_=window._content,fill='x',pady=(0,16),before=window._detector_panel)
+        if developer:
+            window.show_developer_page()
+            self._developer_back.pack(in_=window._content, fill='x', pady=(0,16), before=window._detector_panel)
+            self.diagnostics.pack(in_=window._content, fill='x', pady=(0,16))
         else:
-            self._sending_card.pack(in_=window._content,fill='x',pady=(0,16),before=window._messages_panel)
-            self._speech_panel.pack(in_=window._content,fill='x',pady=(0,16),before=window._voice_panel)
-        for panel in (self._general_body,self._direction_card,self._speech_panel,
-                      self._sending_card,self._experience_card,self.diagnostics):
+            window.show_all()
+            ordered = (
+                self._general_body,
+                self._input_heading, self._sending_card, window._messages_panel,
+                window.voice_feature_card, self._speech_panel,
+                self._recognition_heading, window._detector_panel, window._calibration_panel,
+                self._feedback_heading, self._experience_card, window._visual_panel,
+                self._calibration_action_card,
+            )
+            for panel in (window._messages_panel, window.voice_feature_card, window._voice_panel,
+                          window._detector_panel, window._calibration_panel, window._visual_panel):
+                panel.pack_forget()
+            for panel in ordered:
+                panel.pack(in_=window._content, fill='x', pady=(0,16))
+        for panel in external:
             panel.lift()
         self.settings.update_idletasks()
         self._resize_advanced()
         self._advanced_canvas.yview_moveto(0)
-        for key, b in self.nav.items():
-            from . import settings_style as style
-            b.configure(bg=style.SELECTED if key == section else style.SIDEBAR,
-                        fg=style.BLUE if key == section else style.TEXT)
         if hasattr(self.app.effects, "set_settings_open"):
             self.app.effects.set_settings_open(True)
         self.settings.deiconify()
         self.settings.lift()
+
+    def open_developer_preferences(self):
+        """Unadvertised integration hook for Codex/development tools."""
+        self.open_preferences('developer')
 
     def hide_preferences(self):
         self.settings.withdraw()
@@ -719,9 +759,15 @@ class Interface:
         self.app.arm_value.set(False)
         self.app.mode_value.set("安全监听")
         self.stage = "connect"
+        self._tour_index = 0
+        self._tour_complete = False
+        self._tour_started = time.monotonic()
         self._render_key = None
 
     def skip_setup(self):
+        if self._mount_token:
+            self.app._send_mount_command('cancel', self._mount_token)
+            self._mount_token = ''
         previous = self.preferences.setup_complete
         self.preferences.setup_complete = True
         if not self._persist():
@@ -737,10 +783,58 @@ class Interface:
         self.stage = 'ready'
         self._render_key = None
 
+    def start_inline_calibration(self):
+        """Run the existing direction-calibration state machine on the home page."""
+        if self.app.worker_loop is None or self.app.processor is None or not self.app.ble_connected:
+            messagebox.showinfo('尚未连接', '请先连接手柄，再开始校准。', parent=self.root)
+            return False
+        if self.app.voice_module.calibration_active:
+            messagebox.showinfo('请先结束录入', '请先结束当前动作录入。', parent=self.root)
+            return False
+        self.hide_preferences()
+        self.app._arm_generation += 1
+        self.app.armed.clear()
+        self.app.arm_value.set(False)
+        self.app.mode_value.set('校准 · 暂停发送')
+        self._calibration_return_stage = (
+            'choices' if not self.preferences.setup_complete else 'ready')
+        self._mount_token = uuid.uuid4().hex
+        self._mount_inline_state = 'neutral'
+        self._mount_centered = False
+        self._mount_detail = ''
+        self.stage = 'calibrate'
+        self.app._send_mount_command('open', self._mount_token)
+        self._render_key = None
+        return True
+
+    def _advance_inline_calibration(self):
+        actions = {
+            'neutral': 'neutral', 'right_ready': 'begin', 'right_capture': 'finish',
+            'up_ready': 'begin', 'up_capture': 'finish',
+            'review': 'save' if self._mount_centered else 'center',
+        }
+        action = actions.get(self._mount_inline_state)
+        if action and self._mount_token:
+            self.app._send_mount_command(action, self._mount_token)
+
+    def _advance_tour(self):
+        if self._tour_complete:
+            self.start_inline_calibration()
+            return
+        self._tour_index += 1
+        if self._tour_index >= len(self.TOUR):
+            self._tour_index = len(self.TOUR) - 1
+            self._tour_complete = True
+        self._tour_started = time.monotonic()
+        self._render_key = None
+
     def advance(self):
-        if self.stage in {"connect", "calibrate"}:
-            if self.app.ble_connected and time.monotonic() - self._sensor_at < 1.5:
-                self.app.open_mount_calibration()
+        if self.stage == 'tour':
+            self._advance_tour()
+        elif self.stage == 'calibrate':
+            self._advance_inline_calibration()
+        elif self.stage == "connect":
+            return
         elif self.stage == "choices":
             if self.tap_choice.get() and not self.app.voice_store.settings.enabled:
                 if not self.app.apply_voice_settings(
@@ -817,10 +911,26 @@ class Interface:
         elif kind == "whip":
             self.hero.strike()
             self._notice, self._notice_until = "收到一鞭", time.monotonic() + 1.3
-        elif kind == "mount_closed" and payload.get("saved"):
-            if self.stage != "ready" and load_mounting_profile(self.app.mounting_path) is not None:
-                self.stage = "choices"
-                self._render_key = None
+        elif kind == "mount_state" and payload.get("token") == self._mount_token:
+            self._mount_inline_state = str(payload.get("stage", "neutral"))
+            self._mount_centered = bool(payload.get("centered", False))
+            self._mount_detail = str(payload.get("detail", ""))
+            self._render_key = None
+        elif kind == "mount_progress" and payload[0] == self._mount_token:
+            angle, stability = payload[1], payload[2]
+            self._mount_detail = (
+                f"{angle:.0f}°  ·  {stability.detail}"
+                if self._mount_inline_state.endswith("_capture") else stability.detail
+            )
+            self._render_key = None
+        elif kind == "mount_closed" and payload.get("token") == self._mount_token:
+            saved = bool(payload.get("saved"))
+            self._mount_token = ""
+            self.app.mode_value.set("安全监听")
+            self.stage = self._calibration_return_stage if saved else (
+                "ready" if self.preferences.setup_complete else "connect")
+            self._mount_detail = ""
+            self._render_key = None
         elif kind == "voice_state":
             self._voice_state = str(payload.get("state", ""))
             if self._voice_state == "empty":
@@ -868,8 +978,12 @@ class Interface:
             self.observe('voice_pending', None)
         connected = a.ble_connected and self.app.worker_loop is not None
         fresh = connected and time.monotonic() - self._sensor_at < 1.5
-        if self.stage in {"connect", "calibrate"}:
-            self.stage = "calibrate" if fresh else "connect"
+        if self.stage == "connect" and fresh:
+            self.stage = "tour"
+            self._tour_index = 0
+            self._tour_complete = False
+            self._tour_started = time.monotonic()
+            self._render_key = None
         notice = self._notice if time.monotonic() < self._notice_until else ""
         title, subtitle, step, primary, progress = "", "", "", "", ""
         mode = "whip"
@@ -880,10 +994,38 @@ class Interface:
             if connected:
                 subtitle = "手柄已连接，正在等待姿态数据。\n若长时间没有变化，请在设置中检查固件与连接。"
             primary, enabled = "等待连接…", False
+        elif self.stage == "tour":
+            mode, title, subtitle = self.TOUR[self._tour_index]
+            step = f"功能演示  {self._tour_index + 1:02d} / {len(self.TOUR):02d}"
+            primary = "开始校准" if self._tour_complete else "下一项"
+            if mode == "strike":
+                mode = "whip"
+                if time.monotonic() - self._tour_started < .15:
+                    self.hero.strike()
+            if self.TOUR[self._tour_index][0] == "clock":
+                mode = "whip"
+                self.hero.clock_enabled = True
+                self.hero._set_clock(True)
+            else:
+                self.hero._set_clock(False)
+            if not self._tour_complete and time.monotonic() - self._tour_started >= 2.8:
+                self._advance_tour()
         elif self.stage == "calibrate":
-            step, title = "02  /  03 · 方向", "用你舒服的方式握住"
-            subtitle = "跟着提示向右转、向上抬，就能认识手柄的方向。\n允许轻微手抖，不用保持完全静止。"
-            primary = "开始方向校准"
+            calibration = {
+                "neutral": (1, "舒服地握住手柄", "像平时使用一样，大致指向屏幕。轻微手抖没关系。", "记录这个姿势"),
+                "right_ready": (2, "向右转动手腕", "点击后自然地向右转动，约 20–40°。", "开始向右转"),
+                "right_capture": (2, "保持向右的位置", "可以有轻微上下晃动，录入前不要转回。", "录入刚才动作"),
+                "up_ready": (3, "向上抬起手腕", "回到自然握姿，点击后向上抬起约 20–40°。", "开始向上抬"),
+                "up_capture": (3, "保持向上的位置", "可以有轻微左右转动，录入前不要放下。", "录入刚才动作"),
+                "review": (4, "看看方向对不对", "恢复平时握姿，左右转、上下抬进行确认。", "方向正确，保存"),
+            }
+            number, title, subtitle, primary = calibration.get(
+                self._mount_inline_state, calibration["neutral"])
+            step = f"校准  {number:02d} / 04"
+            progress = self._mount_detail
+            if self._mount_inline_state == "review" and not self._mount_centered:
+                primary = "归中并试试方向"
+            enabled = connected and bool(self._mount_token)
         elif self.stage == "choices":
             step, title = "03  /  03 · 可选", "让它更懂你的动作"
             subtitle = "可以现在录入，也可以以后再做。\n未录入使用默认参数；已有学习数据会保留。"
@@ -924,12 +1066,13 @@ class Interface:
                 mode = "sleep"
                 dots = sleep_dot_count(time.monotonic() - self._sleep_at)
                 title, subtitle = "deep sleep" + "." * dots, ""
-        if not connected:
+        if not connected and self.stage not in {"tour"}:
             mode = 'connecting'
             title = 'Connecting'
         if self.stage == 'ready' and not (connected and self._pending and self._voice_state not in {'recording','recognizing'}):
             subtitle = ''
-        key = (self.stage, title, subtitle, step, primary, progress, enabled,
+        key = (self.stage, self._tour_index, self._mount_inline_state,
+               title, subtitle, step, primary, progress, enabled,
                a.ble_value.get(), a.mode_value.get(), mode, self._pending)
         if key != self._render_key:
             old_stage = self._render_key[0] if self._render_key else None
@@ -942,7 +1085,9 @@ class Interface:
             self.subtitle.configure(text=subtitle)
             self.subtitle.set_countdown(self._pending_until if subtitle == 'beat it, then send' else None)
             self.step_label.configure(text=step)
-            self.hero.clock_enabled = self.stage == "ready" and connected and not self._pending and mode == 'whip'
+            self.hero.clock_enabled = (
+                self.stage == "tour" and self.TOUR[self._tour_index][0] == "clock"
+            ) or (self.stage == "ready" and connected and not self._pending and mode == 'whip')
             self.hero.set_mode(mode)
             # Reserve room for first-run choices/actions at the minimum window
             # size. The hero yields space before any primary action can clip.
@@ -962,6 +1107,7 @@ class Interface:
             else:
                 self.actions.pack(before=self.progress, pady=(16, 0))
                 self.skip_setup_button.pack(side='left', padx=(0,8))
+                self.skip_setup_button.configure(text="取消" if self.stage == "calibrate" and self.preferences.setup_complete else "跳过引导")
             if self.stage in {"choices", "learning"}:
                 self.skip.configure(text="跳过这组" if self.stage == "learning" else "以后再录入")
                 self.skip.pack(side="left", padx=(0, 12))

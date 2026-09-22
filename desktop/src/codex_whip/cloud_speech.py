@@ -1,4 +1,4 @@
-"""Explicit opt-in ASR presets. No chat rewriting, retries or provider fallback."""
+"""Speech recognition: configured API first, private local fallback second."""
 from __future__ import annotations
 
 import base64
@@ -179,22 +179,51 @@ class SpeechRouter:
             key = self.keys.get(preset)
             if preset == 'doubao-legacy' and key:
                 decode_doubao_credentials(key)
+            return bool(key) or self.local.ready is True
+        except SpeechError:
+            return self.local.ready is True
+
+    def prepare(self, progress=None):
+        if self.store.settings.speech_provider == 'local' or not self._cloud_ready():
+            return self.local.prepare(progress)
+
+    def _cloud_ready(self):
+        provider = self.store.settings.speech_provider
+        if provider == 'local':
+            return False
+        try:
+            key = self.keys.get(provider)
+            if provider == 'doubao-legacy' and key:
+                decode_doubao_credentials(key)
             return bool(key)
         except SpeechError:
             return False
 
-    def prepare(self, progress=None):
-        if self.store.settings.speech_provider == 'local':
-            return self.local.prepare(progress)
-        if not self.ready:
-            raise SpeechError('请在设置 → 输入中填写并保存 API Key')
+    def _local_transcribe(self, sample_rate, pcm, on_started):
+        if not self.local.ready:
+            self.local.prepare()
+        if on_started is None:
+            return self.local.transcribe(sample_rate, pcm)
+        return self.local.transcribe(sample_rate, pcm, on_started=on_started)
 
     def transcribe(self, sample_rate, pcm, *, on_started=None):
         provider = self.store.settings.speech_provider
         if provider == 'local':
-            if on_started is None:
-                return self.local.transcribe(sample_rate, pcm)
-            return self.local.transcribe(sample_rate, pcm, on_started=on_started)
+            return self._local_transcribe(sample_rate, pcm, on_started)
+        if not self._cloud_ready():
+            if self.local.ready is True:
+                return self._local_transcribe(sample_rate, pcm, on_started)
+            raise SpeechError('云端识别未配置，本地识别也尚未就绪')
+        try:
+            return self._transcribe_cloud(provider, sample_rate, pcm, on_started=on_started)
+        except SpeechError:
+            if self.local.ready is not True:
+                raise
+            # Cloud dispatch may already have emitted ``on_started``. Avoid a
+            # duplicate recording-state transition while retrying locally.
+            return self._local_transcribe(sample_rate, pcm, None)
+
+    def _transcribe_cloud(self, provider, sample_rate, pcm, *, on_started=None):
         preset = PRESETS[provider]
         if sample_rate != 16000 or len(pcm) % 2 or len(pcm) > 16000*2*31:
             raise SpeechError('录音格式或长度无效，未上传')

@@ -17,8 +17,7 @@
 - [ ] A non-empty or ambiguous composer causes a visible refusal and no typing.
 - [ ] Double-tap recording, silence handling, transcript filtering, re-recording,
       and next-whip voice submission all pass.
-- [ ] “文字识别”和“Codex 原生听写”互斥切换，保存后下一次双敲立即使用新模式。
-- [ ] BlackHole 2ch 存在时，双敲启停 Codex 听写，声音不会从扬声器播放；
-      找不到已知虚拟设备时明确拒绝且不回退。
-- [ ] 原生听写结束后，下一鞭仅提交 Codex 输入框现有草稿；空草稿不发送。
+- [ ] 已配置语音 API 时优先使用 API；未配置时自动使用本地识别。
+- [ ] 云端识别失败且本地模型已就绪时能完成本地回退，不重复改变录音状态。
+- [ ] 设置页不显示虚拟麦克风、BlackHole 或 Codex 原生听写入口。
 - [ ] Relaunch retains settings, calibration, messages, and overlay position.

@@ -160,3 +160,25 @@ def test_bad_legacy_credentials_never_upload(setup,monkeypatch):
     with pytest.raises(SpeechError):
         router.transcribe(16000,struct.pack('<h',500)*8000)
     opener.assert_not_called()
+
+
+def test_missing_cloud_key_uses_ready_local_recognizer(setup):
+    store, local, keys = setup
+    store.update(replace(store.settings, speech_provider='openai-mini'))
+    keys.get.return_value = ''
+    local.ready = True
+    local.transcribe.return_value = '本地结果'
+    assert SpeechRouter(store, local, keys).transcribe(16000, b'\0\0') == '本地结果'
+
+
+def test_cloud_failure_falls_back_only_when_local_is_already_ready(setup, monkeypatch):
+    store, local, keys = setup
+    store.update(replace(store.settings, speech_provider='openai-mini'))
+    local.ready = True
+    local.transcribe.return_value = '本地后备'
+    opener = Mock()
+    opener.open.side_effect = urllib.error.URLError('offline')
+    monkeypatch.setattr('urllib.request.build_opener', lambda *_: opener)
+    pcm = struct.pack('<h', 500) * 8000
+    assert SpeechRouter(store, local, keys).transcribe(16000, pcm) == '本地后备'
+    assert opener.open.call_count == 1

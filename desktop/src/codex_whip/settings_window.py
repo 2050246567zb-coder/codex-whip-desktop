@@ -166,7 +166,7 @@ class DetectorSettingsWindow:
         header.pack(fill="x", pady=(0, 16))
         self.page_title = tk.Label(
             header,
-            text="偏好设置",
+            text="设置",
             bg=self.BG,
             fg=self.TEXT,
             font=("Microsoft YaHei UI", 20, "bold"),
@@ -179,7 +179,8 @@ class DetectorSettingsWindow:
             fg=self.MUTED,
             font=("Microsoft YaHei UI", 9),
         )
-        self.page_description.pack(anchor="w", pady=(6, 8))
+        # The product page is intentionally self-explanatory. Detailed status
+        # and raw values live only in the hidden developer view.
 
         navigation = tk.Frame(shell, bg=self.BG)
         navigation.pack(fill="x", pady=(0, 14))
@@ -274,7 +275,6 @@ class DetectorSettingsWindow:
             darkcolor=self.ACCENT,
         )
         progress_row = self._learning_progress_row = tk.Frame(learning, bg=self.CARD)
-        progress_row.pack(fill="x")
         self.progress = ttk.Progressbar(
             progress_row,
             style="Whip.Horizontal.TProgressbar",
@@ -303,7 +303,6 @@ class DetectorSettingsWindow:
         )
 
         learning_buttons = self._learning_buttons = tk.Frame(learning, bg=self.CARD)
-        learning_buttons.pack(fill="x", pady=(12, 0))
         self.positive_button = self._button(
             learning_buttons,
             "开始校准",
@@ -350,7 +349,7 @@ class DetectorSettingsWindow:
         self.undo_button.pack(side="right")
 
         tuning = self._sensitivity_row = tk.Frame(learning, bg=self.CARD)
-        tuning.pack(fill="x", before=learning_buttons, pady=(24, 6))
+        tuning.pack(fill="x", pady=(12, 0))
         percent = (self._motion_engine.tolerance_percent
                    if self._motion_engine is not None and self._motion_engine.trained
                    else self._sensitivity.percent)
@@ -364,8 +363,7 @@ class DetectorSettingsWindow:
         self.tolerance_scale.pack(fill="x")
         self.tolerance_scale.bind("<ButtonRelease-1>", self._commit_tolerance, add="+")
         self.tolerance_scale.bind("<KeyRelease>", self._commit_tolerance, add="+")
-        self.detector_advanced = Disclosure(self._detector_panel, "高级设置 · 检测阈值", bg=self.BG)
-        self.detector_advanced.pack(fill="x")
+        self.detector_advanced = Disclosure(self._detector_panel, "开发者参数 · 挥鞭检测", bg=self.BG)
         threshold = self._card(self.detector_advanced.body, padx=18, pady=15)
         threshold.pack(fill="x")
         if self._use_raw_v3 and self._motion_engine is not None:
@@ -531,29 +529,53 @@ class DetectorSettingsWindow:
         self.tolerance_scale.configure(state="disabled" if active else "normal")
         self._learning_progress_row.pack_forget()
         if active:
+            if not self._learning_buttons.winfo_manager():
+                self._learning_buttons.pack(fill="x", pady=(10, 0), before=self._sensitivity_row)
             self._learning_progress_row.pack(fill="x", before=self._learning_buttons)
+        elif self._stage == "idle":
+            self._learning_buttons.pack_forget()
         for button in (self.record_button,self.negative_button,self.skip_button,self.undo_button):
             button.pack_forget()
             if str(button["state"]) != "disabled":
                 button.pack(side="left",padx=(8,0))
 
     def show_group(self, section):
-        """Three groups reuse the existing controls and persistence callbacks."""
-        if section != 'calibration' and self._voice_calibrating:
+        """Compatibility entry point; the product UI is now one page."""
+        self.show_all()
+
+    def show_all(self):
+        """Show only the common-path controls on one continuous page."""
+        if self._voice_calibrating:
             self._cancel_tap_calibration()
-        self.page_title.configure(text={'general':'通用','calibration':'手柄','input':'输入'}[section])
-        self.page_description.configure(text='')
+        self.page_title.configure(text='设置')
         self.page_description.pack_forget()
         panels = (self._power_panel,self._messages_panel,self._voice_panel,self._visual_panel,self._detector_panel,
                   self._calibration_panel,self.voice_feature_card)
         for panel in panels:
             panel.pack_forget()
-        selected = {'general':(self._visual_panel,),
-                    'calibration':(self._power_panel,self._detector_panel,self._calibration_panel),
-                    'input':(self._messages_panel,self.voice_feature_card,self._voice_panel)}[section]
-        for panel in selected:
+        for panel in (self._messages_panel, self.voice_feature_card, self._voice_panel,
+                      self._detector_panel, self._calibration_panel, self._visual_panel):
             panel.pack(fill='x',pady=(0,16))
+        self.detector_advanced.pack_forget()
+        self.voice_advanced.pack_forget()
+        if hasattr(self, 'speech_service'):
+            self.speech_service.card.pack_forget()
         self._sync_learning_controls()
+
+    def show_developer_page(self):
+        """Internal API for Codex/developers; never linked from product UI."""
+        self.page_title.configure(text='开发者设置')
+        self.page_description.configure(text='高级参数会直接影响识别与音频链路。')
+        self.page_description.pack(anchor='w', pady=(6, 8))
+        for panel in (self._power_panel,self._messages_panel,self._voice_panel,self._visual_panel,
+                      self._detector_panel,self._calibration_panel,self.voice_feature_card):
+            panel.pack_forget()
+        self._detector_panel.pack(fill='x', pady=(0,16))
+        self.detector_advanced.pack(fill='x', pady=(0,16))
+        self._voice_panel.pack(fill='x', pady=(0,16))
+        if hasattr(self, 'speech_service'):
+            self.speech_service.card.pack(fill='x', pady=(0,16))
+        self.voice_advanced.pack(fill='x', pady=(0,16))
 
     def _build_power_panel(self, parent: tk.Frame) -> None:
         card = self._card(parent, padx=18, pady=15)
@@ -562,10 +584,6 @@ class DetectorSettingsWindow:
         self.power_status = tk.StringVar(master=self.window, value=self._initial_power_status)
         style.Switch(card, text='省电模式', variable=self.power_enabled,
                      command=self._toggle_power).pack(anchor='w')
-        tk.Label(card, text='静止 5 分钟后省电，明显移动后唤醒', bg=self.CARD,
-                 fg=self.MUTED, font=(style.FONT,9)).pack(anchor='w',pady=(8,0))
-        tk.Label(card, textvariable=self.power_status, bg=self.CARD,
-                 fg=self.MUTED, font=(style.FONT,9)).pack(anchor='w',pady=(4,0))
 
     def _toggle_power(self):
         enabled = self.power_enabled.get()
@@ -578,7 +596,7 @@ class DetectorSettingsWindow:
         card.pack(fill="x", pady=(0, 14))
         tk.Label(
             card,
-            text="PCB 伤口出现频率",
+            text="伤口频率",
             bg=self.CARD,
             fg=self.TEXT,
             font=("Microsoft YaHei UI", 12, "bold"),
@@ -589,17 +607,19 @@ class DetectorSettingsWindow:
             value=str(self._visual_store.settings.strikes_per_wound)
         )
         self.visual_frequency_label = tk.StringVar()
-        self.visual_frequency_value = tk.DoubleVar(value=min(10, self._visual_store.settings.strikes_per_wound))
+        initial_count = max(1, min(10, self._visual_store.settings.strikes_per_wound or 1))
+        self.visual_frequency_value = tk.DoubleVar(value=round(100 / initial_count))
         def frequency_changed(value):
-            count = round(value)
+            percent = max(10, min(100, round(float(value))))
+            count = max(1, min(10, round(100 / percent)))
             self.visual_strikes_per_wound.set(str(count))
-            self.visual_frequency_label.set('每次抽打都出现' if count <= 1 else f'每 {count} 次抽打出现一次')
+            self.visual_frequency_label.set(f'{percent}%')
         frequency_changed(self.visual_frequency_value.get())
         tk.Label(row, textvariable=self.visual_frequency_label, bg=self.CARD, fg=self.TEXT,
                  font=('Microsoft YaHei UI',10,'bold')).pack(anchor='w')
-        self.visual_frequency_slider = TickSlider(row, minimum=0, maximum=10,
+        self.visual_frequency_slider = TickSlider(row, minimum=10, maximum=100,
             variable=self.visual_frequency_value, command=frequency_changed,
-            ticks=(0,2,5,8,10), formatter=lambda v:f'{v:.0f}', bg=self.CARD)
+            ticks=(10,25,50,75,100), formatter=lambda v:f'{v:.0f}%', bg=self.CARD)
         self.visual_frequency_slider.pack(fill='x')
 
         footer = tk.Frame(card, bg=self.CARD)
@@ -646,7 +666,7 @@ class DetectorSettingsWindow:
         self.voice_enabled = tk.BooleanVar(value=settings.enabled)
         style.Switch(
             title,
-            text="开启双敲录音",
+            text="",
             variable=self.voice_enabled,
             command=self._save_voice_enabled,
             bg=self.CARD,
@@ -657,11 +677,26 @@ class DetectorSettingsWindow:
             font=("Microsoft YaHei UI", 9, "bold"),
             cursor="hand2",
         ).pack(side="right")
-        self._button(enabled_card, '调整最低冲击…', lambda: self._select_section('calibration'), self.CARD_ALT,self.TEXT).pack(anchor='w',pady=(12,0))
+
+        percent = self._gain_to_percent(settings.recording_gain)
+        self.voice_sensitivity_value = tk.DoubleVar(value=percent)
+        self.voice_sensitivity_label = tk.StringVar(value=f'识别灵敏度  {percent:.0f}%')
+        tk.Label(enabled_card, textvariable=self.voice_sensitivity_label, bg=self.CARD,
+                 fg=self.TEXT, font=(style.FONT,10,'bold')).pack(anchor='w', pady=(20,4))
+        self.voice_sensitivity_slider = TickSlider(
+            enabled_card, minimum=0, maximum=100, variable=self.voice_sensitivity_value,
+            ticks=(0,25,50,75,100), formatter=lambda value:f'{value:.0f}%', bg=self.CARD,
+            command=lambda value:self.voice_sensitivity_label.set(
+                f'识别灵敏度  {float(value):.0f}%'))
+        self.voice_sensitivity_slider.pack(fill='x')
+        self.voice_sensitivity_slider.bind('<ButtonRelease-1>', self._commit_voice_sensitivity, add='+')
+        self.voice_sensitivity_slider.bind('<KeyRelease>', self._commit_voice_sensitivity, add='+')
+
         from .speech_settings import SpeechServiceCard
         self.speech_service = SpeechServiceCard(parent, self._voice_store, self._apply_voice_settings)
+        self.speech_service.card.pack_forget()
 
-        self.voice_advanced = Disclosure(parent, "高级设置 · 录音参数", bg=self.BG)
+        self.voice_advanced = Disclosure(parent, "开发者参数 · 录音", bg=self.BG)
         tuning = self._card(self.voice_advanced.body, padx=18, pady=15)
         tuning.pack(fill="x")
         tk.Label(
@@ -736,7 +771,8 @@ class DetectorSettingsWindow:
             "#17120A",
         )
         self.voice_record_button.configure(state="disabled")
-        self.voice_advanced.pack(fill="x", pady=(14, 0))
+        # Kept alive for the programmatic developer page, never shown in the
+        # normal settings flow.
 
     def _save_voice_enabled(self):
         if self._apply_voice_settings is None:
@@ -744,6 +780,26 @@ class DetectorSettingsWindow:
         current = self._voice_store.settings
         if not self._apply_voice_settings(replace(current, enabled=bool(self.voice_enabled.get()))):
             self.voice_enabled.set(current.enabled)
+
+    @staticmethod
+    def _gain_to_percent(gain):
+        return max(0.0, min(100.0, (float(gain) - 1.0) / 7.0 * 100.0))
+
+    @staticmethod
+    def _percent_to_gain(percent):
+        return 1.0 + max(0.0, min(100.0, float(percent))) / 100.0 * 7.0
+
+    def _commit_voice_sensitivity(self, _event=None):
+        if self._voice_store is None or self._apply_voice_settings is None:
+            return False
+        current = self._voice_store.settings
+        updated = replace(current, input_mode='transcription',
+                          recording_gain=self._percent_to_gain(self.voice_sensitivity_value.get()))
+        if not self._apply_voice_settings(updated):
+            value = self._gain_to_percent(current.recording_gain)
+            self.voice_sensitivity_slider.set(value)
+            return False
+        return True
 
     def _read_voice_settings(self) -> VoiceSettings:
         current = self._voice_store.settings if self._voice_store else VoiceSettings()
@@ -784,27 +840,24 @@ class DetectorSettingsWindow:
         card.pack(fill='x', pady=(0, 16))
         tk.Label(card, text='双敲识别', bg=self.CARD, fg=self.TEXT,
                  font=('Microsoft YaHei UI', 12, 'bold')).pack(anchor='w')
-        tk.Label(card, text='由 LSM6DS3TR-C 的 ST 硬件状态机识别。两次冲击只需在 1 秒内，不限制最短间隔。', bg=self.CARD,
-                 fg=self.MUTED, font=('Microsoft YaHei UI', 9)).pack(anchor='w', pady=(6,18))
         settings = self._voice_store.settings if self._voice_store else VoiceSettings()
         minimum = self._tap_minimum_value(settings)
         self.tap_minimum = tk.DoubleVar(master=self.window, value=minimum)
-        self.tap_minimum_label = tk.StringVar(master=self.window, value=f'最低冲击：{minimum:.2f} g')
-        ticks = [MIN_HARDWARE_TAP_G, 3.0, 6.0, 9.0, 12.0]
-        formatter = lambda value: f'{value:.1f} g' if value == MIN_HARDWARE_TAP_G else f'{value:.0f} g'
+        percent = self._tap_minimum_to_percent(minimum)
+        self.tap_sensitivity = tk.DoubleVar(master=self.window, value=percent)
+        self.tap_minimum_label = tk.StringVar(master=self.window, value=f'灵敏度  {percent:.0f}%')
         tk.Label(card, textvariable=self.tap_minimum_label, bg=self.CARD, fg=self.TEXT,
                  font=('Microsoft YaHei UI',10,'bold')).pack(anchor='w')
         self.tap_minimum_slider = TickSlider(
-            card, minimum=MIN_HARDWARE_TAP_G, maximum=12.0, variable=self.tap_minimum,
-            ticks=ticks, formatter=formatter, command=self._tap_minimum_changed, bg=self.CARD)
-        self.tap_minimum_slider.pack(fill='x', pady=(0,16))
+            card, minimum=0, maximum=100, variable=self.tap_sensitivity,
+            ticks=(0,25,50,75,100), formatter=lambda value:f'{value:.0f}%',
+            command=self._tap_minimum_changed, bg=self.CARD)
+        self.tap_minimum_slider.pack(fill='x')
         self.tap_minimum_slider.bind('<ButtonRelease-1>', self._commit_tap_minimum, add='+')
         self.tap_minimum_slider.bind('<KeyRelease>', self._commit_tap_minimum, add='+')
         effective = self._effective_tap_threshold(minimum)
         self.tap_range_status = tk.StringVar(value=(
             f'芯片实际阈值：{effective:.1f} g · 双敲窗口固定 1 秒'))
-        tk.Label(card, textvariable=self.tap_range_status, bg=self.CARD, fg=self.MUTED,
-                 font=('Microsoft YaHei UI',9)).pack(anchor='w')
 
     @staticmethod
     def _tap_minimum_value(settings):
@@ -817,14 +870,27 @@ class DetectorSettingsWindow:
         import math
         return min(12.0, math.ceil(float(minimum) * 2.0 - 1e-9) / 2.0)
 
+    @staticmethod
+    def _tap_minimum_to_percent(minimum):
+        return max(0.0, min(100.0, (12.0 - float(minimum)) / (12.0 - MIN_HARDWARE_TAP_G) * 100.0))
+
+    @staticmethod
+    def _tap_percent_to_minimum(percent):
+        value = max(0.0, min(100.0, float(percent)))
+        return 12.0 - value / 100.0 * (12.0 - MIN_HARDWARE_TAP_G)
+
     def _set_tap_minimum(self, minimum):
-        self.tap_minimum_slider.set(minimum)
-        self._tap_minimum_changed(minimum)
+        self.tap_minimum.set(minimum)
+        percent = self._tap_minimum_to_percent(minimum)
+        self.tap_minimum_slider.set(percent)
+        self._tap_minimum_changed(percent)
 
     def _tap_minimum_changed(self, value):
-        self.tap_minimum_label.set(f'最低冲击：{float(value):.2f} g')
+        minimum = self._tap_percent_to_minimum(value)
+        self.tap_minimum.set(minimum)
+        self.tap_minimum_label.set(f'灵敏度  {float(value):.0f}%')
         self.tap_range_status.set(
-            f'芯片实际阈值：{self._effective_tap_threshold(value):.1f} g · 双敲窗口固定 1 秒')
+            f'芯片实际阈值：{self._effective_tap_threshold(minimum):.1f} g · 双敲窗口固定 1 秒')
 
     def _commit_tap_minimum(self, _event=None):
         if self._voice_store is None or self._apply_voice_settings is None:
@@ -872,8 +938,10 @@ class DetectorSettingsWindow:
     def refresh_voice_settings(self, settings: VoiceSettings) -> None:
         self.voice_enabled.set(settings.enabled)
         if hasattr(self, "speech_service"):
-            self.speech_service.mode.set(settings.input_mode)
+            self.speech_service.mode.set('transcription')
             self.speech_service.mode_changed()
+        if hasattr(self, 'voice_sensitivity_slider'):
+            self.voice_sensitivity_slider.set(self._gain_to_percent(settings.recording_gain))
         for name, variable in self._voice_variables.items():
             variable.set(str(getattr(settings, name)))
         self._voice_calibrating = False
@@ -906,25 +974,10 @@ class DetectorSettingsWindow:
             font=("Microsoft YaHei UI", 12, "bold"),
         ).pack(side="left")
         self.message_order = tk.StringVar(value=self._message_store.profile.order)
-        for value, label in (("sequential", "顺序发送"), ("random", "随机发送")):
-            tk.Radiobutton(
-                order,
-                text=label,
-                value=value,
-                variable=self.message_order,
-                indicatoron=False,
-                selectcolor=style.SELECTED,
-                bg=self.CARD_ALT,
-                fg=self.TEXT,
-                activebackground=style.SELECTED,
-                activeforeground=self.TEXT,
-                relief="flat",
-                bd=0,
-                padx=15,
-                pady=7,
-                cursor="hand2",
-                font=("Microsoft YaHei UI", 8, "bold"),
-            ).pack(side="right", padx=(8, 0))
+        self.message_order_button = style.ActionButton(
+            order, self._message_order_icon(), self._toggle_message_order)
+        self.message_order_button.configure(font=("Segoe UI Symbol", 13), takefocus=True)
+        self.message_order_button.pack(side="right")
 
 
         title_row = tk.Frame(messages, bg=self.CARD)
@@ -944,8 +997,9 @@ class DetectorSettingsWindow:
             font=("Microsoft YaHei UI", 8),
         ).pack(side="right")
 
-        list_shell = tk.Frame(messages, bg=self.CARD)
+        list_shell = self._message_list_shell = tk.Frame(messages, bg=self.CARD)
         list_shell.pack(fill="both", expand=True)
+        messages.bind('<Configure>', self._resize_message_shell, add='+')
         self._message_canvas = tk.Canvas(
             list_shell,
             bg=self.CARD,
@@ -985,20 +1039,25 @@ class DetectorSettingsWindow:
         footer = tk.Frame(messages, bg=self.CARD)
         footer.pack(fill="x", pady=(12, 0))
         self.message_status = tk.StringVar(value="修改后点击保存，下一次挥鞭立即生效")
-        tk.Label(
-            footer,
-            textvariable=self.message_status,
-            bg=self.CARD,
-            fg=self.MUTED,
-            anchor="w",
-            font=("Microsoft YaHei UI", 8),
-        ).pack(side="left", fill="x", expand=True)
         self._button(
             footer, "添加消息", self._add_message, self.CARD_ALT, self.TEXT
         ).pack(side="right", padx=(8, 0))
         self._button(
             footer, "保存消息设置", self._save_messages, self.GREEN, "#07130D"
         ).pack(side="right")
+
+    def _message_order_icon(self):
+        return '↕' if self.message_order.get() == 'sequential' else '⤨'
+
+    def _toggle_message_order(self):
+        self.message_order.set('random' if self.message_order.get() == 'sequential' else 'sequential')
+        self.message_order_button.configure(text=self._message_order_icon())
+        self._save_messages()
+
+    def _resize_message_shell(self, event):
+        # Keep the editable column at 70% and center it inside the card.
+        inset = max(0, round(float(event.width) * .15))
+        self._message_list_shell.pack_configure(padx=(inset, inset))
 
     def _update_message_scrollbar(self, _event: tk.Event | None = None) -> None:
         # One page scrollbar: nested scrollbars clip the final action column
