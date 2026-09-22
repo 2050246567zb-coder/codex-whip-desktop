@@ -19,6 +19,7 @@ from . import __version__
 from .app import sample_event
 from .audio import system_beep
 from .ble_client import BleWhipClient
+from .ble_preference import BleDevicePreferenceStore
 from .calibration import (
     DetectorProfile,
     LearningSample,
@@ -766,6 +767,7 @@ class CodexWhipWindow:
             state_handler=lambda state: self.emit("ble", state),
             command_queue=command_queue,
             device_handler=processor.select_sensor_device,
+            device_preference=BleDevicePreferenceStore(),
         )
         try:
             async def handle_with_meter(message: ProtocolMessage) -> None:

@@ -11,6 +11,7 @@ from pathlib import Path
 from . import __version__
 from .app import EventProcessor, sample_event
 from .ble_client import BleWhipClient
+from .ble_preference import BleDevicePreferenceStore
 from .gate import EventGate
 from .messages import PromptSelector
 from .senders import DryRunSender, create_live_sender
@@ -70,7 +71,9 @@ async def _run(settings: Settings, live: bool) -> None:
     print(f"Codex Whip {__version__} | {mode}")
     if live:
         print("Live mode is armed: an accepted WHIP event can submit one Codex prompt.")
-    client = BleWhipClient(settings.ble)
+    client = BleWhipClient(
+        settings.ble, device_preference=BleDevicePreferenceStore()
+    )
     await client.run(_processor(settings, live).handle, stop)
 
 
