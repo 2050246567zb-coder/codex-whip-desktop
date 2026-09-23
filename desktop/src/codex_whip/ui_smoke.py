@@ -66,6 +66,8 @@ def main(argv=None) -> int:
             app.ui.open_preferences("calibration")
             app.ui.settings.geometry("1060x820+100+40")
             settle_and_capture("02a-hardware-tap-settings", .3, app.ui.settings)
+            app.ui._advanced_canvas.yview_moveto(.31)
+            settle_and_capture("02a-voice-settings", .2, app.ui.settings)
             app.ui._advanced_canvas.yview_moveto(.43)
             settle_and_capture("02a-settings-middle", .2, app.ui.settings)
             app.ui._advanced_canvas.yview_moveto(1.0)

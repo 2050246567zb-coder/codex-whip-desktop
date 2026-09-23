@@ -668,37 +668,39 @@ class DetectorSettingsWindow:
             font=("Microsoft YaHei UI", 12, "bold"),
         ).pack(side="left")
         self.voice_enabled = tk.BooleanVar(value=settings.enabled)
+        self.voice_precise_recognition = tk.BooleanVar(value=settings.precise_recognition)
+        switches = tk.Frame(enabled_card, bg=self.CARD)
+        switches.pack(anchor="w", pady=(15, 0))
         style.Switch(
-            title,
-            text="",
+            switches,
+            text="输入开关",
             variable=self.voice_enabled,
             command=self._save_voice_enabled,
-            bg=self.CARD,
-            activebackground=self.CARD,
-            fg=self.TEXT,
-            activeforeground=self.TEXT,
-            selectcolor=self.CARD_ALT,
-            font=("Microsoft YaHei UI", 9, "bold"),
-            cursor="hand2",
-        ).pack(side="right")
-        tk.Label(
-            enabled_card,
-            text="豆包 2.0 · 本地备用",
-            bg=self.CARD,
-            fg=self.MUTED,
-            font=(style.FONT, 9),
-        ).pack(anchor="w", pady=(8, 0))
+        ).pack(side="left", padx=(0, 24))
+        style.Switch(
+            switches,
+            text="精准识别",
+            variable=self.voice_precise_recognition,
+            command=self._save_voice_precision,
+        ).pack(side="left")
 
         percent = self._gain_to_percent(settings.recording_gain)
         self.voice_sensitivity_value = tk.DoubleVar(value=percent)
-        self.voice_sensitivity_label = tk.StringVar(value=f'识别灵敏度  {percent:.0f}%')
-        tk.Label(enabled_card, textvariable=self.voice_sensitivity_label, bg=self.CARD,
-                 fg=self.TEXT, font=(style.FONT,10,'bold')).pack(anchor='w', pady=(20,4))
+        self.voice_sensitivity_label = tk.StringVar(value=f'{percent:.0f}%')
+        gain_header = tk.Frame(enabled_card, bg=self.CARD)
+        gain_header.pack(fill='x', pady=(20, 4))
+        tk.Label(gain_header, text='录音识别增益', bg=self.CARD,
+                 fg=self.TEXT, font=(style.FONT, 10, 'bold')).pack(side='left')
+        tk.Label(gain_header, textvariable=self.voice_sensitivity_label, bg=self.CARD,
+                 fg=self.TEXT, font=(style.FONT, 10, 'bold')).pack(side='left', padx=(8, 0))
+        tk.Label(gain_header,
+                 text='（增大收音音量，识别可能会更准确，但也更容易被杂音影响）',
+                 bg=self.CARD, fg=self.MUTED,
+                 font=(style.FONT, 9)).pack(side='left', padx=(8, 0))
         self.voice_sensitivity_slider = TickSlider(
             enabled_card, minimum=0, maximum=100, variable=self.voice_sensitivity_value,
             ticks=(0,25,50,75,100), formatter=lambda value:f'{value:.0f}%', bg=self.CARD,
-            command=lambda value:self.voice_sensitivity_label.set(
-                f'识别灵敏度  {float(value):.0f}%'))
+            command=lambda value:self.voice_sensitivity_label.set(f'{float(value):.0f}%'))
         self.voice_sensitivity_slider.pack(fill='x')
         self.voice_sensitivity_slider.bind('<ButtonRelease-1>', self._commit_voice_sensitivity, add='+')
         self.voice_sensitivity_slider.bind('<KeyRelease>', self._commit_voice_sensitivity, add='+')
@@ -792,6 +794,14 @@ class DetectorSettingsWindow:
         if not self._apply_voice_settings(replace(current, enabled=bool(self.voice_enabled.get()))):
             self.voice_enabled.set(current.enabled)
 
+    def _save_voice_precision(self):
+        if self._apply_voice_settings is None:
+            return
+        current = self._voice_store.settings
+        requested = bool(self.voice_precise_recognition.get())
+        if not self._apply_voice_settings(replace(current, precise_recognition=requested)):
+            self.voice_precise_recognition.set(current.precise_recognition)
+
     @staticmethod
     def _gain_to_percent(gain):
         return max(0.0, min(100.0, (float(gain) - 1.0) / 7.0 * 100.0))
@@ -816,6 +826,7 @@ class DetectorSettingsWindow:
         current = self._voice_store.settings if self._voice_store else VoiceSettings()
         values: dict[str, object] = {
             "enabled": bool(self.voice_enabled.get()),
+            "precise_recognition": bool(self.voice_precise_recognition.get()),
             "max_pulse_ms": current.max_pulse_ms,
         }
         integer_fields = {
@@ -950,6 +961,7 @@ class DetectorSettingsWindow:
 
     def refresh_voice_settings(self, settings: VoiceSettings) -> None:
         self.voice_enabled.set(settings.enabled)
+        self.voice_precise_recognition.set(settings.precise_recognition)
         if hasattr(self, "speech_service"):
             self.speech_service.mode.set('transcription')
             self.speech_service.mode_changed()

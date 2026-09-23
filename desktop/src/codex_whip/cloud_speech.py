@@ -158,6 +158,8 @@ class SpeechRouter:
 
     @property
     def ready(self):
+        if not self.store.settings.precise_recognition:
+            return self.local.ready is True
         preset = self.store.settings.speech_provider
         try:
             key = self.keys.get(preset)
@@ -170,6 +172,8 @@ class SpeechRouter:
             return self.local.prepare(progress)
 
     def _cloud_ready(self):
+        if not self.store.settings.precise_recognition:
+            return False
         provider = self.store.settings.speech_provider
         try:
             return bool(self.keys.get(provider))

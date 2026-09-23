@@ -234,6 +234,38 @@ def test_hardware_tap_minimum_slider_is_the_only_tap_control(root: tk.Tk, tmp_pa
         window.close()
 
 
+def test_voice_switches_persist_and_gain_explains_audio_tradeoff(root, tmp_path):
+    store = VoiceSettingsStore(tmp_path / 'voice.json')
+
+    def apply(settings):
+        store.update(settings)
+        return True
+
+    window = DetectorSettingsWindow(
+        root, DetectorProfile(), lambda _: True, lambda _: True,
+        voice_store=store, apply_voice_settings=apply,
+    )
+    try:
+        window.voice_enabled.set(True)
+        window._save_voice_enabled()
+        window.voice_precise_recognition.set(False)
+        window._save_voice_precision()
+        restored = VoiceSettingsStore(tmp_path / 'voice.json').settings
+        assert restored.enabled is True
+        assert restored.precise_recognition is False
+        assert window.voice_sensitivity_label.get().endswith('%')
+        card = window.voice_sensitivity_slider.master
+        text = [label.cget('text')
+                for frame in card.winfo_children() if isinstance(frame, tk.Frame)
+                for label in frame.winfo_children() if isinstance(label, tk.Label)]
+        assert '录音识别增益' in text
+        assert any('杂音影响' in value for value in text)
+        window.refresh_voice_settings(restored)
+        assert window.voice_precise_recognition.get() is False
+    finally:
+        window.close()
+
+
 def test_untrained_sensitivity_updates_real_thresholds_and_reopens(root, tmp_path, monkeypatch):
     from codex_whip.calibration import save_profile, load_profile
     monkeypatch.setenv('CODEX_WHIP_DATA_DIR', str(tmp_path))
