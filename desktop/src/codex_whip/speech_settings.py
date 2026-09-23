@@ -150,7 +150,8 @@ class SpeechServiceCard:
         self.key_label.configure(text='API Key')
         self.key_row.pack(fill='x',pady=(16,0),before=self.notice)
         self.delete_button.pack_forget()
-        self.notice.configure(text='豆包录音文件识别 2.0 优先；服务不可用时自动切换本地识别。')
+        self.notice.configure(text=('豆包录音文件识别 2.0 优先；服务不可用时自动切换本地识别。'
+                                    if self.store.settings.precise_recognition else '当前只使用本地识别。'))
         try:
             saved = bool(self.keys.get(self.selected))
             self.status.set('安装包内置密钥已就绪' if bundled_doubao_key()
@@ -215,8 +216,6 @@ class SpeechServiceCard:
         try:
             if self.mode.get() == 'transcription':
                 credential = self.key.get().strip()
-                if not credential and not self.keys.get(preset):
-                    raise SpeechError('请填写 API Key，或在打包前写入内置 Key 文件')
                 if preset != self.store.settings.speech_provider and not messagebox.askyesno(
                         '启用云端语音识别', f'之后的录音将上传至 {self.labels[preset]} 进行转写，可能产生费用。\n是否启用？',
                         parent=self.card.winfo_toplevel()):
@@ -227,7 +226,8 @@ class SpeechServiceCard:
                     self.store.settings, input_mode='transcription',
                     speech_provider=preset, recording_gain=self.gain.get())):
                 self.key.set('')
-                self.status.set('已保存 · 下次录音生效，失败时自动切换本地识别')
+                self.status.set('已保存 · 下次录音生效')
+                self.changed()
         except (SpeechError,OSError,ValueError) as exc:
             self.status.set(str(exc))
 
