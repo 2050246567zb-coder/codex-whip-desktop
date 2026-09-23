@@ -1,6 +1,7 @@
 """Reuse home animation primitives without feeding presentation into IMU physics."""
 import tkinter as tk
 import time
+import sys
 from PIL import Image, ImageTk, ImageChops
 from .effects import WhipPose
 from .interface import Hero, BG
@@ -26,6 +27,7 @@ class OverlayPresentation:
         self.text_items = [self.canvas.create_image(0,0,anchor='n') for _ in range(2)]
         self.photos = [None,None]
         self.text_keys = [None,None]
+        self.canvas._native_image_sizes = getattr(self.canvas, "_native_image_sizes", {})
         self.normal_title = 'just beat it'
         self.offset = (0.,0.)
         self.hit_pose = effects.IDLE
@@ -117,7 +119,12 @@ class OverlayPresentation:
         bottom = max(p[1] for p in (pose.handle_start,pose.handle_end,*pose.cord)) + oy + 20
         dial = self.hero._clock_alpha
         bottom = bottom*(1-dial)+(400+oy)*dial
+        ordinary = (self.hero.mode == 'whip' and not self.hero._clock_hover
+                    and not self.subtitle.cget('text') and self.normal_title == 'just beat it')
         for index,label in enumerate((self.title,self.subtitle)):
+            self.canvas.itemconfigure(self.text_items[index], state='hidden' if ordinary else 'normal')
+            if ordinary:
+                continue
             mask = label._mask
             deadline = getattr(label,'_deadline',None)
             key = (id(mask),deadline, getattr(label,'_fade_gray',False))
@@ -131,8 +138,14 @@ class OverlayPresentation:
                 surface.putalpha(alpha)
                 # Color-key windows cannot display partial alpha reliably. Render
                 # a clean ink mask, with no magenta/white rectangle around text.
-                surface = surface.resize((360,round(mask.height*360/mask.width)),Image.Resampling.LANCZOS)
-                surface.putalpha(surface.getchannel('A').point(lambda v:255 if v>=100 else 0))
+                logical_size = (360, round(mask.height*360/mask.width))
+                if sys.platform == 'darwin':
+                    # Keep the original oversampled glyph mask. AppKit maps it
+                    # to logical points and samples at the display's backing scale.
+                    self.canvas._native_image_sizes[self.text_items[index]] = logical_size
+                else:
+                    surface = surface.resize(logical_size,Image.Resampling.LANCZOS)
+                    surface.putalpha(surface.getchannel('A').point(lambda v:255 if v>=100 else 0))
                 self.photos[index] = ImageTk.PhotoImage(surface,master=self.canvas)
                 self.canvas.itemconfigure(self.text_items[index],image=self.photos[index])
                 self.text_keys[index] = key
@@ -143,6 +156,7 @@ class OverlayPresentation:
         for _,item in self.items:
             self.canvas.delete(item)
         for item in self.text_items:
+            self.canvas._native_image_sizes.pop(item, None)
             self.canvas.delete(item)
         self.hero.close()
         self.title.destroy()

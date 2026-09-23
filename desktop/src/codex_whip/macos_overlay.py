@@ -97,7 +97,7 @@ class WhipOverlayView(AppKit.NSView):
             if kind == 'image':
                 image = options['image']
                 x, y = coordinates
-                width, height = image.size()
+                width, height = options.get('logical_size', image.size())
                 anchor = options['anchor']
                 if 'w' not in anchor:
                     x -= width if 'e' in anchor else width / 2
@@ -205,7 +205,8 @@ class NativeCanvasOverlay:
                     self._images[name] = AppKit.NSImage.alloc().initWithData_(data)
                 if self._images[name] is not None:
                     result.append((kind, coordinates, {'image': self._images[name],
-                        'anchor': canvas.itemcget(item, 'anchor')}))
+                        'anchor': canvas.itemcget(item, 'anchor'),
+                        'logical_size': getattr(canvas, '_native_image_sizes', {}).get(item, self._images[name].size())}))
             elif kind == 'text':
                 import tkinter.font
                 font = tkinter.font.Font(root=canvas, font=canvas.itemcget(item, 'font'))
