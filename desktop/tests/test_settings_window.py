@@ -1,4 +1,5 @@
 import tkinter as tk
+import time
 
 import pytest
 
@@ -283,8 +284,10 @@ def test_message_settings_autosaves_edit_add_and_order(root: tk.Tk, tmp_path) ->
         text.insert("1.0", "edited")
         root.update()
         assert window._message_save_after is not None
-        root.after(380, root.quit)
-        root.mainloop()
+        deadline = time.monotonic() + 1.5
+        while window._message_save_after is not None and time.monotonic() < deadline:
+            root.update()
+            time.sleep(.01)
         assert store.profile.messages == ("edited", "second")
         assert window._message_save_after is None
         window._add_message()
