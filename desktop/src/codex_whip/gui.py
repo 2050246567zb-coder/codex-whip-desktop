@@ -57,6 +57,8 @@ from .mount_profile import default_mounting_path, load_mounting_profile, save_mo
 from .mount_calibration import DirectionCalibration
 from .mount_calibration_window import MountCalibrationWindow
 from .voice import (
+    MAX_HARDWARE_TAP_G,
+    MIN_HARDWARE_TAP_G,
     VoiceModule,
     VoiceSettings,
     VoiceSettingsStore,
@@ -977,11 +979,12 @@ class CodexWhipWindow:
 
     @staticmethod
     def _hardware_tap_minimum(settings: VoiceSettings) -> float:
-        return (
+        requested = (
             settings.tap_light_g
             if settings.tap_force_calibrated and settings.tap_light_g >= 0.5
             else settings.impact_dynamic_accel_g
         )
+        return max(MIN_HARDWARE_TAP_G, min(MAX_HARDWARE_TAP_G, requested))
 
     def apply_visual_settings(self, settings: VisualSettings) -> bool:
         try:

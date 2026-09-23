@@ -20,7 +20,12 @@ from .calibration import (
 )
 from .motion_v3 import MotionEngine, MotionTemplate
 from .messages import MessageProfile, MessageProfileStore, reorder_messages
-from .voice import VoiceSettings, VoiceSettingsStore
+from .voice import (
+    MAX_HARDWARE_TAP_G,
+    MIN_HARDWARE_TAP_G,
+    VoiceSettings,
+    VoiceSettingsStore,
+)
 from .visual_settings import (
     MAX_SCARE_BLACKOUT_MS,
     MAX_SCARE_EYES_MS,
@@ -40,7 +45,6 @@ ApplyVisualSettings = Callable[[VisualSettings], bool]
 StartVoiceCalibration = Callable[[], bool]
 RecordVoiceCalibration = Callable[[], bool]
 CancelVoiceCalibration = Callable[[], None]
-MIN_HARDWARE_TAP_G = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -870,21 +874,23 @@ class DetectorSettingsWindow:
     def _tap_minimum_value(settings):
         minimum = (settings.tap_light_g if settings.tap_force_calibrated
                    and settings.tap_light_g >= .25 else settings.impact_dynamic_accel_g)
-        return max(MIN_HARDWARE_TAP_G, min(12.0, minimum))
+        return max(MIN_HARDWARE_TAP_G, min(MAX_HARDWARE_TAP_G, minimum))
 
     @staticmethod
     def _effective_tap_threshold(minimum):
         import math
-        return min(12.0, math.ceil(float(minimum) * 2.0 - 1e-9) / 2.0)
+        return min(MAX_HARDWARE_TAP_G, math.ceil(float(minimum) * 2.0 - 1e-9) / 2.0)
 
     @staticmethod
     def _tap_minimum_to_percent(minimum):
-        return max(0.0, min(100.0, (12.0 - float(minimum)) / (12.0 - MIN_HARDWARE_TAP_G) * 100.0))
+        span = MAX_HARDWARE_TAP_G - MIN_HARDWARE_TAP_G
+        return max(0.0, min(100.0, (MAX_HARDWARE_TAP_G - float(minimum)) / span * 100.0))
 
     @staticmethod
     def _tap_percent_to_minimum(percent):
         value = max(0.0, min(100.0, float(percent)))
-        return 12.0 - value / 100.0 * (12.0 - MIN_HARDWARE_TAP_G)
+        span = MAX_HARDWARE_TAP_G - MIN_HARDWARE_TAP_G
+        return MAX_HARDWARE_TAP_G - value / 100.0 * span
 
     def _set_tap_minimum(self, minimum):
         self.tap_minimum.set(minimum)
