@@ -39,6 +39,7 @@ def main(argv=None) -> int:
         app = CodexWhipWindow(root, Settings(), None)
         root.geometry("560x660+80+80")
         app.ui.stage = "ready"
+        app._restore_send_state()
 
         def settle_and_capture(name, delay=1.2, widget=None):
             until = time.monotonic() + delay

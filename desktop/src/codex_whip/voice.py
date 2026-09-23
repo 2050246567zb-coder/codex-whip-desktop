@@ -99,7 +99,7 @@ IMA_INDEX_TABLE = (-1, -1, -1, -1, 2, 4, 6, 8)
 
 @dataclass(frozen=True, slots=True)
 class VoiceSettings:
-    enabled: bool = False
+    enabled: bool = True
     input_mode: str = "transcription"
     speech_provider: str = 'doubao-v2'
     precise_recognition: bool = True
