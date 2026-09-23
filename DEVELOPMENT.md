@@ -17,7 +17,7 @@ are implemented separately so each platform can use its native APIs.
 
 Firmware does not guess the host from a BLE address or MTU. After connecting,
 the desktop detects `sys.platform` and automatically negotiates `HOST,WINDOWS`,
-`HOST,MACOS`, `HOST,LINUX`, or `HOST,COMPATIBLE`. Firmware 0.8.0 then selects
+`HOST,MACOS`, `HOST,LINUX`, or `HOST,COMPATIBLE`. Firmware 0.8.1 then selects
 the matching connection interval and motion batch policy. This is invisible to
 the user and preserves compatibility with older firmware that does not advertise
 the `HOST_PROFILE` capability.
@@ -44,8 +44,8 @@ The build script creates `macos/.venv-macos`, compiles the pinned
 `whisper.cpp` 1.8.1 runtime when needed, and produces:
 
 - `macos/dist/CodexWhip.app`
-- `macos/dist/CodexWhip-2.2.63-Apple-Silicon.dmg`
-- `macos/dist/CodexWhip-2.2.63-Apple-Silicon.zip`
+- `macos/dist/CodexWhip-2.2.64-Apple-Silicon.dmg`
+- `macos/dist/CodexWhip-2.2.64-Apple-Silicon.zip`
 
 For an editable development environment with the test dependencies:
 
@@ -76,7 +76,7 @@ On the target Mac, grant CodexWhip:
 - any audio permission requested by the selected voice-input path.
 
 Native dictation and virtual-audio routing are retired from the product flow in
-2.2.63. Voice input uses a configured speech API first and the local recognizer
+2.2.64. Voice input uses a configured speech API first and the local recognizer
 when cloud recognition is not configured or an already-prepared local fallback
 is available.
 
@@ -110,12 +110,12 @@ macos/MACOS_ACCEPTANCE.md        real-Mac and real-controller acceptance list
 ```
 
 The ESP32-C3 + MPU6050 files remain an experimental hardware port. Product
-2.2.63 double-tap behavior is defined only for the original XIAO nRF52840 Sense
+2.2.64 double-tap behavior is defined only for the original XIAO nRF52840 Sense
 and its onboard LSM6DS3TR-C.
 
 ## Shared firmware contract
 
-- Product firmware: `0.8.0`
+- Product firmware: `0.8.1`
 - BLE local name: `CodexWhip`
 - Nordic UART service: `6e400001-b5a3-f393-e0a9-e50e24dcca9e`
 - IMU: onboard LSM6DS3TR-C, ±16 g, ±2000 dps, 416 Hz

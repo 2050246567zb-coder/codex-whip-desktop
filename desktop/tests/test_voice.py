@@ -23,12 +23,12 @@ from codex_whip.voice import (
 )
 
 
-def test_legacy_virtual_microphone_setting_migrates_to_recognition(tmp_path):
+def test_legacy_voice_settings_are_discarded(tmp_path):
     path = tmp_path / "voice.json"
     path.write_text('{"schema_version":1,"input_mode":"virtual_microphone","recording_gain":3}')
     restored = load_voice_settings(path)
     assert restored.input_mode == "transcription"
-    assert restored.recording_gain == 3
+    assert restored.recording_gain == 2
     with pytest.raises(ValueError, match="输入方式"):
         VoiceSettings(input_mode="virtual_microphone").validated()
 

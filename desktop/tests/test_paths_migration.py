@@ -102,7 +102,9 @@ def test_factory_calibration_is_sanitized_and_verified() -> None:
     assert "E2:30:F0:9F:D1:21" not in combined
     voice = json.loads((source / "voice-settings.json").read_text(encoding="utf-8"))
     assert voice["enabled"] is False
-    assert voice["tap_force_calibrated"] is True
+    assert voice["schema_version"] == 2
+    assert voice["tap_force_calibrated"] is False
+    assert voice["impact_dynamic_accel_g"] == 1.0
 
 
 def test_factory_calibration_seeds_empty_profile_and_preserves_user_data(

@@ -34,7 +34,6 @@ class WhipBleTransport {
     if (reliable_) xQueueReset(reliable_);
     if (motion_) xQueueReset(motion_);
     faultEpoch_.store(0);
-    audioFaultEpoch_.store(0);
   }
 
   void discardMotion() { if (motion_) xQueueReset(motion_); }
@@ -51,7 +50,6 @@ class WhipBleTransport {
     Record record;
     record.epoch = epoch;
     record.length = length;
-    record.audio = false;
     memcpy(record.bytes, data, length);
     if (motion) {
       if (uxQueueMessagesWaiting(motion_)) replacedMotion_.fetch_add(1);
@@ -75,15 +73,11 @@ class WhipBleTransport {
     Record record;
     record.epoch = epoch;
     record.length = length;
-    record.audio = true;
     memcpy(record.bytes, data, length);
     return xQueueSend(reliable_, &record, 0) == pdPASS;
   }
 
-  bool consumeAudioFault() {
-    const uint32_t epoch = epoch_.load();
-    return audioFaultEpoch_.exchange(0) == epoch;
-  }
+  bool consumeAudioFault() { return false; }
 
   uint32_t replacedMotion() const { return replacedMotion_.load(); }
   uint32_t longestWriteMs() const { return longestWriteMs_.load(); }
@@ -92,7 +86,6 @@ class WhipBleTransport {
   struct Record {
     uint32_t epoch;
     uint16_t length;
-    bool audio;
     uint8_t bytes[kRecordBytes];
   };
   BLEUart& uart_;
@@ -103,7 +96,6 @@ class WhipBleTransport {
   std::atomic<uint32_t> epoch_{1};
   std::atomic<uint32_t> acceptedEpoch_{0};
   std::atomic<uint32_t> faultEpoch_{0};
-  std::atomic<uint32_t> audioFaultEpoch_{0};
   std::atomic<uint32_t> replacedMotion_{0};
   std::atomic<uint32_t> longestWriteMs_{0};
 
@@ -112,14 +104,12 @@ class WhipBleTransport {
            handle != BLE_CONN_HANDLE_INVALID && Bluefruit.connected(handle);
   }
 
-  enum class TransmitResult : uint8_t { Complete, NoProgress, Partial };
-
-  TransmitResult transmit(const Record& record, uint16_t handle) {
+  bool transmit(const Record& record, uint16_t handle) {
     const uint32_t started = millis();
     size_t offset = 0;
     while (offset < record.length && current(record.epoch, handle)) {
       BLEConnection* connection = Bluefruit.Connection(handle);
-      if (!connection) return offset ? TransmitResult::Partial : TransmitResult::NoProgress;
+      if (!connection) return false;
       size_t limit = connection->getMtu() > 3 ? connection->getMtu() - 3 : 20;
       if (limit > 244) limit = 244;
       const size_t remaining = record.length - offset;
@@ -129,13 +119,12 @@ class WhipBleTransport {
       const uint32_t duration = millis() - before;
       if (duration > longestWriteMs_.load()) longestWriteMs_.store(duration);
       if (sent == chunk) offset += chunk;
-      else if (sent != 0) return TransmitResult::Partial; // Never retry an ambiguous fragment.
-      if (offset == record.length) return TransmitResult::Complete;
-      if (millis() - started >= kSendDeadlineMs)
-        return offset ? TransmitResult::Partial : TransmitResult::NoProgress;
+      else if (sent != 0) return false; // Never retry an ambiguous fragment.
+      if (offset == record.length) return true;
+      if (millis() - started >= kSendDeadlineMs) return false;
       if (!sent) vTaskDelay(pdMS_TO_TICKS(1));
     }
-    return offset ? TransmitResult::Partial : TransmitResult::NoProgress;
+    return false;
   }
 
   static void taskEntry(void* context) {
@@ -170,17 +159,11 @@ class WhipBleTransport {
       if (!found) { vTaskDelay(pdMS_TO_TICKS(1)); continue; }
       const uint16_t sendHandle = handle_.load();
       if (!current(record.epoch, sendHandle)) continue;
-      const TransmitResult result = transmit(record, sendHandle);
-      if (result != TransmitResult::Complete && current(record.epoch, sendHandle)) {
-        if (record.audio && result == TransmitResult::NoProgress) {
-          // A complete self-framing audio packet was not emitted at all. The
-          // main task can close just this recording and keep BLE alive.
-          audioFaultEpoch_.store(record.epoch);
-        } else {
-          // A text record or partial binary frame is ambiguous. Only a fresh
-          // session can safely resume without concatenating records.
-          faultEpoch_.store(record.epoch);
-        }
+      if (!transmit(record, sendHandle) && current(record.epoch, sendHandle)) {
+        // Flow-controlled audio never fills this queue; a failed write means
+        // the peer may have received a partial record, so only a fresh session
+        // can safely resume without concatenating the next packet.
+        faultEpoch_.store(record.epoch);
       }
       taskYIELD();
     }

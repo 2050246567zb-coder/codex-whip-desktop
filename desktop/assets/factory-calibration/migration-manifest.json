@@ -20,8 +20,8 @@
     },
     {
       "path": "voice-settings.json",
-      "size": 461,
-      "sha256": "da033560abf3fffb696a17a296ed834c2ac88f1eaf91410113e9b4917cfb705f"
+      "size": 458,
+      "sha256": "c89ec8dd82885aa3b767e68480ca664c9fd512ba7838909c9eaef4ab3e1aec00"
     },
     {
       "path": "whip-sensitivity.json",
