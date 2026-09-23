@@ -44,8 +44,8 @@ The build script creates `macos/.venv-macos`, compiles the pinned
 `whisper.cpp` 1.8.1 runtime when needed, and produces:
 
 - `macos/dist/CodexWhip.app`
-- `macos/dist/CodexWhip-2.2.66-Apple-Silicon.dmg`
-- `macos/dist/CodexWhip-2.2.66-Apple-Silicon.zip`
+- `macos/dist/CodexWhip-2.2.67-Apple-Silicon.dmg`
+- `macos/dist/CodexWhip-2.2.67-Apple-Silicon.zip`
 
 For an editable development environment with the test dependencies:
 
