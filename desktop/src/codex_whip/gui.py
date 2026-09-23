@@ -1745,8 +1745,8 @@ class CodexWhipWindow:
                         )
                     elif state == "recognizing":
                         system_beep("ok")
-                        self.voice_status_value.set("正在本地识别")
-                        self._append_log("录音接收完成，正在本地识别中文")
+                        self.voice_status_value.set("正在识别语音")
+                        self._append_log("录音接收完成，正在识别中文；完成后记录实际识别来源")
                     elif state == "ready":
                         self.voice_status_value.set("文字已就绪，等待下一鞭")
                     elif state == "dictation_ready":

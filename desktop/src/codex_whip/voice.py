@@ -22,9 +22,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from . import __version__
 from .models import AudioChunk, AudioEnd, AudioStart, RawMotionBatch, RawMotionFrame
 from .motion_v3 import build_motion_features, dtw_distance
 from .paths import user_data_dir, voice_runtime_dir
+from .recognition_history import RecognitionHistory
 
 
 WHISPER_VERSION = "1.8.1"
@@ -968,6 +970,9 @@ class VoiceModule:
         self.transcriber = transcriber or WhisperCppTranscriber()
         self._recording_transcriber = self.transcriber
         self._recording_gain = store.settings.recording_gain
+        self.recognition_history = RecognitionHistory(store.path)
+        self._recognition_record: dict | None = None
+        self._recording_started_at = 0.0
         self.virtual_microphone = virtual_microphone
         self._recording_mode = store.settings.input_mode
         self.double_tap_profile_path = (
@@ -1265,6 +1270,26 @@ class VoiceModule:
                 # so a failed BLE start cannot silently destroy the old draft.
                 self.clear_pending()
             self.assembler.begin(message)
+            self._recording_started_at = time.monotonic()
+            self._recognition_record = {
+                'schema_version': 1,
+                'app_version': __version__,
+                'platform': sys.platform,
+                'started_at_utc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                'session_id': message.session,
+                'settings': {
+                    'input_mode': current.input_mode,
+                    'precise_recognition': current.precise_recognition,
+                    'provider': current.speech_provider,
+                    'recording_gain': current.recording_gain,
+                },
+                'audio': {'sample_rate_hz': message.sample_rate,
+                          'end_reason': '', 'duration_ms': None,
+                          'pcm_bytes': 0, 'last_recording_saved': False},
+                'recognition': {'attempts': [], 'final_engine': None, 'fallback': False},
+                'result': 'started',
+                'transcript': '',
+            }
             self.emit(
                 "voice_state",
                 {
@@ -1286,32 +1311,88 @@ class VoiceModule:
                     self.virtual_microphone.abort()
                 self.emit("voice_error", str(exc))
             return
+        record = self._recognition_record
+        self._recognition_record = None
+        if record is None:
+            record = {
+                'schema_version': 1,
+                'app_version': __version__,
+                'platform': sys.platform,
+                'started_at_utc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                'session_id': message.session,
+                'settings': {'input_mode': self._recording_mode,
+                             'precise_recognition': self.store.settings.precise_recognition,
+                             'provider': self.store.settings.speech_provider,
+                             'recording_gain': self._recording_gain},
+                'audio': {'sample_rate_hz': None, 'end_reason': '',
+                          'duration_ms': None, 'pcm_bytes': 0,
+                          'last_recording_saved': False},
+                'recognition': {'attempts': [], 'final_engine': None, 'fallback': False},
+                'result': 'started', 'transcript': '',
+            }
+            self._recording_started_at = time.monotonic()
+        recording_started_at = self._recording_started_at
+        recording_mode = self._recording_mode
+        recording_gain = self._recording_gain
+        transcriber = self._recording_transcriber
+        record['audio']['end_reason'] = message.reason
+        processing_started = time.monotonic()
+        stage = 'audio_assembly'
         try:
             sample_rate, pcm = self.assembler.finish(message)
+            record['audio'].update(
+                sample_rate_hz=sample_rate,
+                duration_ms=round(len(pcm) / (sample_rate * 2) * 1000),
+                pcm_bytes=len(pcm))
+            stage = 'recording_gain'
             from .voice_gain import apply_recording_gain
-            pcm = await asyncio.to_thread(apply_recording_gain, pcm, self._recording_gain)
+            pcm = await asyncio.to_thread(apply_recording_gain, pcm, recording_gain)
             from .voice_replay import recording_path, save_recording
             try:
                 await asyncio.to_thread(save_recording, recording_path(self.store.path), sample_rate, pcm)
+                record['audio']['last_recording_saved'] = True
             except (OSError, ValueError) as exc:
                 # Playback storage must not prevent transcription or sending.
+                record['audio']['recording_save_error_type'] = type(exc).__name__
                 self.emit('log', f'上次录音保存失败，识别继续：{exc}')
-            if self._recording_mode == "virtual_microphone":
+            if recording_mode == "virtual_microphone":
                 if self.virtual_microphone is None:
                     raise ValueError("虚拟麦克风尚未初始化")
                 await asyncio.to_thread(self.virtual_microphone.finish)
                 self.clear_pending()
+                record['result'] = 'dictation_ready'
+                record['recognition']['final_engine'] = 'system_dictation'
+                await self._save_recognition_record(record, processing_started, recording_started_at)
                 self.emit("voice_state", {"state": "dictation_ready", "session": message.session})
                 return
             from threading import Event
             from .cloud_speech import SpeechRouter
             started = Event()
-            transcriber = self._recording_transcriber
+            stage = 'recognition'
             def transcribe():
-                if isinstance(transcriber, (SpeechRouter, WhisperCppTranscriber)):
-                    return transcriber.transcribe(sample_rate, pcm, on_started=started.set)
-                started.set()
-                return transcriber.transcribe(sample_rate, pcm)
+                if isinstance(transcriber, SpeechRouter):
+                    return transcriber.transcribe(
+                        sample_rate, pcm, on_started=started.set,
+                        diagnostic=record['recognition'])
+                engine = 'whisper.cpp' if isinstance(transcriber, WhisperCppTranscriber) else 'custom'
+                attempt = {'engine': engine, 'status': 'started'}
+                record['recognition']['attempts'].append(attempt)
+                attempted_at = time.monotonic()
+                try:
+                    if isinstance(transcriber, WhisperCppTranscriber):
+                        text = transcriber.transcribe(sample_rate, pcm, on_started=started.set)
+                    else:
+                        started.set()
+                        text = transcriber.transcribe(sample_rate, pcm)
+                except Exception as exc:
+                    attempt.update(status='error', error_type=type(exc).__name__)
+                    raise
+                else:
+                    attempt['status'] = 'success' if text else 'empty'
+                    record['recognition']['final_engine'] = engine
+                    return text
+                finally:
+                    attempt['duration_ms'] = round((time.monotonic() - attempted_at) * 1000)
             task = asyncio.create_task(asyncio.to_thread(transcribe))
             announced = False
             try:
@@ -1326,13 +1407,41 @@ class VoiceModule:
                 if not task.done():
                     task.cancel()
         except Exception as exc:
-            if self._recording_mode == "virtual_microphone" and self.virtual_microphone is not None:
+            if recording_mode == "virtual_microphone" and self.virtual_microphone is not None:
                 self.virtual_microphone.abort()
+            record['result'] = 'error'
+            record['error_stage'] = stage
+            record['error_type'] = type(exc).__name__
+            from .cloud_speech import SpeechError
+            if isinstance(exc, (ValueError, SpeechError)):
+                record['error_message'] = str(exc)[:240]
+            await self._save_recognition_record(record, processing_started, recording_started_at)
             self.emit("voice_error", str(exc))
             return
         if not text:
             self.clear_pending()
+            record['result'] = 'empty'
+            await self._save_recognition_record(record, processing_started, recording_started_at)
             self.emit("voice_state", {"state": "empty", "session": message.session})
             return
         self.set_pending(text)
+        record['result'] = 'success'
+        record['transcript'] = text
+        await self._save_recognition_record(record, processing_started, recording_started_at)
         self.emit("voice_state", {"state": "ready", "text": text})
+
+    async def _save_recognition_record(
+        self, record: dict, processing_started: float, recording_started_at: float
+    ) -> None:
+        record['completed_at_utc'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        record['processing_ms'] = round((time.monotonic() - processing_started) * 1000)
+        record['session_elapsed_ms'] = round(
+            (time.monotonic() - recording_started_at) * 1000)
+        try:
+            await asyncio.to_thread(self.recognition_history.append, record)
+        except (OSError, TypeError, ValueError) as exc:
+            self.emit('log', f'识别记录保存失败：{type(exc).__name__}')
+        else:
+            engine = record['recognition']['final_engine'] or '无'
+            fallback = '，豆包失败后回退' if record['recognition']['fallback'] else ''
+            self.emit('log', f"本次识别：{engine}{fallback}；结果 {record['result']}")
