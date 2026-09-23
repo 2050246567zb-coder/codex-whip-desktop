@@ -16,6 +16,13 @@ if (-not (Test-Path -LiteralPath $pythonPath)) {
     throw 'Run scripts\setup-desktop.ps1 first.'
 }
 
+if ($env:CODEX_WHIP_DOUBAO_API_KEY) {
+    $privateAssetPath = Join-Path $desktopRoot 'assets\private'
+    New-Item -ItemType Directory -Force -Path $privateAssetPath | Out-Null
+    Set-Content -LiteralPath (Join-Path $privateAssetPath 'doubao-api-key.txt') `
+        -Value $env:CODEX_WHIP_DOUBAO_API_KEY -NoNewline
+}
+
 & $pythonPath -m pip install --disable-pip-version-check -e "$desktopRoot[build]"
 if ($LASTEXITCODE -ne 0) {
     throw "Installing build dependencies failed with exit code $LASTEXITCODE."

@@ -9,7 +9,8 @@ from collections.abc import Awaitable, Callable
 from bleak import BleakClient, BleakScanner
 from bleak.exc import BleakError
 
-from .models import AudioStart, AudioEnd, DeviceMessage, ProtocolMessage
+from .ble_preference import BleDevicePreferenceStore, choose_device
+from .models import AudioChunk, AudioEnd, AudioStart, DeviceMessage, ProtocolMessage
 from .protocol import LineDecoder, ProtocolError
 from .settings import BleSettings
 
@@ -51,12 +52,14 @@ class BleWhipClient:
         state_handler: StateHandler | None = None,
         command_queue: asyncio.Queue[str] | None = None,
         device_handler: Callable[[str], None] | None = None,
+        device_preference: BleDevicePreferenceStore | None = None,
     ) -> None:
         self._settings = settings
         self._log = log_handler
         self._state_handler = state_handler
         self._command_queue = command_queue
         self._device_handler = device_handler
+        self._device_preference = device_preference
 
     def _set_state(self, state: str) -> None:
         if self._state_handler is not None:
@@ -67,10 +70,7 @@ class BleWhipClient:
             try:
                 self._set_state("scanning")
                 self._log(f"[BLE] scanning for {self._settings.device_name!r}...")
-                device = await BleakScanner.find_device_by_name(
-                    self._settings.device_name,
-                    timeout=self._settings.scan_timeout_seconds,
-                )
+                device = await self._scan_preferred_device()
                 if device is None:
                     self._set_state("not_found")
                     self._log("[BLE] device not found")
@@ -83,24 +83,53 @@ class BleWhipClient:
             if not stop.is_set():
                 await self._wait_or_stop(self._settings.reconnect_seconds, stop)
 
+    async def _scan_preferred_device(self) -> object | None:
+        discovered = await BleakScanner.discover(
+            timeout=self._settings.scan_timeout_seconds,
+            return_adv=True,
+        )
+        candidates = [
+            (device, advertisement)
+            for device, advertisement in discovered.values()
+            if (getattr(advertisement, "local_name", None)
+                or getattr(device, "name", None)) == self._settings.device_name
+        ]
+        remembered = self._device_preference.load() if self._device_preference else ""
+        return choose_device(candidates, remembered)
+
     async def _run_connection(
         self, device: object, handler: MessageHandler, stop: asyncio.Event
     ) -> None:
         disconnected = asyncio.Event()
         queue: asyncio.Queue[ProtocolMessage] = asyncio.Queue()
+        audio_ack_queue: asyncio.Queue[tuple[int, int]] = asyncio.Queue(maxsize=1)
         decoder = LineDecoder()
         host_profile_pending = False
         host_profile_sent = False
         link_report_at: float | None = None
+        audio_active = False
 
         def on_disconnect(_: BleakClient) -> None:
             logging.getLogger(__name__).info("BLE link disconnected")
             disconnected.set()
 
         def on_notification(_: object, data: bytearray) -> None:
-            nonlocal host_profile_pending
+            nonlocal host_profile_pending, audio_active
             try:
                 for message in decoder.feed(data):
+                    if isinstance(message, AudioStart):
+                        audio_active = True
+                    elif isinstance(message, AudioEnd):
+                        audio_active = False
+                    elif (isinstance(message, AudioChunk)
+                          and message.flow_controlled
+                          and (message.sequence == 0 or message.sequence % 4 == 0)):
+                        # ACK means a complete CRC-checked packet reached the
+                        # computer, not that cloud recognition has started.
+                        if audio_ack_queue.full():
+                            with contextlib.suppress(asyncio.QueueEmpty):
+                                audio_ack_queue.get_nowait()
+                        audio_ack_queue.put_nowait((message.session, message.sequence))
                     if isinstance(message, DeviceMessage):
                         if message.kind == "CAPS" and message.fields == ("HOST_PROFILE", "1"):
                             host_profile_pending = True
@@ -117,9 +146,12 @@ class BleWhipClient:
                 )
 
         async with BleakClient(device, disconnected_callback=on_disconnect) as client:
+            identity = str(getattr(device, "address", "") or "")
+            if self._device_preference is not None:
+                self._device_preference.remember(identity)
             # Select per-board calibration before accepting any sensor frames.
             if self._device_handler is not None:
-                self._device_handler(str(getattr(device, "address", "")))
+                self._device_handler(identity)
             self._set_state("connected")
             self._log(f"[BLE] connected to {self._settings.device_name}")
             await client.start_notify(NUS_TX_CHARACTERISTIC, on_notification)
@@ -133,6 +165,14 @@ class BleWhipClient:
 
             while client.is_connected and not stop.is_set():
                 now = asyncio.get_running_loop().time()
+                try:
+                    ack_session, ack_sequence = audio_ack_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                else:
+                    await self._write_command(
+                        client, f"VOICE,ACK,{ack_session},{ack_sequence}", delay=0.0
+                    )
                 # Negotiate once per connection and only with firmware that
                 # advertises support. Old firmware never receives unknown HOST.
                 if host_profile_pending and not host_profile_sent:
@@ -142,8 +182,10 @@ class BleWhipClient:
                 if link_report_at is not None and now >= link_report_at:
                     await self._write_command(client, "LINK")
                     link_report_at = None
-                if now >= next_battery_poll:
+                if now >= next_battery_poll and not audio_active:
                     await self._write_command(client, "BATTERY")
+                    next_battery_poll = now + BATTERY_POLL_SECONDS
+                elif now >= next_battery_poll:
                     next_battery_poll = now + BATTERY_POLL_SECONDS
                 # Continuous IMU/audio notifications must not starve control
                 # writes (threshold sync, RAW mode, recording commands).
@@ -172,11 +214,13 @@ class BleWhipClient:
                     if self._command_queue is not None
                     else None
                 )
+                ack_task = asyncio.create_task(audio_ack_queue.get())
                 battery_task = asyncio.create_task(asyncio.sleep(max(
                     0.0, next_battery_poll - asyncio.get_running_loop().time()
                 )))
                 tasks = {queue_task, disconnect_task, stop_task}
                 tasks.add(battery_task)
+                tasks.add(ack_task)
                 if command_task is not None:
                     tasks.add(command_task)
                 done, pending = await asyncio.wait(
@@ -196,7 +240,12 @@ class BleWhipClient:
                     and client.is_connected
                 ):
                     await self._write_command(client, command_task.result())
-                if battery_task in done and client.is_connected:
+                if ack_task in done and client.is_connected:
+                    ack_session, ack_sequence = ack_task.result()
+                    await self._write_command(
+                        client, f"VOICE,ACK,{ack_session},{ack_sequence}", delay=0.0
+                    )
+                if battery_task in done and client.is_connected and not audio_active:
                     await self._write_command(client, "BATTERY")
                     next_battery_poll = (
                         asyncio.get_running_loop().time() + BATTERY_POLL_SECONDS
@@ -210,7 +259,9 @@ class BleWhipClient:
         self._set_state("disconnected")
         self._log("[BLE] disconnected")
 
-    async def _write_command(self, client: BleakClient, command: str) -> None:
+    async def _write_command(
+        self, client: BleakClient, command: str, *, delay: float = 0.025
+    ) -> None:
         command = command.strip()
         if not command:
             return
@@ -220,7 +271,8 @@ class BleWhipClient:
             self._log("[BLE] refused non-ASCII device command")
             return
         await client.write_gatt_char(NUS_RX_CHARACTERISTIC, payload, response=False)
-        await asyncio.sleep(0.025)
+        if delay > 0:
+            await asyncio.sleep(delay)
 
     @staticmethod
     async def _wait_or_stop(seconds: float, stop: asyncio.Event) -> None:

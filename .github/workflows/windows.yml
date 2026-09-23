@@ -21,13 +21,20 @@ jobs:
           python -m pytest desktop/tests -q
       - name: Build product
         shell: pwsh
+        env:
+          CODEX_WHIP_DOUBAO_API_KEY: ${{ secrets.CODEX_WHIP_DOUBAO_API_KEY }}
         run: |
+          if ($env:CODEX_WHIP_DOUBAO_API_KEY) {
+            $private = Join-Path (Resolve-Path desktop/assets).Path "private"
+            New-Item -ItemType Directory -Force -Path $private | Out-Null
+            Set-Content -LiteralPath (Join-Path $private "doubao-api-key.txt") -Value $env:CODEX_WHIP_DOUBAO_API_KEY -NoNewline
+          }
           $source = (Resolve-Path desktop/src).Path
           $assets = (Resolve-Path desktop/assets).Path
           $entry = (Resolve-Path desktop/codex_whip_gui.py).Path
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --name "产品版-2.2.58" --paths $source --add-data "${assets};assets" --collect-all bleak --collect-all pywinauto --collect-all sounddevice --exclude-module pytest --distpath dist --workpath build/pyinstaller --specpath build/pyinstaller-spec $entry
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name "产品版-Windows-2.2.63" --paths $source --add-data "${assets};assets" --collect-all bleak --collect-all pywinauto --collect-all sounddevice --exclude-module pytest --distpath dist --workpath build/pyinstaller --specpath build/pyinstaller-spec $entry
       - uses: actions/upload-artifact@v4
         with:
-          name: CodexWhip-Windows-2.2.58
-          path: dist/产品版-2.2.58.exe
+          name: CodexWhip-Windows-2.2.63
+          path: dist/产品版-Windows-2.2.63.exe
           retention-days: 14

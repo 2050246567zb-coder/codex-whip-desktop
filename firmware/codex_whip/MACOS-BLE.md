@@ -1,18 +1,12 @@
-# 0.7.5：修复语音录音结束前断线
-
-- 0.7.4 请求 MTU 247，但 `BANDWIDTH_HIGH` 将本地 MTU 上限限制为 128。改为 `BANDWIDTH_MAX`，保留 16 kHz 音频，避免正常音频包在 Mac 上拆成两次通知。
-- 音频 FIFO 达到 44 条时暂停从 PCM 环形缓冲读取，预留 4 条给 END/控制消息。音频不会触发可靠控制队列溢出的强制断连路径。
-- 若链路长期不足导致 PCM 缓冲溢出，发送明确的 `VOICE,END,...,BUFFER_OVERFLOW`，保持连接；不隐瞒或静默丢弃音频。
-- 实机短录音验证：Mac 30 ms / MTU 247，100 个包、30,000 个采样、零丢包，END=SILENCE，结束后保持连接。长录音和文字识别另行实测。
-
-# 0.7.4：macOS / Windows 蓝牙适配
+# 0.8.0：macOS / Windows 蓝牙与语音流控
 
 适用硬件：**Seeed XIAO nRF52840 Sense（LSM6DS3TR-C）**。不是 ESP32-C3 固件。
 基于 GitHub `codex/product-macos` 的 `5bc18e7` / 桌面 2.2.58，保留本地 Mac 原生叠层、鼠标交互和姿态连续显示修复。
 
 ## 自动选择方案
 
-固件对 `PING` 回应 `PONG,0.7.4` 与 `CAPS,HOST_PROFILE,1`。
+固件对 `PING` 回应 `PONG,0.8.0`、`CAPS,HOST_PROFILE,1` 与
+`CAPS,VOICE_FLOW,1`。
 更新后的桌面端仅在收到这一能力声明时，按运行系统发送一次 `HOST,MACOS`、`HOST,WINDOWS` 或 `HOST,LINUX`。
 这是自动握手，不要求用户选择。仅靠 BLE 地址、MTU 或连接节奏无法可靠判断操作系统，固件不作此类猜测。
 
@@ -64,7 +58,7 @@ scripts/upload-firmware-macos.sh
 CLI 下载核验官方 SHA256；第一次安装需要网络。可按环境配置 HTTP(S) 代理，脚本不内置某个代理端口。
 刷写脚本只自动选择唯一的匹配 XIAO 板；必要时手工传入已确认的 `/dev/cu.usbmodem…`。
 先停止桌面端蓝牙连接、关闭串口监视器；使用支持数据传输的 USB 线。
-成功必须看到 `Device programmed.`，随后重新连接桌面端确认 `PONG,0.7.5` 和 `HOST,OK,MACOS`。
+成功必须看到 `Device programmed.`，随后重新连接桌面端确认 `PONG,0.8.0` 和 `HOST,OK,MACOS`。
 无需刷写 bootloader；不要将此包刷到 ESP32 或其他型号。
 
 ## 软件验证

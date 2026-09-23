@@ -677,6 +677,13 @@ class DetectorSettingsWindow:
             font=("Microsoft YaHei UI", 9, "bold"),
             cursor="hand2",
         ).pack(side="right")
+        tk.Label(
+            enabled_card,
+            text="豆包 2.0 · 本地备用",
+            bg=self.CARD,
+            fg=self.MUTED,
+            font=(style.FONT, 9),
+        ).pack(anchor="w", pady=(8, 0))
 
         percent = self._gain_to_percent(settings.recording_gain)
         self.voice_sensitivity_value = tk.DoubleVar(value=percent)

@@ -1,184 +1,150 @@
+import base64
 import io
 import json
 import struct
 import urllib.error
 import wave
-from dataclasses import replace
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from codex_whip.cloud_speech import PRESETS, SpeechKeys, SpeechRouter, SpeechError, _NoRedirect, encode_doubao_credentials
+
+from codex_whip.cloud_speech import (
+    PRESETS,
+    PRODUCT_PROVIDER,
+    SpeechError,
+    SpeechKeys,
+    SpeechRouter,
+    _NoRedirect,
+    bundled_doubao_key,
+)
 from codex_whip.voice import VoiceSettings, VoiceSettingsStore
+
+
+def _response(body: dict, status: str):
+    response = io.BytesIO(json.dumps(body).encode())
+    response.headers = {'X-Api-Status-Code': status}
+    context = Mock()
+    context.__enter__ = Mock(return_value=response)
+    context.__exit__ = Mock(return_value=False)
+    return context
 
 
 @pytest.fixture
 def setup(tmp_path):
-    store = VoiceSettingsStore(tmp_path/'voice.json')
+    store = VoiceSettingsStore(tmp_path / 'voice.json')
     local = Mock()
+    local.ready = False
     keys = Mock()
     keys.get.return_value = 'TEST-KEY-DO-NOT-LOG'
     return store, local, keys
 
 
-@pytest.mark.parametrize('provider', list(PRESETS))
-def test_provider_request_and_response(setup, monkeypatch, provider):
+def test_product_has_only_doubao_recording_v2():
+    assert tuple(PRESETS) == (PRODUCT_PROVIDER,)
+    preset = PRESETS[PRODUCT_PROVIDER]
+    assert preset.resource_id == 'volc.seedasr.auc'
+    assert preset.url.endswith('/api/v3/auc/bigmodel/submit')
+    assert preset.query_url.endswith('/api/v3/auc/bigmodel/query')
+    assert VoiceSettings().speech_provider == PRODUCT_PROVIDER
+
+
+def test_doubao_v2_submits_then_queries_same_request(setup, monkeypatch):
     store, local, keys = setup
-    store.update(replace(store.settings, speech_provider=provider))
-    router = SpeechRouter(store,local,keys)
-    result = {'choices':[{'message':{'content':'继续完成任务'}}]} if PRESETS[provider].protocol=='qwen' else {'text':'继续完成任务'}
-    doubao = provider.startswith('doubao')
-    if doubao:
-        result = {'result': {'text': '继续完成任务'}}
-    if provider == 'doubao-legacy':
-        keys.get.return_value = encode_doubao_credentials('123456','TEST-KEY-DO-NOT-LOG')
     opener = Mock()
-    response = io.BytesIO(json.dumps(result).encode())
-    response.headers = {'X-Api-Status-Code': '20000000'}
-    opener.open.return_value.__enter__ = Mock(return_value=response)
-    opener.open.return_value.__exit__ = Mock(return_value=False)
-    monkeypatch.setattr('urllib.request.build_opener', lambda *_:opener)
-    pcm = struct.pack('<h',800)*16000
-    assert router.transcribe(16000,pcm) == '继续完成任务'
-    request = opener.open.call_args.args[0]
-    assert request.full_url == PRESETS[provider].url
-    headers = {k.lower(): v for k,v in request.headers.items()}
-    if doubao:
-        assert 'authorization' not in headers
-        assert headers['x-api-resource-id'] == 'volc.bigasr.auc_turbo'
-        assert headers['x-api-sequence'] == '-1'
-        if provider == 'doubao-legacy':
-            assert headers['x-api-app-key'] == '123456'
-            assert headers['x-api-access-key'] == 'TEST-KEY-DO-NOT-LOG'
-            assert 'x-api-key' not in headers
-        else:
-            assert headers['x-api-key'] == 'TEST-KEY-DO-NOT-LOG'
-            assert 'x-api-app-key' not in headers
-    else:
-        assert request.headers['Authorization'] == 'Bearer TEST-KEY-DO-NOT-LOG'
-    assert opener.open.call_args.kwargs['timeout'] == 30
-    if doubao:
-        import base64
-        body = json.loads(request.data)
-        wavdata = base64.b64decode(body['audio']['data'])
-        assert body['request']['model_name'] == 'bigmodel'
-        assert 'TEST-KEY' not in request.data.decode()
-    elif PRESETS[provider].protocol == 'qwen':
-        import base64
-        body = json.loads(request.data)
-        wavdata = base64.b64decode(body['messages'][0]['content'][0]['input_audio']['data'].split(',')[1])
-    else:
-        wavdata = request.data[request.data.index(b'RIFF'):].split(b'\r\n--Whip')[0]
-        assert PRESETS[provider].model.encode() in request.data
-    with wave.open(io.BytesIO(wavdata)) as wav:
+    opener.open.side_effect = [
+        _response({}, '20000000'),
+        _response({'result': {'text': '继续完成任务'}}, '20000000'),
+    ]
+    monkeypatch.setattr('urllib.request.build_opener', lambda *_: opener)
+    pcm = struct.pack('<h', 800) * 16000
+
+    assert SpeechRouter(store, local, keys).transcribe(16000, pcm) == '继续完成任务'
+    submit, query = [call.args[0] for call in opener.open.call_args_list]
+    assert submit.full_url == PRESETS[PRODUCT_PROVIDER].url
+    assert query.full_url == PRESETS[PRODUCT_PROVIDER].query_url
+    submit_headers = {key.lower(): value for key, value in submit.headers.items()}
+    query_headers = {key.lower(): value for key, value in query.headers.items()}
+    assert submit_headers['x-api-resource-id'] == 'volc.seedasr.auc'
+    assert submit_headers['x-api-request-id'] == query_headers['x-api-request-id']
+    assert submit_headers['x-api-key'] == 'TEST-KEY-DO-NOT-LOG'
+    assert 'TEST-KEY' not in submit.data.decode()
+    body = json.loads(submit.data)
+    wav_data = base64.b64decode(body['audio']['data'])
+    assert body['request']['model_name'] == 'bigmodel'
+    with wave.open(io.BytesIO(wav_data)) as wav:
         assert wav.getframerate() == 16000
         assert wav.getnchannels() == 1
         assert wav.readframes(16000) == pcm
     local.transcribe.assert_not_called()
 
 
-def test_local_never_reads_key_or_network_and_snapshot_pins_provider(setup,monkeypatch):
+def test_pending_query_is_polled_without_resubmitting(setup, monkeypatch):
     store, local, keys = setup
-    router = SpeechRouter(store,local,keys)
-    snapshot = router.snapshot()
-    store.update(replace(store.settings,speech_provider='openai'))
-    local.transcribe.return_value = 'local'
-    assert snapshot.transcribe(16000,b'\0\0') == 'local'
-    keys.get.assert_not_called()
-
-
-@pytest.mark.parametrize('code', [401,403,404,429,500,302])
-def test_errors_never_expose_keys_or_response_and_never_retry(setup,monkeypatch,code):
-    store,local,keys = setup
-    store.update(replace(store.settings,speech_provider='openai-mini'))
     opener = Mock()
-    opener.open.side_effect = urllib.error.HTTPError(PRESETS['openai-mini'].url,code,'TEST-KEY-DO-NOT-LOG',{},None)
-    monkeypatch.setattr('urllib.request.build_opener',lambda *_:opener)
-    with pytest.raises(SpeechError) as exc:
-        SpeechRouter(store,local,keys).transcribe(16000,struct.pack('<h',500)*8000)
-    assert 'TEST-KEY' not in str(exc.value)
-    assert opener.open.call_count == 1
-    local.transcribe.assert_not_called()
+    opener.open.side_effect = [
+        _response({}, '20000000'),
+        _response({}, '20000001'),
+        _response({'result': {'text': '识别完成'}}, '20000000'),
+    ]
+    monkeypatch.setattr('urllib.request.build_opener', lambda *_: opener)
+    monkeypatch.setattr('codex_whip.cloud_speech.time.sleep', lambda _: None)
+    assert SpeechRouter(store, local, keys).transcribe(
+        16000, struct.pack('<h', 500) * 8000) == '识别完成'
+    assert opener.open.call_count == 3
 
 
-def test_silence_does_not_upload_and_config_excludes_secrets(setup,monkeypatch):
-    store,local,keys=setup
-    store.update(replace(store.settings,speech_provider='siliconflow'))
-    network=Mock(side_effect=AssertionError('unexpected upload'))
-    monkeypatch.setattr('urllib.request.build_opener',network)
-    assert SpeechRouter(store,local,keys).transcribe(16000,b'\0\0'*16000) == ''
-    network.assert_not_called()
-    assert 'TEST-KEY' not in store.path.read_text()
-    assert VoiceSettingsStore(store.path).settings.speech_provider=='siliconflow'
-    assert _NoRedirect().redirect_request(None,None,302,'',{},'https://other.test') is None
-
-
-def test_vault_failure_is_safe(monkeypatch):
-    keys=SpeechKeys()
-    backend=Mock()
-    backend.set_password.side_effect=RuntimeError('secret-key-value')
-    monkeypatch.setattr(keys,'_backend',lambda:backend)
-    with pytest.raises(SpeechError) as exc:
-        keys.set('openai','secret-key-value')
-    assert 'secret-key-value' not in str(exc.value)
-
-
-def test_unknown_preset_rejected():
-    with pytest.raises(ValueError):
-        VoiceSettings(speech_provider='arbitrary-host').validated()
-
-
-@pytest.mark.parametrize('code', ['20000003','45000001','45000002','45000151','55000031','unknown',''])
-def test_doubao_checks_service_status_even_with_http_success(setup,monkeypatch,code):
-    store,local,keys=setup
-    store.update(replace(store.settings,speech_provider='doubao'))
-    response=io.BytesIO(b'{"result":{"text":"must not send"}}')
-    response.headers={'X-Api-Status-Code':code,'X-Api-Message':'TEST-KEY-DO-NOT-LOG'}
-    opener=Mock()
-    opener.open.return_value.__enter__=Mock(return_value=response)
-    opener.open.return_value.__exit__=Mock(return_value=False)
-    monkeypatch.setattr('urllib.request.build_opener',lambda *_:opener)
-    router=SpeechRouter(store,local,keys)
-    if code=='20000003':
-        assert router.transcribe(16000,struct.pack('<h',500)*8000)==''
-    else:
-        with pytest.raises(SpeechError) as exc:
-            router.transcribe(16000,struct.pack('<h',500)*8000)
-        assert 'TEST-KEY' not in str(exc.value)
-    assert opener.open.call_count==1
-    local.transcribe.assert_not_called()
-
-
-def test_bad_legacy_credentials_never_upload(setup,monkeypatch):
-    store,local,keys=setup
-    store.update(replace(store.settings,speech_provider='doubao-legacy'))
-    keys.get.return_value='invalid'
-    opener=Mock()
-    monkeypatch.setattr('urllib.request.build_opener',opener)
-    router=SpeechRouter(store,local,keys)
-    assert not router.ready
-    with pytest.raises(SpeechError):
-        router.transcribe(16000,struct.pack('<h',500)*8000)
-    opener.assert_not_called()
-
-
-def test_missing_cloud_key_uses_ready_local_recognizer(setup):
+def test_missing_key_uses_local_recognizer(setup):
     store, local, keys = setup
-    store.update(replace(store.settings, speech_provider='openai-mini'))
     keys.get.return_value = ''
-    local.ready = True
     local.transcribe.return_value = '本地结果'
     assert SpeechRouter(store, local, keys).transcribe(16000, b'\0\0') == '本地结果'
+    local.prepare.assert_called_once()
 
 
-def test_cloud_failure_falls_back_only_when_local_is_already_ready(setup, monkeypatch):
+def test_cloud_failure_prepares_and_uses_local_fallback(setup, monkeypatch):
     store, local, keys = setup
-    store.update(replace(store.settings, speech_provider='openai-mini'))
-    local.ready = True
     local.transcribe.return_value = '本地后备'
     opener = Mock()
     opener.open.side_effect = urllib.error.URLError('offline')
     monkeypatch.setattr('urllib.request.build_opener', lambda *_: opener)
-    pcm = struct.pack('<h', 500) * 8000
-    assert SpeechRouter(store, local, keys).transcribe(16000, pcm) == '本地后备'
-    assert opener.open.call_count == 1
+    result = SpeechRouter(store, local, keys).transcribe(
+        16000, struct.pack('<h', 500) * 8000)
+    assert result == '本地后备'
+    local.prepare.assert_called_once()
+
+
+def test_cloud_error_is_preserved_when_local_also_fails(setup, monkeypatch):
+    store, local, keys = setup
+    local.prepare.side_effect = RuntimeError('local failure')
+    opener = Mock()
+    opener.open.side_effect = urllib.error.HTTPError(
+        PRESETS[PRODUCT_PROVIDER].url, 403, 'TEST-KEY-DO-NOT-LOG', {}, None)
+    monkeypatch.setattr('urllib.request.build_opener', lambda *_: opener)
+    with pytest.raises(SpeechError) as exc:
+        SpeechRouter(store, local, keys).transcribe(
+            16000, struct.pack('<h', 500) * 8000)
+    assert 'TEST-KEY' not in str(exc.value)
+    assert '录音文件识别 2.0' in str(exc.value)
+
+
+def test_silence_does_not_upload(setup, monkeypatch):
+    store, local, keys = setup
+    network = Mock(side_effect=AssertionError('unexpected upload'))
+    monkeypatch.setattr('urllib.request.build_opener', network)
+    assert SpeechRouter(store, local, keys).transcribe(16000, b'\0\0' * 16000) == ''
+    network.assert_not_called()
+    assert _NoRedirect().redirect_request(None, None, 302, '', {}, 'https://other.test') is None
+
+
+def test_bundled_key_prefers_environment(monkeypatch):
+    monkeypatch.setenv('CODEX_WHIP_DOUBAO_API_KEY', 'bundled-test-key')
+    assert bundled_doubao_key() == 'bundled-test-key'
+    assert SpeechKeys().get(PRODUCT_PROVIDER) == 'bundled-test-key'
+
+
+def test_unknown_provider_is_rejected_and_old_provider_migrates(tmp_path):
+    with pytest.raises(ValueError):
+        VoiceSettings(speech_provider='openai').validated()
+    path = tmp_path / 'voice.json'
+    path.write_text(json.dumps({'speech_provider': 'doubao-legacy'}), encoding='utf-8')
+    assert VoiceSettingsStore(path).settings.speech_provider == PRODUCT_PROVIDER

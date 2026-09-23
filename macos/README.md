@@ -1,4 +1,4 @@
-# Codex Whip 产品版 2.2.59 for macOS
+# Codex Whip 产品版 2.2.63 for macOS
 
 macOS 与 Windows 共用动作识别、校准、设置、界面动画、鞭绳物理、伤口、消息和
 语音状态机；窗口控制使用 macOS Accessibility/AppKit/Quartz，BLE 使用
@@ -37,3 +37,11 @@ bash macos/verify-macos.sh
 GitHub Actions 可验证 Apple Silicon 构建、单元测试和合成 UI 冒烟；真实蓝牙、
 BLE、当前 Codex AX 元素、屏幕叠层和语音识别仍须在目标 Mac 按
 `MACOS_ACCEPTANCE.md` 实测。
+
+## 2.2.63 同步说明
+
+保留 AppKit 透明叠层、右键/Control-click 表盘、主页状态动画和 Mac 原生 Whisper。
+CoreBluetooth 设备标识（UUID）用于记忆手柄；按广播信号强度选择附近设备。
+共享固件 0.8.0 使用二进制音频、CRC16 和分片确认；桌面仍兼容旧 AUD1 固件。
+源码升级不会自动刷写手柄，0.8.0 需另行通过 USB 安装并验证真实录音。
+出厂校准 JSON 按仓库 LF 换行校验；已有本机校准不被覆盖。

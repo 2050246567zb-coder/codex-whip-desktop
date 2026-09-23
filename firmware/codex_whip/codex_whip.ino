@@ -10,10 +10,11 @@
 #include "power_idle.h"
 #include "host_profile.h"
 #include "ble_transport.h"
+#include "voice_packet.h"
 
 namespace {
 
-constexpr char kFirmwareVersion[] = "0.7.5";
+constexpr char kFirmwareVersion[] = "0.8.0";
 constexpr char kDeviceName[] = "CodexWhip";
 constexpr uint32_t kSampleRateHz = 416;
 constexpr uint32_t kSamplePeriodUs = 1000000UL / kSampleRateHz;
@@ -27,10 +28,10 @@ constexpr uint8_t kRawBatchSamples = 4;
 // RAW4's 16 dps steps discarded slow wrist rotation before it reached the PC.
 constexpr size_t kRawSampleBytes = 14;
 constexpr uint32_t kVoiceSampleRateHz = 16000;
-// 300 PCM samples encode to at most 150 ADPCM bytes. Including the AUD1
-// header/base64/newline, the complete record stays below a 244-byte payload,
-// so an MTU 247 connection normally needs one notification instead of two.
-constexpr size_t kVoicePcmSamples = 300;
+constexpr size_t kVoiceMaximumPcmSamples = 440;
+constexpr uint16_t kVoiceMinimumMtu = 185;
+constexpr uint8_t kVoiceAckWindowChunks = 8;
+constexpr uint32_t kVoiceAckTimeoutMs = 500;
 constexpr size_t kVoicePdmBufferSamples = 640;
 // Keep 800 ms of PCM so a short Windows BLE notification stall does not force
 // an otherwise healthy recording to abort.
@@ -124,7 +125,10 @@ bool voiceSavedRawStreaming = false;
 bool voiceSavedRawSuppressEvents = false;
 uint32_t voiceSession = 0;
 uint32_t voiceChunkSequence = 0;
+uint32_t voiceAcknowledgedChunks = 0;
+uint32_t voiceLastAckAtMs = 0;
 uint32_t voiceTotalSamples = 0;
+size_t voicePcmSamples = 320;
 uint32_t voiceStartedAtMs = 0;
 uint32_t voiceLastSpeechAtMs = 0;
 uint16_t voiceNoiseLevel = 0;
@@ -382,16 +386,8 @@ void restoreMotionAfterVoice() {
   detector.reset();
 }
 
-bool sendVoicePayload(const String& line) {
-  if (!Bluefruit.connected()) return false;
-  String payload = line;
-  payload += '\n';
-  if (payload.length() > 256) {
-    serialDiagnostic("WARN,VOICE_LINE_TOO_LONG");
-    return false;
-  }
-  return transport.enqueueAudio(reinterpret_cast<const uint8_t*>(payload.c_str()),
-                                payload.length());
+bool sendVoicePayload(const uint8_t* data, size_t length) {
+  return Bluefruit.connected() && transport.enqueueAudio(data, length);
 }
 
 void stopVoiceRecording(const char* reason) {
@@ -424,8 +420,10 @@ void startVoiceRecording(uint16_t silenceMs, uint16_t maximumRecordingMs) {
   voiceSilenceMs = constrain(silenceMs, 400, 4000);
   voiceMaximumRecordingMs = constrain(maximumRecordingMs, 3000, 30000);
   voiceChunkSequence = 0;
+  voiceAcknowledgedChunks = 0;
   voiceTotalSamples = 0;
   voiceStartedAtMs = millis();
+  voiceLastAckAtMs = voiceStartedAtMs;
   voiceLastSpeechAtMs = voiceStartedAtMs;
   voiceNoiseLevel = UINT16_MAX;
   voiceSpeechDetected = false;
@@ -441,6 +439,15 @@ void startVoiceRecording(uint16_t silenceMs, uint16_t maximumRecordingMs) {
   ++voiceSession;
   sendLine("VOICE,START," + String(voiceSession) + "," +
            String(kVoiceSampleRateHz) + ",IMA_ADPCM4");
+  BLEConnection* connection = Bluefruit.Connection(Bluefruit.connHandle());
+  const uint16_t mtu = connection ? connection->getMtu() : 0;
+  if (mtu < kVoiceMinimumMtu) {
+    restoreMotionAfterVoice();
+    sendLine("VOICE,END," + String(voiceSession) + ",0,LINK_MTU");
+    return;
+  }
+  const size_t encodedCapacity = mtu - 3 - kVoiceFrameOverheadBytes;
+  voicePcmSamples = min(kVoiceMaximumPcmSamples, encodedCapacity * 2);
   if (!PDM.begin(1, kVoiceSampleRateHz)) {
     restoreMotionAfterVoice();
     sendLine("VOICE,END," + String(voiceSession) + ",0,MIC_START_FAILED");
@@ -453,6 +460,16 @@ void startVoiceRecording(uint16_t silenceMs, uint16_t maximumRecordingMs) {
 void processVoiceAudio() {
   if (!voiceRecording) return;
   const uint32_t now = millis();
+  if (transport.consumeAudioFault()) {
+    stopVoiceRecording("TX_STALLED");
+    return;
+  }
+  if (voiceChunkSequence - voiceAcknowledgedChunks >= kVoiceAckWindowChunks) {
+    if (now - voiceLastAckAtMs >= kVoiceAckTimeoutMs) {
+      stopVoiceRecording("HOST_STALLED");
+    }
+    return;
+  }
   if (voiceRingOverflow) {
     stopVoiceRecording("BUFFER_OVERFLOW");
     return;
@@ -462,21 +479,21 @@ void processVoiceAudio() {
     stopVoiceRecording("MIC_STALLED");
     return;
   }
-  if (voiceRingCount < kVoicePcmSamples || !transport.audioReady()) return;
+  if (voiceRingCount < voicePcmSamples) return;
 
-  int16_t pcm[kVoicePcmSamples] = {0};
+  int16_t pcm[kVoiceMaximumPcmSamples] = {0};
   NVIC_DisableIRQ(PDM_IRQn);
-  if (voiceRingCount < kVoicePcmSamples) {
+  if (voiceRingCount < voicePcmSamples) {
     NVIC_EnableIRQ(PDM_IRQn);
     return;
   }
-  for (size_t index = 0; index < kVoicePcmSamples; ++index) {
+  for (size_t index = 0; index < voicePcmSamples; ++index) {
     pcm[index] = voiceRing[voiceRingRead];
     voiceRingRead = (voiceRingRead + 1) % kVoiceRingSamples;
   }
-  voiceRingCount -= kVoicePcmSamples;
+  voiceRingCount -= voicePcmSamples;
   NVIC_EnableIRQ(PDM_IRQn);
-  const size_t sampleCount = kVoicePcmSamples;
+  const size_t sampleCount = voicePcmSamples;
 
   uint32_t absoluteSum = 0;
   for (size_t index = 0; index < sampleCount; ++index) {
@@ -511,18 +528,18 @@ void processVoiceAudio() {
     stopVoiceRecording("ENCODE_ERROR");
     return;
   }
-  const String encoded = encodeBase64(block.data, encodedBytes);
-  const String line =
-      "AUD1," + String(voiceSession) + "," + String(voiceChunkSequence) +
-      "," + String(sampleCount) + "," + String(block.predictor) + "," +
-      String(block.stepIndex) + "," + encoded;
-  if (!sendVoicePayload(line)) {
+  uint8_t packet[kVoiceFrameMaximumBytes] = {0};
+  const size_t packetBytes = packVoiceAudioFrame(
+      voiceSession, voiceChunkSequence, static_cast<uint16_t>(sampleCount),
+      block.predictor, block.stepIndex, block.data, encodedBytes,
+      packet, sizeof(packet));
+  if (!packetBytes || !sendVoicePayload(packet, packetBytes)) {
     serialDiagnostic(
         "WARN,VOICE_TX_FAILED," + String(voiceChunkSequence) + ",MTU," +
         String(Bluefruit.Connection(Bluefruit.connHandle()) ?
                Bluefruit.Connection(Bluefruit.connHandle())->getMtu() : 0) +
         ",RING," + String(voiceRingCount));
-    stopVoiceRecording("TX_FAILED");
+    stopVoiceRecording("TX_BACKPRESSURE");
     return;
   }
   ++voiceChunkSequence;
@@ -1111,6 +1128,7 @@ void handleCommand(String command) {
   if (command == "PING") {
     sendLine("PONG," + String(kFirmwareVersion));
     sendLine("CAPS,HOST_PROFILE,1");
+    sendLine("CAPS,VOICE_FLOW,1");
     sendLine("TAPENGINE," + String(hardwareTapReady ? 1 : 0) +
              ",ST_AN5130," + String(hardwareTapThresholdG(), 2) + ",1000");
     reportBattery();
@@ -1194,6 +1212,17 @@ void handleCommand(String command) {
     } else {
       startVoiceRecording(static_cast<uint16_t>(silenceMs),
                           static_cast<uint16_t>(maximumMs));
+    }
+  } else if (command.startsWith("VOICE,ACK,")) {
+    unsigned long session = 0;
+    unsigned long sequence = 0;
+    if (sscanf(command.c_str(), "VOICE,ACK,%lu,%lu", &session, &sequence) == 2 &&
+        voiceRecording && session == voiceSession && sequence < voiceChunkSequence) {
+      const uint32_t acknowledged = static_cast<uint32_t>(sequence) + 1;
+      if (acknowledged > voiceAcknowledgedChunks) {
+        voiceAcknowledgedChunks = acknowledged;
+        voiceLastAckAtMs = millis();
+      }
     }
   } else if (command == "VOICE,CANCEL") {
     if (voiceRecording) {
@@ -1288,7 +1317,7 @@ void setup() {
   }
 
   Bluefruit.autoConnLed(true);
-  Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
+  Bluefruit.configPrphBandwidth(BANDWIDTH_HIGH);
   Bluefruit.begin();
   powerFsReady = InternalFS.begin();
   if (powerFsReady) {

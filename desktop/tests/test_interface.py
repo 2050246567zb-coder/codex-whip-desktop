@@ -52,18 +52,12 @@ def test_visual_error_does_not_stop_whip_event_pump(app):
     assert '#123' in app.last_event_value.get()
 
 
-def test_target_switch_disarms_and_hides_previous_overlay(app):
-    app.armed.set()
-    app.arm_value.set(True)
-    generation = app._arm_generation
-    assert app.select_target_app('Claude')
-    assert app.settings.codex.target_app == 'Claude'
-    assert not app.armed.is_set()
-    assert not app.arm_value.get()
-    assert app._arm_generation > generation
-    app.effects.detach.assert_called()
-    assert not app.select_target_app('Unknown')
-    assert app.settings.codex.target_app == 'Claude'
+def test_product_is_codex_only_and_hides_manual_listen_control(app):
+    assert app.settings.codex.target_app == 'Codex'
+    assert app.select_target_app('Codex')
+    assert not app.select_target_app('Claude')
+    assert app.settings.codex.target_app == 'Codex'
+    assert app.listen_button is None
 
 
 def test_hover_clock_is_local_interruptible_and_yields_to_recording(app):

@@ -9,12 +9,14 @@
 class WhipBleTransport {
  public:
   static constexpr size_t kRecordBytes = 384;
+  static constexpr size_t kReliableRecords = 48;
+  static constexpr size_t kControlReserveRecords = 3;
   static constexpr uint32_t kSendDeadlineMs = 650;
 
   explicit WhipBleTransport(BLEUart& uart) : uart_(uart) {}
 
   bool begin() {
-    reliable_ = xQueueCreate(48, sizeof(Record));
+    reliable_ = xQueueCreate(kReliableRecords, sizeof(Record));
     motion_ = xQueueCreate(1, sizeof(Record));
     return reliable_ && motion_ &&
         xTaskCreate(taskEntry, "whip-ble-tx", 1024, this, 1, &task_) == pdPASS;
@@ -32,6 +34,7 @@ class WhipBleTransport {
     if (reliable_) xQueueReset(reliable_);
     if (motion_) xQueueReset(motion_);
     faultEpoch_.store(0);
+    audioFaultEpoch_.store(0);
   }
 
   void discardMotion() { if (motion_) xQueueReset(motion_); }
@@ -48,6 +51,7 @@ class WhipBleTransport {
     Record record;
     record.epoch = epoch;
     record.length = length;
+    record.audio = false;
     memcpy(record.bytes, data, length);
     if (motion) {
       if (uxQueueMessagesWaiting(motion_)) replacedMotion_.fetch_add(1);
@@ -59,17 +63,26 @@ class WhipBleTransport {
     return false;
   }
 
-  // Audio shares the ordered FIFO, but must leave room for END and control
-  // replies. The sole producer retains PCM until capacity is available.
-  bool audioReady() const {
-    return reliable_ && acceptedEpoch_.load() == epoch_.load() &&
-           handle_.load() != BLE_CONN_HANDLE_INVALID &&
-           uxQueueMessagesWaiting(reliable_) < 44;
+  // Audio is framed, sequenced and acknowledged by the desktop. Never turn
+  // backpressure into a BLE disconnect: reserve room for VOICE END and report
+  // failure to the recorder so it can abort only the current recording.
+  bool enqueueAudio(const uint8_t* data, size_t length) {
+    const uint32_t epoch = epoch_.load();
+    if (acceptedEpoch_.load() != epoch || !length || length > kRecordBytes ||
+        !reliable_ || handle_.load() == BLE_CONN_HANDLE_INVALID) return false;
+    if (uxQueueMessagesWaiting(reliable_) >=
+        kReliableRecords - kControlReserveRecords) return false;
+    Record record;
+    record.epoch = epoch;
+    record.length = length;
+    record.audio = true;
+    memcpy(record.bytes, data, length);
+    return xQueueSend(reliable_, &record, 0) == pdPASS;
   }
 
-  bool enqueueAudio(const uint8_t* data, size_t length) {
-    if (!audioReady()) return false;
-    return enqueue(data, length);
+  bool consumeAudioFault() {
+    const uint32_t epoch = epoch_.load();
+    return audioFaultEpoch_.exchange(0) == epoch;
   }
 
   uint32_t replacedMotion() const { return replacedMotion_.load(); }
@@ -79,6 +92,7 @@ class WhipBleTransport {
   struct Record {
     uint32_t epoch;
     uint16_t length;
+    bool audio;
     uint8_t bytes[kRecordBytes];
   };
   BLEUart& uart_;
@@ -89,6 +103,7 @@ class WhipBleTransport {
   std::atomic<uint32_t> epoch_{1};
   std::atomic<uint32_t> acceptedEpoch_{0};
   std::atomic<uint32_t> faultEpoch_{0};
+  std::atomic<uint32_t> audioFaultEpoch_{0};
   std::atomic<uint32_t> replacedMotion_{0};
   std::atomic<uint32_t> longestWriteMs_{0};
 
@@ -97,12 +112,14 @@ class WhipBleTransport {
            handle != BLE_CONN_HANDLE_INVALID && Bluefruit.connected(handle);
   }
 
-  bool transmit(const Record& record, uint16_t handle) {
+  enum class TransmitResult : uint8_t { Complete, NoProgress, Partial };
+
+  TransmitResult transmit(const Record& record, uint16_t handle) {
     const uint32_t started = millis();
     size_t offset = 0;
     while (offset < record.length && current(record.epoch, handle)) {
       BLEConnection* connection = Bluefruit.Connection(handle);
-      if (!connection) return false;
+      if (!connection) return offset ? TransmitResult::Partial : TransmitResult::NoProgress;
       size_t limit = connection->getMtu() > 3 ? connection->getMtu() - 3 : 20;
       if (limit > 244) limit = 244;
       const size_t remaining = record.length - offset;
@@ -112,12 +129,13 @@ class WhipBleTransport {
       const uint32_t duration = millis() - before;
       if (duration > longestWriteMs_.load()) longestWriteMs_.store(duration);
       if (sent == chunk) offset += chunk;
-      else if (sent != 0) return false; // Never retry an ambiguous fragment.
-      if (offset == record.length) return true;
-      if (millis() - started >= kSendDeadlineMs) return false;
+      else if (sent != 0) return TransmitResult::Partial; // Never retry an ambiguous fragment.
+      if (offset == record.length) return TransmitResult::Complete;
+      if (millis() - started >= kSendDeadlineMs)
+        return offset ? TransmitResult::Partial : TransmitResult::NoProgress;
       if (!sent) vTaskDelay(pdMS_TO_TICKS(1));
     }
-    return false;
+    return offset ? TransmitResult::Partial : TransmitResult::NoProgress;
   }
 
   static void taskEntry(void* context) {
@@ -152,10 +170,17 @@ class WhipBleTransport {
       if (!found) { vTaskDelay(pdMS_TO_TICKS(1)); continue; }
       const uint16_t sendHandle = handle_.load();
       if (!current(record.epoch, sendHandle)) continue;
-      if (!transmit(record, sendHandle) && current(record.epoch, sendHandle)) {
-        // The peer may have received half a CSV record. Only a fresh session
-        // can safely resume; do not concatenate the next line onto it.
-        faultEpoch_.store(record.epoch);
+      const TransmitResult result = transmit(record, sendHandle);
+      if (result != TransmitResult::Complete && current(record.epoch, sendHandle)) {
+        if (record.audio && result == TransmitResult::NoProgress) {
+          // A complete self-framing audio packet was not emitted at all. The
+          // main task can close just this recording and keep BLE alive.
+          audioFaultEpoch_.store(record.epoch);
+        } else {
+          // A text record or partial binary frame is ambiguous. Only a fresh
+          // session can safely resume without concatenating records.
+          faultEpoch_.store(record.epoch);
+        }
       }
       taskYIELD();
     }

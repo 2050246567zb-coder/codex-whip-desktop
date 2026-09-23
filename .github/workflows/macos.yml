@@ -15,7 +15,13 @@ jobs:
         run: |
           brew install python@3.12 python-tk@3.12 cmake
           echo "CODEX_WHIP_PYTHON=$(brew --prefix python@3.12)/bin/python3.12" >> "$GITHUB_ENV"
+      - name: Verify shared firmware matches Windows product branch
+        run: |
+          git fetch --no-tags origin codex/product-windows
+          "$CODEX_WHIP_PYTHON" scripts/verify-shared-firmware.py origin/codex/product-windows
       - name: Build native app
+        env:
+          CODEX_WHIP_DOUBAO_API_KEY: ${{ secrets.CODEX_WHIP_DOUBAO_API_KEY }}
         run: bash macos/build-macos.sh
       - name: Install test tools
         run: macos/.venv-macos/bin/python -m pip install -e 'desktop[dev]'
@@ -26,7 +32,7 @@ jobs:
         run: |
           mkdir -p macos/test-results
           failed=0
-          for suite in interface interface_state hover_clock morphing_title sleep_pose voice_presentation voice_expiry tick_slider settings_window mount_calibration_window effects macos_overlay overlay_presentation pose_presentation ble_client voice macos_sender virtual_microphone audio_driver_installer; do
+          for suite in interface interface_state hover_clock morphing_title sleep_pose voice_presentation voice_expiry tick_slider settings_window mount_calibration_window effects sensor_pose sensor_bias power_settings macos_overlay overlay_presentation pose_presentation ble_client voice macos_sender virtual_microphone audio_driver_installer; do
             macos/.venv-macos/bin/python -m pytest "desktop/tests/test_${suite}.py" --junitxml="macos/test-results/${suite}.xml" || failed=1
           done
           exit "$failed"
