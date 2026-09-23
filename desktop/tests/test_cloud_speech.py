@@ -129,8 +129,13 @@ def test_missing_key_uses_local_recognizer(setup):
     store, local, keys = setup
     keys.get.return_value = ''
     local.transcribe.return_value = '本地结果'
-    assert SpeechRouter(store, local, keys).transcribe(16000, b'\0\0') == '本地结果'
+    diagnostic = {}
+    assert SpeechRouter(store, local, keys).transcribe(
+        16000, b'\0\0', diagnostic=diagnostic) == '本地结果'
     local.prepare.assert_called_once()
+    assert diagnostic['cloud_skip_reason'] == 'api_key_missing'
+    assert diagnostic['final_engine'] == 'whisper.cpp'
+    assert diagnostic['attempts'][0]['status'] == 'success'
 
 
 def test_cloud_failure_prepares_and_uses_local_fallback(setup, monkeypatch):
