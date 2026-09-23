@@ -80,6 +80,9 @@ MANUAL_CAPTURE_MIN_INTERVAL_MS = 80
 MANUAL_CAPTURE_MAX_INTERVAL_MS = 1000
 MANUAL_CAPTURE_PEAK_GAP_MS = 70
 DOUBLE_TAP_PROFILE_SCHEMA = 1
+VOICE_SETTINGS_SCHEMA = 2
+MIN_HARDWARE_TAP_G = 0.5
+MAX_HARDWARE_TAP_G = 4.0
 
 IMA_STEP_TABLE = (
     7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31,
@@ -100,7 +103,7 @@ class VoiceSettings:
     input_mode: str = "transcription"
     speech_provider: str = 'doubao-v2'
     recording_gain: float = 2.0
-    impact_dynamic_accel_g: float = 1.25
+    impact_dynamic_accel_g: float = 1.0
     max_tap_gyro_dps: float = 700.0
     min_interval_ms: int = 150
     max_interval_ms: int = 700
@@ -156,7 +159,11 @@ def load_voice_settings(path: Path) -> VoiceSettings:
     fallback = VoiceSettings()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or data.get("schema_version") != 1:
+        # Schema 2 intentionally starts from clean product defaults.  The old
+        # force-calibration format allowed thresholds up to 12 g and shipped a
+        # 9.5 g factory value, which makes the LSM6DS3 tap engine effectively
+        # impossible to trigger by hand.
+        if not isinstance(data, dict) or data.get("schema_version") != VOICE_SETTINGS_SCHEMA:
             return fallback
         values = {
             field: data[field]
@@ -179,7 +186,7 @@ def save_voice_settings(path: Path, settings: VoiceSettings) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(
         json.dumps(
-            {"schema_version": 1, **asdict(value)},
+            {"schema_version": VOICE_SETTINGS_SCHEMA, **asdict(value)},
             ensure_ascii=False,
             indent=2,
         )

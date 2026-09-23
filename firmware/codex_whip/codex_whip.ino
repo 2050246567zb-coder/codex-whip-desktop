@@ -14,7 +14,7 @@
 
 namespace {
 
-constexpr char kFirmwareVersion[] = "0.8.0";
+constexpr char kFirmwareVersion[] = "0.8.1";
 constexpr char kDeviceName[] = "CodexWhip";
 constexpr uint32_t kSampleRateHz = 416;
 constexpr uint32_t kSamplePeriodUs = 1000000UL / kSampleRateHz;
@@ -29,7 +29,9 @@ constexpr uint8_t kRawBatchSamples = 4;
 constexpr size_t kRawSampleBytes = 14;
 constexpr uint32_t kVoiceSampleRateHz = 16000;
 constexpr size_t kVoiceMaximumPcmSamples = 440;
-constexpr uint16_t kVoiceMinimumMtu = 185;
+constexpr size_t kVoiceFallbackPcmSamples = 300;
+constexpr uint16_t kVoiceStreamingMtu = 64;
+constexpr uint32_t kVoiceLinkWaitMs = 2500;
 constexpr uint8_t kVoiceAckWindowChunks = 8;
 constexpr uint32_t kVoiceAckTimeoutMs = 500;
 constexpr size_t kVoicePdmBufferSamples = 640;
@@ -54,7 +56,9 @@ constexpr uint8_t kMd1ConfigRegister = 0x5E;
 constexpr uint8_t kDoubleTapSourceMask = 0x50;  // TAP_IA | DOUBLE_TAP.
 constexpr uint32_t kTapPollPeriodMs = 8;
 constexpr float kTapThresholdStepG = 0.5f;  // FS_XL / 32 at +/-16 g.
-constexpr uint8_t kTapThresholdMaximumCode = 24;  // Product UI caps at 12 g.
+// Values above 4 g make a hand-operated double tap practically unreachable.
+// Clamp at the device too, so stale desktop settings cannot disable the input.
+constexpr uint8_t kTapThresholdMaximumCode = 8;
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
 BLEDis deviceInfo;
@@ -128,7 +132,7 @@ uint32_t voiceChunkSequence = 0;
 uint32_t voiceAcknowledgedChunks = 0;
 uint32_t voiceLastAckAtMs = 0;
 uint32_t voiceTotalSamples = 0;
-size_t voicePcmSamples = 320;
+size_t voicePcmSamples = kVoiceFallbackPcmSamples;
 uint32_t voiceStartedAtMs = 0;
 uint32_t voiceLastSpeechAtMs = 0;
 uint16_t voiceNoiseLevel = 0;
@@ -152,6 +156,8 @@ uint8_t hardwareTapThresholdCode = 2;
 uint32_t nextHardwareTapPollAt = 0;
 
 void sendLine(const String& line);
+bool requestHostConnection(uint16_t handle, const HostProfile& profile,
+                           bool sleeping);
 
 bool writeImuRegisterVerified(uint8_t reg, uint8_t value) {
   uint8_t actual = 0;
@@ -164,7 +170,7 @@ float hardwareTapThresholdG() {
 }
 
 bool setHardwareTapThreshold(float minimumG) {
-  if (!isfinite(minimumG) || minimumG < kTapThresholdStepG || minimumG > 12.0f) {
+  if (!isfinite(minimumG) || minimumG < kTapThresholdStepG) {
     return false;
   }
   const uint8_t code = static_cast<uint8_t>(constrain(
@@ -436,25 +442,57 @@ void startVoiceRecording(uint16_t silenceMs, uint16_t maximumRecordingMs) {
 
   PDM.setBufferSize(kVoicePdmBufferSamples * sizeof(int16_t));
   PDM.onReceive(onVoicePdmData);
-  ++voiceSession;
-  sendLine("VOICE,START," + String(voiceSession) + "," +
-           String(kVoiceSampleRateHz) + ",IMA_ADPCM4");
   BLEConnection* connection = Bluefruit.Connection(Bluefruit.connHandle());
+  const auto voiceLinkReady = [connection]() {
+    if (!connection || connection->getMtu() < kVoiceStreamingMtu) return false;
+    // A 128-byte MTU still needs two notifications per 300-sample frame.
+    // Windows' initial 30 ms interval cannot drain those frames in real time;
+    // wait for the HOST,WINDOWS request to settle at 15 ms or faster.
+    return activeHost.system != HostSystem::Windows ||
+           connection->getConnectionInterval() <= activeHost.maxInterval;
+  };
+  if (connection && !voiceLinkReady()) {
+    // MTU and interval updates are asynchronous and can still be pending when
+    // the user double-taps immediately after connecting. Let the SoftDevice
+    // finish both negotiations before PDM begins producing audio.
+    connection->requestDataLengthUpdate();
+    connection->requestMtuExchange(247);
+    requestHostConnection(connection->handle(), activeHost, false);
+    const uint32_t deadline = millis() + kVoiceLinkWaitMs;
+    while (Bluefruit.connected() && !voiceLinkReady() &&
+           static_cast<int32_t>(millis() - deadline) < 0) {
+      delay(20);
+    }
+  }
   const uint16_t mtu = connection ? connection->getMtu() : 0;
-  if (mtu < kVoiceMinimumMtu) {
+  if (!voiceLinkReady()) {
     restoreMotionAfterVoice();
-    sendLine("VOICE,END," + String(voiceSession) + ",0,LINK_MTU");
+    sendLine("VOICE,ERROR,LINK_SPEED");
     return;
   }
-  const size_t encodedCapacity = mtu - 3 - kVoiceFrameOverheadBytes;
-  voicePcmSamples = min(kVoiceMaximumPcmSamples, encodedCapacity * 2);
+  // Windows can keep the ATT MTU at 23 even though the same board negotiates
+  // a larger MTU with another host. The transport already serializes and
+  // fragments complete records, so a small MTU is not a recording error.
+  // Use one-notification frames when possible and the proven 300-sample frame
+  // otherwise; rejecting the link here made the recording UI flash and exit.
+  if (mtu > kVoiceFrameOverheadBytes + 3) {
+    const size_t encodedCapacity = mtu - 3 - kVoiceFrameOverheadBytes;
+    voicePcmSamples = min(kVoiceMaximumPcmSamples,
+                          max(kVoiceFallbackPcmSamples,
+                              encodedCapacity * 2));
+  } else {
+    voicePcmSamples = kVoiceFallbackPcmSamples;
+  }
   if (!PDM.begin(1, kVoiceSampleRateHz)) {
     restoreMotionAfterVoice();
-    sendLine("VOICE,END," + String(voiceSession) + ",0,MIC_START_FAILED");
+    sendLine("VOICE,ERROR,MIC_START_FAILED");
     return;
   }
   PDM.setGain(30);
+  ++voiceSession;
   voiceRecording = true;
+  sendLine("VOICE,START," + String(voiceSession) + "," +
+           String(kVoiceSampleRateHz) + ",IMA_ADPCM4");
 }
 
 void processVoiceAudio() {
@@ -1317,7 +1355,10 @@ void setup() {
   }
 
   Bluefruit.autoConnLed(true);
-  Bluefruit.configPrphBandwidth(BANDWIDTH_HIGH);
+  // Audio is a sustained 16 kHz ADPCM stream. MAX raises the notification
+  // queue from 2 to 3 and extends each connection event, while motion packets
+  // remain rate-limited by the host profile.
+  Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
   Bluefruit.begin();
   powerFsReady = InternalFS.begin();
   if (powerFsReady) {

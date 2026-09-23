@@ -11,9 +11,9 @@ automatically and remains in safe-listening mode until the user explicitly
 checks the live-send arm control. A packaged build can be created from the
 repository root with `scripts\build-desktop.ps1`.
 
-## Current product branch: desktop 2.2.63 / shared firmware 0.8.0
+## Current product branch: desktop 2.2.64 / shared firmware 0.8.1
 
-The 2.2.63 Windows/macOS product uses the XIAO nRF52840 Sense LSM6DS3TR-C hardware
+The 2.2.64 Windows/macOS product uses the XIAO nRF52840 Sense LSM6DS3TR-C hardware
 Shock/Quiet/Duration state machine for double taps. The desktop exposes only a
 minimum-impact setting, maps it to `TAP_THS`, and accepts two impacts anywhere
 inside the fixed one-second hardware window. The old raw-motion custom detector
@@ -26,10 +26,13 @@ board-to-board or wake-up offset without continuously learning away real turns.
 Recording and recognizing presentation also remains authoritative during a
 temporary motion-stream pause, rather than flashing the connection loader.
 
-Firmware 0.8.0 sends CRC-checked binary ADPCM frames sized to one negotiated
-BLE notification. The desktop acknowledges reception in bounded windows and
+Firmware 0.8.1 sends CRC-checked binary ADPCM frames through a serialized BLE
+transport that fragments complete records when required by the negotiated MTU.
+It waits for the Windows connection interval and MTU negotiation before starting
+PDM capture, and uses the maximum Bluefruit notification queue. The desktop
+acknowledges reception in bounded windows and
 assembles the complete recording before cloud/local recognition. Backpressure,
-host stalls and unsupported MTU end only that recording; they do not deliberately
+host stalls and an unusable link end only that recording; they do not deliberately
 disconnect BLE.
 
 New installations are seeded once with the public factory calibration in
