@@ -1,8 +1,6 @@
 name: Windows product build
 on:
   workflow_dispatch:
-  push:
-    branches: [codex/product-windows]
 permissions:
   contents: read
 jobs:
