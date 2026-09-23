@@ -124,6 +124,8 @@ class DetectorSettingsWindow:
         self._message_widgets: list[tk.Text] = []
         self._message_cards: list[tk.Frame] = []
         self._message_drag_index: int | None = None
+        self._message_save_after: str | None = None
+        self._message_order_tip: tk.Toplevel | None = None
         self._section_buttons: dict[str, tk.Button] = {}
         self._visual_store = visual_store
         self._apply_visual_settings = apply_visual_settings
@@ -999,12 +1001,6 @@ class DetectorSettingsWindow:
             font=("Microsoft YaHei UI", 12, "bold"),
         ).pack(side="left")
         self.message_order = tk.StringVar(value=self._message_store.profile.order)
-        self.message_order_button = style.ActionButton(
-            order, self._message_order_icon(), self._toggle_message_order)
-        self.message_order_button.configure(font=("Segoe UI Symbol", 13), takefocus=True)
-        self.message_order_button.pack(side="right")
-
-
         title_row = tk.Frame(messages, bg=self.CARD)
         title_row.pack_forget()
         tk.Label(
@@ -1025,6 +1021,9 @@ class DetectorSettingsWindow:
         list_shell = self._message_list_shell = tk.Frame(messages, bg=self.CARD)
         list_shell.pack(fill="both", expand=True)
         messages.bind('<Configure>', self._resize_message_shell, add='+')
+        self._message_side = tk.Frame(list_shell, bg=self.CARD, width=100)
+        self._message_side.pack(side="right", fill="y")
+        self._message_side.pack_propagate(False)
         self._message_canvas = tk.Canvas(
             list_shell,
             bg=self.CARD,
@@ -1042,6 +1041,17 @@ class DetectorSettingsWindow:
         self._message_scrollbar = scrollbar
         self._message_canvas.configure(yscrollcommand=scrollbar.set)
         self._message_canvas.pack(side="left", fill="both", expand=True)
+        self._message_trash = tk.Canvas(
+            self._message_side, width=58, height=88, bg="#FCEBEB", bd=0,
+            highlightthickness=0, cursor="hand2",
+        )
+        self._message_trash.create_line(16, 32, 42, 32, fill=self.RED, width=2)
+        self._message_trash.create_line(23, 27, 35, 27, fill=self.RED, width=2)
+        self._message_trash.create_line(
+            20, 37, 23, 61, 35, 61, 38, 37, fill=self.RED, width=2,
+        )
+        self._message_trash.create_line(26, 41, 26, 55, fill=self.RED, width=2)
+        self._message_trash.create_line(32, 41, 32, 55, fill=self.RED, width=2)
         self._message_list = tk.Frame(self._message_canvas, bg=self.CARD)
         self._message_canvas_window = self._message_canvas.create_window(
             (0, 0), window=self._message_list, anchor="nw"
@@ -1063,13 +1073,22 @@ class DetectorSettingsWindow:
 
         footer = tk.Frame(messages, bg=self.CARD)
         footer.pack(fill="x", pady=(12, 0))
-        self.message_status = tk.StringVar(value="修改后点击保存，下一次挥鞭立即生效")
-        self._button(
-            footer, "添加消息", self._add_message, self.CARD_ALT, self.TEXT
-        ).pack(side="right", padx=(8, 0))
-        self._button(
-            footer, "保存消息设置", self._save_messages, self.GREEN, "#07130D"
-        ).pack(side="right")
+        self.message_status = tk.StringVar(value="")
+        tk.Label(
+            footer, textvariable=self.message_status, bg=self.CARD, fg=self.RED,
+            font=(style.FONT, 9), anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+        self.message_order_button = style.ActionButton(
+            footer, self._message_order_icon(), self._toggle_message_order)
+        self.message_order_button.configure(font=("Segoe UI Symbol", 13), takefocus=True)
+        self.message_order_button.bind("<Enter>", self._show_message_order_tip, add="+")
+        self.message_order_button.bind("<Leave>", self._hide_message_order_tip, add="+")
+        self.message_add_button = self._button(
+            footer, "+", self._add_message, self.CARD_ALT, self.TEXT
+        )
+        self.message_add_button.configure(font=("Segoe UI", 17), takefocus=True)
+        self.message_add_button.pack(side="right")
+        self.message_order_button.pack(side="right", padx=(0, 8))
 
     def _message_order_icon(self):
         return '↕' if self.message_order.get() == 'sequential' else '⤨'
@@ -1078,11 +1097,33 @@ class DetectorSettingsWindow:
         self.message_order.set('random' if self.message_order.get() == 'sequential' else 'sequential')
         self.message_order_button.configure(text=self._message_order_icon())
         self._save_messages()
+        if self._message_order_tip is not None:
+            self._message_order_tip.winfo_children()[0].configure(text=self._message_order_name())
+
+    def _message_order_name(self) -> str:
+        return "顺序发送" if self.message_order.get() == "sequential" else "随机发送"
+
+    def _show_message_order_tip(self, _event: tk.Event | None = None) -> None:
+        self._hide_message_order_tip()
+        tip = tk.Toplevel(self.message_order_button)
+        tip.withdraw()
+        tip.overrideredirect(True)
+        tk.Label(tip, text=self._message_order_name(), bg="#24262B", fg="#FFFFFF",
+                 padx=9, pady=5, font=(style.FONT, 9)).pack()
+        tip.update_idletasks()
+        tip.geometry(f"+{self.message_order_button.winfo_rootx()}+"
+                     f"{self.message_order_button.winfo_rooty() - tip.winfo_reqheight() - 5}")
+        tip.deiconify()
+        self._message_order_tip = tip
+
+    def _hide_message_order_tip(self, _event: tk.Event | None = None) -> None:
+        tip, self._message_order_tip = self._message_order_tip, None
+        if tip is not None:
+            tip.destroy()
 
     def _resize_message_shell(self, event):
-        # Keep the editable column at 70% and center it inside the card.
-        inset = max(0, round(float(event.width) * .15))
-        self._message_list_shell.pack_configure(padx=(inset, inset))
+        # The editable column occupies 80%, left-aligned; the delete target uses the right rail.
+        self._message_side.configure(width=max(88, round(float(event.width) * .20)))
 
     def _update_message_scrollbar(self, _event: tk.Event | None = None) -> None:
         # One page scrollbar: nested scrollbars clip the final action column
@@ -1138,13 +1179,8 @@ class DetectorSettingsWindow:
             )
             text.insert("1.0", value)
             text.pack(side="left", fill="both", expand=True)
-            self._button(
-                card,
-                "删除",
-                lambda i=index: self._delete_message(i),
-                self.CARD_ALT,
-                self.RED,
-            ).pack(side="right", padx=(8, 0))
+            text.edit_modified(False)
+            text.bind("<<Modified>>", lambda _event, widget=text: self._message_edited(widget))
             self._message_widgets.append(text)
             self._message_cards.append(card)
         style.restyle_fields(self._message_list)
@@ -1162,6 +1198,7 @@ class DetectorSettingsWindow:
         self._message_values.append("继续当前任务，先完成一个可验证的关键节点。")
         self._render_message_cards()
         self._message_canvas.yview_moveto(1.0)
+        self._save_messages()
 
     def _delete_message(self, index: int) -> None:
         values = self._collect_message_values()
@@ -1171,11 +1208,36 @@ class DetectorSettingsWindow:
         values.pop(index)
         self._message_values = values
         self._render_message_cards()
+        self._save_messages()
+
+    def _message_edited(self, widget: tk.Text) -> None:
+        if not widget.edit_modified():
+            return
+        widget.edit_modified(False)
+        self._schedule_message_save()
+
+    def _schedule_message_save(self) -> None:
+        if self._message_save_after is not None:
+            self.window.after_cancel(self._message_save_after)
+        self._message_save_after = self.window.after(350, self._save_messages)
+
+    def _show_message_trash(self) -> None:
+        self._message_trash.place(relx=.5, rely=.5, anchor="center")
+
+    def _hide_message_trash(self) -> None:
+        self._message_trash.place_forget()
+
+    def _message_over_trash(self, x_root: float, y_root: float) -> bool:
+        trash = self._message_trash
+        return (trash.winfo_ismapped()
+                and trash.winfo_rootx() <= x_root <= trash.winfo_rootx() + trash.winfo_width()
+                and trash.winfo_rooty() <= y_root <= trash.winfo_rooty() + trash.winfo_height())
 
     def _start_message_drag(self, index: int, _event: tk.Event) -> str:
         self._collect_message_values()
         self._message_drag_index = index
         self._message_cards[index].configure(highlightbackground=self.ACCENT, highlightthickness=1)
+        self._show_message_trash()
         return "break"
 
     def _message_drop_index(self, y_root: float) -> int:
@@ -1188,6 +1250,7 @@ class DetectorSettingsWindow:
     def _move_message_drag(self, event: tk.Event) -> str:
         if self._message_drag_index is None:
             return "break"
+        self._message_trash.configure(bg="#F3CBCB" if self._message_over_trash(event.x_root, event.y_root) else "#FCEBEB")
         target = self._message_drop_index(float(event.y_root))
         for index, card in enumerate(self._message_cards):
             card.configure(
@@ -1201,29 +1264,41 @@ class DetectorSettingsWindow:
             return "break"
         source = self._message_drag_index
         target = self._message_drop_index(float(event.y_root))
+        delete = self._message_over_trash(event.x_root, event.y_root)
         self._message_drag_index = None
+        self._hide_message_trash()
+        if delete:
+            self._delete_message(source)
+            if len(self._message_values) <= 1:
+                self._message_cards[0].configure(highlightbackground=self.LINE)
+            return "break"
         if source != target:
             self._message_values = list(
                 reorder_messages(self._message_values, source, target)
             )
-        self._render_message_cards()
+        if source != target:
+            self._render_message_cards()
+            self._save_messages()
+        else:
+            for card in self._message_cards:
+                card.configure(highlightbackground=self.LINE)
         return "break"
 
     def _save_messages(self) -> None:
         assert self._message_store is not None
+        if self._message_save_after is not None:
+            self.window.after_cancel(self._message_save_after)
+            self._message_save_after = None
+        values = self._collect_message_values()
         try:
             profile = MessageProfile(
-                self.message_order.get(), tuple(self._collect_message_values())
+                self.message_order.get(), tuple(values)
             ).validated()
             self._message_store.update(profile)
         except (OSError, ValueError) as exc:
-            messagebox.showerror("无法保存消息", str(exc))
-            self.message_status.set("保存失败")
+            self.message_status.set(str(exc))
             return
-        self._message_values = list(profile.messages)
-        self._render_message_cards()
-        order = "按卡片顺序" if profile.order == "sequential" else "随机且避免紧邻重复"
-        self.message_status.set(f"已保存 {len(profile.messages)} 条消息；{order}发送")
+        self.message_status.set("")
 
     def _card(self, parent: tk.Widget, **options: object) -> tk.Frame:
         options.update(padx=24,pady=24)
@@ -1599,6 +1674,9 @@ class DetectorSettingsWindow:
         self.window.focus_force()
 
     def close(self) -> None:
+        if self._message_store is not None and self._message_save_after is not None:
+            self._save_messages()
+        self._hide_message_order_tip()
         if self._voice_calibrating and self._cancel_voice_calibration is not None:
             self._cancel_voice_calibration()
             self._voice_calibrating = False
