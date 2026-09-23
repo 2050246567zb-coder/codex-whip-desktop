@@ -593,11 +593,14 @@ class Interface:
 
         sending = self._sending_card = style.RoundedCard(self.host, padx=24, pady=24)
         label(sending, "发送控制", size=12, bold=True).pack(anchor="w", pady=(0,12))
-        a.arm_check = style.Switch(sending, text=f"允许挥动后向 {a.settings.codex.target_app} 发送消息",
+        send_row = tk.Frame(sending, bg=CARD)
+        send_row.pack(anchor="w")
+        label(send_row, "发送开关", size=10).pack(side="left", padx=(0, 12))
+        a.arm_check = style.Switch(send_row, text="",
                                     variable=a.arm_value, command=a.toggle_arm,
                                     bg=CARD, activebackground=CARD, fg=TEXT, selectcolor=CARD,
                                     font=(FONT, 10), cursor="hand2", takefocus=True)
-        a.arm_check.pack(anchor="w")
+        a.arm_check.pack(side="left")
 
         speech_disclosure = self._speech_panel = Disclosure(self.host, "下一鞭的语音文字", bg=BG)
         speech = style.RoundedCard(speech_disclosure.body, padx=20, pady=16)
@@ -780,6 +783,7 @@ class Interface:
         self.app.arm_value.set(False)
         self.app.mode_value.set('安全监听')
         self.stage = 'ready'
+        self.app._restore_send_state()
         self._render_key = None
 
     def start_inline_calibration(self):
@@ -875,7 +879,8 @@ class Interface:
             self.stage = "choices"
             if self._persist():
                 self.stage = "ready"
-                self._notice = "准备好了。发送权限可在设置中开启。"
+                self.app._restore_send_state()
+                self._notice = "准备好了。发送开关可在设置中调整。"
                 self._notice_until = time.monotonic() + 8
             return
         self._learning_kind = self._learning_queue.pop(0)
@@ -939,6 +944,8 @@ class Interface:
             self.app.mode_value.set("安全监听")
             self.stage = self._calibration_return_stage if saved else (
                 "ready" if self.preferences.setup_complete else "connect")
+            if self.stage == "ready":
+                self.app._restore_send_state()
             self._mount_detail = ""
             self._render_key = None
         elif kind == "voice_state":

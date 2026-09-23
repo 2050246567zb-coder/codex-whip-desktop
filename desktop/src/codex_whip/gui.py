@@ -453,7 +453,9 @@ class GuiEventProcessor:
 
         voice_prompt = self._voice.pending_text if self._voice is not None else None
         native_draft = bool(self._voice is not None and self._voice.native_draft_pending)
-        prompt = voice_prompt or ("Codex 原生听写" if native_draft else self._prompts.choose(message))
+        voice_only = bool(self._voice is not None and self._voice.store.settings.enabled)
+        prompt = voice_prompt or ("Codex 原生听写" if native_draft else
+                                  "" if voice_only else self._prompts.choose(message))
         self._emit(
             "whip",
             {
@@ -473,7 +475,9 @@ class GuiEventProcessor:
             },
         )
 
-        if not self._armed.is_set():
+        if voice_only and not voice_prompt and not native_draft:
+            result = SendResult(sent=False, detail="语音输入已开启，等待识别后的文字")
+        elif not self._armed.is_set():
             result = SendResult(
                 sent=False,
                 detail="安全监听：已收到挥动，但没有向 Codex 输入文字",
@@ -709,6 +713,7 @@ class CodexWhipWindow:
         )
 
         self._build_window()
+        self._restore_send_state()
         if load_mounting_profile(self.mounting_path) is None:
             self.sensor_calibrate_button.configure(text="首次方向校准")
         self.effects = CodexWhipEffects(
@@ -738,6 +743,13 @@ class CodexWhipWindow:
         # Public in-process hook for Codex/development automation. No product
         # control links to the developer page.
         self.root.bind('<<OpenDeveloperSettings>>', lambda _event: self.open_developer_settings())
+
+    def _restore_send_state(self) -> None:
+        if self.ui.stage != "ready" or not self.ui.preferences.send_enabled:
+            return
+        self.armed.set()
+        self.arm_value.set(True)
+        self.mode_value.set("实际发送已开启")
 
 
     def emit(self, kind: str, payload: Any) -> None:
@@ -819,6 +831,7 @@ class CodexWhipWindow:
     def start_listening(self) -> None:
         if self.worker_thread is not None and self.worker_thread.is_alive():
             return
+        self._restore_send_state()
         self.ble_value.set("正在启动")
         if self.listen_button is not None:
             self.listen_button.configure(text="停止监听", command=self.stop_listening)
@@ -915,6 +928,7 @@ class CodexWhipWindow:
         self.mode_value.set("安全监听")
         self.armed.clear()
         self.arm_value.set(False)
+        self._restore_send_state()
 
     @staticmethod
     def _version_at_least(value: str, required: tuple[int, int, int]) -> bool:
@@ -1199,15 +1213,23 @@ class CodexWhipWindow:
         if not self.arm_value.get():
             self.armed.clear()
             self.mode_value.set("安全监听")
-            self.emit("log", "已解除武装；挥动只记录，不会向 Codex 输入")
+            self.ui.preferences.send_enabled = False
+            self.ui._persist()
+            self.emit("log", "发送已关闭；挥动只记录，不会向 Codex 输入")
             return
 
         self.arm_value.set(False)
         if not messagebox.askyesno(
-            "武装实际发送",
-            f"武装后，每次有效挥动都可能把 {self.settings.codex.target_app} 窗口置前并立即提交一条消息。\n\n"
-            "目标不明确或输入框已有草稿时，软件会拒绝发送。是否继续？",
+            "发送提醒",
+            "每次有效抽打会尝试向当前 Codex 对话发送预设文字。\n"
+            "开启语音输入后，只发送语音识别出的内容。\n\n是否开启发送？",
         ):
+            self.ui.preferences.send_enabled = False
+            self.ui._persist()
+            return
+        self.ui.preferences.send_enabled = True
+        if not self.ui._persist():
+            self.ui.preferences.send_enabled = False
             return
         self.mode_value.set("检查中")
         self.arm_check.configure(state="disabled")
@@ -1571,6 +1593,8 @@ class CodexWhipWindow:
                     self.armed.clear()
                     self.arm_value.set(False)
                     self.mode_value.set("发送已暂停")
+                    self.ui.preferences.send_enabled = False
+                    self.ui._persist()
                 elif kind == "worker_started":
                     self._append_log("监听服务已启动")
                 elif kind == "worker_stopped":
@@ -1607,6 +1631,8 @@ class CodexWhipWindow:
                         self.armed.clear()
                         self.arm_value.set(False)
                         self.mode_value.set("安全监听")
+                        self.ui.preferences.send_enabled = False
+                        self.ui._persist()
                         self._append_log(f"无法武装：{detail}")
                         messagebox.showwarning("无法武装", str(detail))
                 elif kind == "codex_result":

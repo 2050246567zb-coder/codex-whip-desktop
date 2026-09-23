@@ -60,6 +60,31 @@ def test_product_is_codex_only_and_hides_manual_listen_control(app):
     assert app.listen_button is None
 
 
+def test_send_switch_label_and_confirmation_only_explain_behavior(app, monkeypatch):
+    from codex_whip.interface_state import InterfacePreferences
+
+    app.ui.stage = "ready"
+    assert app.arm_check.cget("text") == ""
+    assert any(child.cget("text") == "发送开关"
+               for child in app.arm_check.master.winfo_children()
+               if isinstance(child, tk.Label))
+    assert app.ui.preferences.send_enabled is True
+    app.arm_value.set(False)
+    app.toggle_arm()
+    assert not app.armed.is_set()
+    assert InterfacePreferences.load(app.ui.path, already_calibrated=True).send_enabled is False
+
+    reminder = []
+    monkeypatch.setattr("codex_whip.gui.messagebox.askyesno",
+                        lambda title, body: reminder.append((title, body)) or False)
+    app.arm_value.set(True)
+    app.toggle_arm()
+    assert reminder[0][0] == "发送提醒"
+    assert "预设文字" in reminder[0][1]
+    assert "只发送语音识别出的内容" in reminder[0][1]
+    assert not app.armed.is_set()
+
+
 def test_hover_clock_is_local_interruptible_and_yields_to_recording(app):
     app.ui.hero.set_mode('whip')
     app.ui.hero._clock_started -= 1
@@ -274,7 +299,7 @@ def test_skip_setup_persists_without_fabricating_calibration(app):
     app.armed.set()
     ui.skip_setup()
     assert ui.stage == 'ready'
-    assert not app.armed.is_set()
+    assert app.armed.is_set()
     assert not ui._learning_queue
     assert InterfacePreferences.load(ui.path,already_calibrated=False).setup_complete
     assert not app.mounting_path.exists()
@@ -341,7 +366,7 @@ def test_connection_must_have_fresh_sensor_data_before_calibration(app):
     assert not app.armed.is_set()
 
 
-def test_skip_learning_preserves_all_existing_profiles_and_never_arms(app, tmp_path):
+def test_skip_learning_preserves_profiles_and_restores_default_send(app, tmp_path):
     profile = tmp_path / "detector-profile.json"
     profile.write_text("keep this byte-for-byte")
     save_mounting_profile(MountingProfile((0, 0, 1), 30, 30), app.mounting_path)
@@ -355,8 +380,8 @@ def test_skip_learning_preserves_all_existing_profiles_and_never_arms(app, tmp_p
     assert app.ui.stage == "ready"
     assert app.mounting_path.read_bytes() == before
     assert profile.read_text() == "keep this byte-for-byte"
-    assert not app.armed.is_set()
-    assert not app.voice_store.settings.enabled
+    assert app.armed.is_set()
+    assert app.voice_store.settings.enabled
 
 
 def test_settings_sections_embed_all_existing_capabilities(app):
@@ -502,7 +527,7 @@ def test_tap_opt_in_enables_hardware_voice_without_calibration(app):
     assert app.voice_store.settings.enabled
     assert ui.stage == "ready"
     assert not app.voice_module.calibration_active
-    assert not app.armed.is_set()
+    assert app.armed.is_set()
 
 
 def test_onboarding_rejects_late_arm_result_and_disabled_permission(app):
