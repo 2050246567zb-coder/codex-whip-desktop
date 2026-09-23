@@ -1,2 +1,5 @@
 *.sh text eol=lf
 *.yml text eol=lf
+
+# Byte-verified calibration assets must keep identical bytes on all hosts.
+desktop/assets/factory-calibration/*.json text eol=lf
