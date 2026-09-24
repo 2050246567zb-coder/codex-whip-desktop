@@ -148,7 +148,7 @@ def test_home_title_changes_with_clock_hover(app):
     ui = app.ui
     ui.stage = 'ready'
     refresh(ui)
-    assert ui.title.cget('text') == 'just beat it'
+    assert ui.title.cget('text') == ''
 
 
 def test_power_setting_round_trip_and_disconnect_status(app):
@@ -218,7 +218,7 @@ def test_disconnected_loader_returns_to_whip(app):
     assert ui.title.cget('text') == "Don't waste time on AI"
     ui.hero._set_clock(False)
     refresh(ui)
-    assert ui.title.cget('text') == 'just beat it'
+    assert ui.title.cget('text') == ''
 
 
 def test_home_battery_indicator_tracks_device_and_disconnect(app):
@@ -371,6 +371,8 @@ def test_first_use_tour_waits_for_arrows_and_calibration_demos_up_first(app):
     ui = app.ui
     refresh(ui)
     assert ui.stage == "tour"
+    assert ui.TOUR[0][0] == "connecting"
+    assert ui.TOUR[1][0] == "whip"
     assert ui._tour_index == 0
     ui._tour_started -= 20
     refresh(ui)
@@ -390,6 +392,14 @@ def test_first_use_tour_waits_for_arrows_and_calibration_demos_up_first(app):
     refresh(ui)
     assert ui.hero._demo_direction == "up"
     assert ui.primary.cget("text") == "我准备好了"
+
+
+def test_optional_onboarding_choices_match_settings_switches(app):
+    from codex_whip.settings_style import Switch
+
+    choices = app.ui.choices.winfo_children()
+    assert len(choices) == 2
+    assert all(isinstance(choice, Switch) for choice in choices)
 
 
 def test_saved_direction_setup_enters_ready_without_extra_page(app, tmp_path):
@@ -463,7 +473,7 @@ def test_empty_voice_feedback_expires_and_new_recording_wins(app, monkeypatch):
     ui.stage = "ready"
     ui.observe("voice_state", {"state": "empty"})
     refresh(ui)
-    assert ui.title.cget("text") == "just beat it"
+    assert ui.title.cget("text") == ""
     assert ui.subtitle.cget("text") == ""
     clock[0] += 3.1
     refresh(ui)

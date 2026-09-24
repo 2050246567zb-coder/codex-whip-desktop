@@ -20,7 +20,7 @@ def overlay(host):
     root.destroy()
 
 
-def update(p,mode='whip',title='just beat it',subtitle='',deadline=None):
+def update(p,mode='whip',title='',subtitle='',deadline=None):
     p.update(mode=mode,title=title,subtitle=subtitle,deadline=deadline,
              clock_enabled=mode=='whip' and not subtitle,reduce_motion=False,level=.2)
 
@@ -44,7 +44,7 @@ def test_overlay_clock_is_right_click_only_and_voice_takes_priority(overlay):
     update(p,title="Don't waste time on AI")
     assert not p.hero._clock_hover
     assert not p.hero.bind('<Motion>')
-    assert p.title.cget('text') == 'just beat it'
+    assert p.title.cget('text') == ''
     p.render()
     p.toggle_clock()
     assert p.hero._clock_hover

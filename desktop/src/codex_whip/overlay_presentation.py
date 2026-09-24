@@ -28,7 +28,7 @@ class OverlayPresentation:
         self.photos = [None,None]
         self.text_keys = [None,None]
         self.canvas._native_image_sizes = getattr(self.canvas, "_native_image_sizes", {})
-        self.normal_title = 'just beat it'
+        self.normal_title = ''
         self.offset = (0.,0.)
         self.hit_pose = effects.IDLE
         self._strike_until = 0.
@@ -64,7 +64,7 @@ class OverlayPresentation:
         self.hero.set_mode(mode)
         self.hero.audio_level(level)
         # The home hover clock does not open the overlay clock.
-        self.normal_title = 'just beat it' if title == "Don't waste time on AI" else title
+        self.normal_title = '' if title == "Don't waste time on AI" else title
         self.title.configure(text="Don't waste time on AI" if self.hero._clock_hover else self.normal_title)
         self.subtitle.configure(text=subtitle)
         self.subtitle.set_countdown(deadline if subtitle == 'beat it, then send' else None)
@@ -120,7 +120,7 @@ class OverlayPresentation:
         dial = self.hero._clock_alpha
         bottom = bottom*(1-dial)+(400+oy)*dial
         ordinary = (self.hero.mode == 'whip' and not self.hero._clock_hover
-                    and not self.subtitle.cget('text') and self.normal_title == 'just beat it')
+                    and not self.subtitle.cget('text') and not self.normal_title)
         for index,label in enumerate((self.title,self.subtitle)):
             self.canvas.itemconfigure(self.text_items[index], state='hidden' if ordinary else 'normal')
             if ordinary:

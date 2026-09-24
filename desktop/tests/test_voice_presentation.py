@@ -163,7 +163,7 @@ def test_pending_title_wins_over_clock_and_whip_does_not_clear_unsent_text(app):
     assert ui.title.cget('text') == '把刚刚的问题修好'
     ui.observe('voice_pending', '')  # Backend emits this only on clear/success.
     refresh(ui)
-    assert ui.title.cget('text') == 'just beat it'
+    assert ui.title.cget('text') == ''
     assert ui.subtitle.cget('text') == ''
     assert ui.title._timer is not None
     assert ui.subtitle._timer is not None
@@ -199,7 +199,7 @@ def test_expired_voice_restores_normal_home_and_replacement_restarts_timer(app,m
     assert ui.title.cget('text') == 'second'
     clock[0] = 119.
     refresh(ui)
-    assert ui.title.cget('text') == 'just beat it'
+    assert ui.title.cget('text') == ''
     assert ui.subtitle._deadline is None
     assert ui.subtitle._sand_timer is None
     assert app.voice_module.pending_text is None

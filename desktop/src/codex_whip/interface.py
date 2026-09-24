@@ -453,6 +453,7 @@ class Hero(tk.Canvas):
 
 class Interface:
     TOUR = (
+        ('connecting', '正在连接', '连接手柄时会看到旋转的圆环与三个圆点。'),
         ('whip', '方向跟随', '转动手柄，屏幕上的鞭子会跟着转向。'),
         ('strike', '挥鞭抽打', '快速挥动手柄，会播放抽打动画与反馈。'),
         ('recording', '正在录音', '双敲手柄后，鞭子变成麦克风，开始收音。'),
@@ -504,6 +505,7 @@ class Interface:
         self._refresh()
 
     def _build_home(self):
+        from .settings_style import Switch
         self.root.title("Codex 鞭子")
         self.root.geometry("560x660")
         self.root.minsize(500, 620)
@@ -533,9 +535,7 @@ class Interface:
         self.tap_choice = tk.BooleanVar(master=self.root, value=False)
         for text, variable in (("抽打动作 · 15 次", self.whip_choice),
                                ("开启双敲语音 · 使用芯片硬件识别", self.tap_choice)):
-            tk.Checkbutton(self.choices, text=text, variable=variable, bg=BG, fg=TEXT,
-                           activebackground=BG, selectcolor=CARD, font=(FONT, 10),
-                           cursor="hand2").pack(anchor="w", pady=3)
+            Switch(self.choices, text=text, variable=variable).pack(anchor="w", pady=3)
         self.actions = tk.Frame(shell, bg=BG)
         self.primary = button(self.actions, "开始方向校准", self.advance, primary=True)
         self.primary.pack(side="right")
@@ -1057,7 +1057,7 @@ class Interface:
 
     def _clock_title_changed(self, active):
         if self.stage == 'ready' and self.hero.mode == 'whip' and not self._pending and self._voice_state not in {'recording','recognizing'}:
-            self.title.configure(text="Don't waste time on AI" if active else 'just beat it')
+            self.title.configure(text="Don't waste time on AI" if active else '')
 
     def _refresh(self):
         if self._closed:
@@ -1140,7 +1140,7 @@ class Interface:
             if not connected:
                 progress = "连接已断开。重新连接后可以继续，已录入的样本仍在。"
         else:
-            title = "Don't waste time on AI" if self.hero._clock_hover else "just beat it"
+            title = "Don't waste time on AI" if self.hero._clock_hover else ""
             subtitle = "" if connected else "等待手柄连接"
             if notice:
                 subtitle = notice
