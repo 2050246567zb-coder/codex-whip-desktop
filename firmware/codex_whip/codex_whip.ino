@@ -14,7 +14,7 @@
 
 namespace {
 
-constexpr char kFirmwareVersion[] = "0.8.2";
+constexpr char kFirmwareVersion[] = "0.8.3";
 constexpr char kDeviceName[] = "CodexWhip";
 constexpr uint32_t kSampleRateHz = 416;
 constexpr uint32_t kSamplePeriodUs = 1000000UL / kSampleRateHz;
@@ -44,6 +44,9 @@ constexpr uint32_t kVoiceNoSpeechTimeoutMs = 4000;
 constexpr uint8_t kChargeStatusPin = 23;  // P0.17, active-low BQ25100 ~CHG.
 constexpr uint32_t kBatteryReportPeriodMs = 30000;
 constexpr uint32_t kChargeDebounceMs = 80;
+constexpr uint16_t kAwakeAdvertisingFastUnits = 32;   // 20 ms at 0.625 ms/unit.
+constexpr uint16_t kAwakeAdvertisingSlowUnits = 244; // 152.5 ms.
+constexpr uint16_t kOfflineSleepAdvertisingUnits = 1600; // 1000 ms.
 // LSM6DS3TR-C hardware double-tap engine. Register values follow ST AN5130
 // section 5.5.5: all axes, slope threshold, Shock/Quiet/Duration state machine.
 // At the active +/-16 g range, TAP_THS=2 is a 1.0 g per-axis slope threshold.
@@ -878,8 +881,18 @@ void advertise() {
   Bluefruit.Advertising.addService(bleUart);
   Bluefruit.ScanResponse.addName();
   Bluefruit.Advertising.restartOnDisconnect(true);
-  Bluefruit.Advertising.setInterval(32, 244);
+  Bluefruit.Advertising.setInterval(kAwakeAdvertisingFastUnits,
+                                   kAwakeAdvertisingSlowUnits);
   Bluefruit.Advertising.setFastTimeout(30);
+  Bluefruit.Advertising.start(0);
+}
+
+void advertiseWhileOfflineSleeping() {
+  // Retain discoverability, but reduce radio duty cycle only after the
+  // disconnected handle has entered its five-minute IMU idle state.
+  Bluefruit.Advertising.stop();
+  Bluefruit.Advertising.setInterval(kOfflineSleepAdvertisingUnits,
+                                   kOfflineSleepAdvertisingUnits);
   Bluefruit.Advertising.start(0);
 }
 
@@ -1063,7 +1076,14 @@ bool wakePower() {
   nextSampleUs = micros();
   Bluefruit.autoConnLed(true);
   BLEConnection* connection = Bluefruit.Connection(Bluefruit.connHandle());
-  if (connection) requestHostConnection(connection->handle(), activeHost, false);
+  if (connection) {
+    // Auto-advertising after a later disconnect must use the awake schedule.
+    Bluefruit.Advertising.setInterval(kAwakeAdvertisingFastUnits,
+                                     kAwakeAdvertisingSlowUnits);
+    requestHostConnection(connection->handle(), activeHost, false);
+  } else {
+    advertise();
+  }
   reportPower();
   return true;
 }
@@ -1099,6 +1119,7 @@ void sleepPower(const MotionSample& sample) {
   BLEConnection* connection = Bluefruit.Connection(Bluefruit.connHandle());
   // Compatible low-power range; the central chooses the final interval.
   if (connection) requestHostConnection(connection->handle(), activeHost, true);
+  else advertiseWhileOfflineSleeping();
   reportPower();
 }
 
