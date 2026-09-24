@@ -274,7 +274,7 @@ def test_skip_setup_persists_without_fabricating_calibration(app):
     app.armed.set()
     ui.skip_setup()
     assert ui.stage == 'ready'
-    assert not app.armed.is_set()
+    assert app.armed.is_set()  # Product default: sending is on after onboarding.
     assert not ui._learning_queue
     assert InterfacePreferences.load(ui.path,already_calibrated=False).setup_complete
     assert not app.mounting_path.exists()
@@ -341,22 +341,47 @@ def test_connection_must_have_fresh_sensor_data_before_calibration(app):
     assert not app.armed.is_set()
 
 
-def test_skip_learning_preserves_all_existing_profiles_and_never_arms(app, tmp_path):
+def test_first_use_tour_waits_for_arrows_and_calibration_demos_up_first(app):
+    connected(app)
+    ui = app.ui
+    refresh(ui)
+    assert ui.stage == "tour"
+    assert ui._tour_index == 0
+    ui._tour_started -= 20
+    refresh(ui)
+    assert ui._tour_index == 0  # The animation never auto-advances.
+    ui.next_tour()
+    refresh(ui)
+    assert ui._tour_index == 1
+    ui.previous_tour()
+    assert ui._tour_index == 0
+    ui._tour_index = len(ui.TOUR) - 1
+    app.processor = Mock()
+    app._send_mount_command = Mock()
+    ui.next_tour()
+    assert ui.stage == "calibrate"
+    token = ui._mount_token
+    ui.observe("mount_state", {"token": token, "stage": "up_ready", "detail": ""})
+    refresh(ui)
+    assert ui.hero._demo_direction == "up"
+    assert ui.primary.cget("text") == "我准备好了"
+
+
+def test_saved_direction_setup_enters_ready_without_extra_page(app, tmp_path):
     profile = tmp_path / "detector-profile.json"
     profile.write_text("keep this byte-for-byte")
     save_mounting_profile(MountingProfile((0, 0, 1), 30, 30), app.mounting_path)
     before = app.mounting_path.read_bytes()
     app.ui._mount_token = 'test-token'
-    app.ui._calibration_return_stage = 'choices'
+    app.ui._calibration_return_stage = 'tour'
     app.ui.observe("mount_closed", {"token": "test-token", "saved": True})
-    assert app.ui.stage == "choices"
-    app.ui.skip_learning()
+    assert app.ui.stage == "ready"
     refresh(app.ui)
     assert app.ui.stage == "ready"
     assert app.mounting_path.read_bytes() == before
     assert profile.read_text() == "keep this byte-for-byte"
-    assert not app.armed.is_set()
-    assert not app.voice_store.settings.enabled
+    assert app.armed.is_set()
+    assert app.voice_store.settings.enabled
 
 
 def test_settings_sections_embed_all_existing_capabilities(app):
@@ -502,7 +527,7 @@ def test_tap_opt_in_enables_hardware_voice_without_calibration(app):
     assert app.voice_store.settings.enabled
     assert ui.stage == "ready"
     assert not app.voice_module.calibration_active
-    assert not app.armed.is_set()
+    assert app.armed.is_set()
 
 
 def test_onboarding_rejects_late_arm_result_and_disabled_permission(app):
@@ -590,8 +615,8 @@ def test_minimal_header_and_footer(app):
     refresh(app.ui)
     assert app.ui.connection_label.cget("text") == "●"
     assert app.ui.connection_label.master is app.settings_button.master
-    assert app.ui.direction_button.cget("text") == "校准手柄方向"
-    assert app.ui.direction_button.winfo_manager() == "pack"
+    assert not hasattr(app.ui, "direction_button")
+    assert app.sensor_calibrate_button.cget("text") == "首次方向校准"
     assert not hasattr(app.ui, "mode")
     header_text = [
         w.cget("text")
@@ -682,7 +707,7 @@ def test_inline_calibration_primary_button_sends_neutral_and_releases_capture(ap
     assert app.ui.start_inline_calibration()
     app.effects.set_interaction_enabled.assert_called_with(False)
     refresh(app.ui)
-    assert app.ui.primary.cget('text') == '记录这个姿势'
+    assert app.ui.primary.cget('text') == '我握好了'
     assert str(app.ui.primary.cget('state')) == 'normal'
     app.ui.primary.invoke()
     app._send_mount_command.assert_called_with('neutral', app.ui._mount_token)

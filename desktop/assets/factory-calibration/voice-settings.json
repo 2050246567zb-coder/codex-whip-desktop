@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "enabled": false,
+  "enabled": true,
   "input_mode": "transcription",
   "speech_provider": "doubao-v2",
   "recording_gain": 2.0,

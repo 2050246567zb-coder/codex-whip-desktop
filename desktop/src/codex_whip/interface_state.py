@@ -1,4 +1,4 @@
-"""Presentation-only preferences and meters; never changes detection profiles."""
+"""Product preferences and meters; never changes detection profiles."""
 from __future__ import annotations
 
 import json
@@ -15,13 +15,15 @@ from .voice import decode_ima_adpcm_chunk
 class InterfacePreferences:
     setup_complete: bool = False
     reduce_motion: bool = False
+    send_enabled: bool = True
 
     @classmethod
     def load(cls, path: Path, *, already_calibrated: bool) -> "InterfacePreferences":
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
             return cls(value.get("setup_complete") is True,
-                       value.get("reduce_motion") is True)
+                       value.get("reduce_motion") is True,
+                       value.get("send_enabled", True) is True)
         except (OSError, ValueError, AttributeError):
             # Existing calibrated users do not need to repeat first-use setup.
             return cls(setup_complete=already_calibrated)

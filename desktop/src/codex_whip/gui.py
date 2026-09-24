@@ -33,7 +33,8 @@ from .effects import CodexWhipEffects
 from .gate import EventGate
 from .hotkeys import GlobalHotkey, HotkeyRegistrationError, parse_hotkey
 from .messages import MessageProfileStore, PromptSelector
-from .migration import import_bundled_profile_once, import_factory_calibration_once
+from .migration import (bundled_factory_calibration_dir, import_bundled_profile_once,
+                        import_factory_calibration_once)
 from .models import (
     AudioChunk,
     AudioEnd,
@@ -336,6 +337,14 @@ class GuiEventProcessor:
             self._emit("log", "已加载当前手柄的静止零偏补偿："
                        + ", ".join(f"{v:.3f}" for v in bias) + " °/秒")
 
+    def set_mounting_profile(self, profile) -> None:
+        """Apply a restored direction profile on the sensor worker thread."""
+        if self._mount_session is not None:
+            return
+        self._sensor_pose.mounting = profile.validated()
+        self._sensor_pose.reset()
+        self._mount_original = profile
+
     def _sender(self) -> Any:
         if self._live_sender is None:
             self._live_sender = create_live_sender(self._codex_settings)
@@ -453,7 +462,9 @@ class GuiEventProcessor:
 
         voice_prompt = self._voice.pending_text if self._voice is not None else None
         native_draft = bool(self._voice is not None and self._voice.native_draft_pending)
-        prompt = voice_prompt or ("Codex 原生听写" if native_draft else self._prompts.choose(message))
+        voice_only = bool(self._voice is not None and self._voice.store.settings.enabled)
+        prompt = voice_prompt or ("Codex 原生听写" if native_draft else
+                                  "" if voice_only else self._prompts.choose(message))
         self._emit(
             "whip",
             {
@@ -473,7 +484,9 @@ class GuiEventProcessor:
             },
         )
 
-        if not self._armed.is_set():
+        if voice_only and not voice_prompt and not native_draft:
+            result = SendResult(sent=False, detail="语音输入已开启，等待识别后的文字")
+        elif not self._armed.is_set():
             result = SendResult(
                 sent=False,
                 detail="安全监听：已收到挥动，但没有向 Codex 输入文字",
@@ -552,7 +565,7 @@ class GuiEventProcessor:
             self._mount_original = self._sensor_pose.mounting
             self._sensor_pose.mounting = None
             self._sensor_pose.reset()
-            self._mount_session = DirectionCalibration(self._sensor_pose)
+            self._mount_session = DirectionCalibration(self._sensor_pose, first="up")
             if self._motion_engine is not None:
                 self._motion_engine.set_paused(True)
             if self._voice is not None:
@@ -709,6 +722,7 @@ class CodexWhipWindow:
         )
 
         self._build_window()
+        self._restore_send_state()
         if load_mounting_profile(self.mounting_path) is None:
             self.sensor_calibrate_button.configure(text="首次方向校准")
         self.effects = CodexWhipEffects(
@@ -739,6 +753,13 @@ class CodexWhipWindow:
         # control links to the developer page.
         self.root.bind('<<OpenDeveloperSettings>>', lambda _event: self.open_developer_settings())
 
+
+    def _restore_send_state(self) -> None:
+        if self.ui.stage != "ready" or not self.ui.preferences.send_enabled:
+            return
+        self.armed.set()
+        self.arm_value.set(True)
+        self.mode_value.set("实际发送已开启")
 
     def emit(self, kind: str, payload: Any) -> None:
         # Record lifecycle only: never persist audio or recognized text.
@@ -819,6 +840,7 @@ class CodexWhipWindow:
     def start_listening(self) -> None:
         if self.worker_thread is not None and self.worker_thread.is_alive():
             return
+        self._restore_send_state()
         self.ble_value.set("正在启动")
         if self.listen_button is not None:
             self.listen_button.configure(text="停止监听", command=self.stop_listening)
@@ -872,7 +894,7 @@ class CodexWhipWindow:
         if not self.ble_connected:
             self._set_power_status('已保存，连接后同步')
         elif not supports_power_saving(self.firmware_version):
-            self._set_power_status('需要旧 XIAO 固件 0.6.1；当前尚未生效')
+            self._set_power_status('当前固件不支持省电设置；请更新 XIAO 产品固件')
         elif self.send_device_command(self.power_store.command()):
             self._set_power_status('等待手柄确认…')
         else:
@@ -890,6 +912,33 @@ class CodexWhipWindow:
             return
         self.sensor_calibrate_button.configure(state="disabled", text="校准中…")
         loop.call_soon_threadsafe(processor.calibrate_sensor_neutral)
+
+    def restore_factory_direction(self) -> None:
+        """Restore only the bundled direction profile, not personal inputs."""
+        parent = self.ui.settings if self.ui.settings.winfo_viewable() else self.root
+        if self.ui.stage == 'calibrate' or (self.processor is not None
+                and self.processor._mount_session is not None):
+            messagebox.showinfo("正在校准", "请先完成或取消当前方向校准。", parent=parent)
+            return
+        source = bundled_factory_calibration_dir()
+        profile = load_mounting_profile(source / "mounting-profile.json") if source else None
+        if profile is None:
+            messagebox.showerror("无法恢复默认", "安装包中没有可用的默认方向数据。", parent=parent)
+            return
+        if not messagebox.askyesno(
+            "恢复默认方向", "将方向校准恢复为产品预设值？\n不会修改挥鞭、双敲、语音或发送设置。",
+            parent=parent,
+        ):
+            return
+        try:
+            save_mounting_profile(profile, self.mounting_path)
+        except OSError as exc:
+            messagebox.showerror("无法恢复默认", str(exc), parent=parent)
+            return
+        if self.worker_loop is not None and self.processor is not None:
+            self.worker_loop.call_soon_threadsafe(self.processor.set_mounting_profile, profile)
+        self.sensor_calibrate_button.configure(text="开始校准")
+        self.last_event_value.set("方向已恢复默认；请将手柄对准屏幕静止三秒完成归中。")
 
     def open_mount_calibration(self) -> None:
         if self.worker_loop is None or self.processor is None:
@@ -915,6 +964,7 @@ class CodexWhipWindow:
         self.mode_value.set("安全监听")
         self.armed.clear()
         self.arm_value.set(False)
+        self._restore_send_state()
 
     @staticmethod
     def _version_at_least(value: str, required: tuple[int, int, int]) -> bool:
@@ -959,6 +1009,18 @@ class CodexWhipWindow:
         except (OSError, ValueError) as exc:
             messagebox.showerror("无法保存语音设置", str(exc))
             return False
+        if settings.enabled and not previous.enabled:
+            previous_send = self.ui.preferences.send_enabled
+            self.ui.preferences.send_enabled = True
+            if not self.ui._persist():
+                self.ui.preferences.send_enabled = previous_send
+                try:
+                    self.voice_store.update(previous)
+                    self.voice_module.update_settings()
+                except (OSError, ValueError):
+                    self.emit("log", "开启语音失败后，无法恢复原语音设置")
+                return False
+            self._restore_send_state()
         if previous.input_mode != settings.input_mode:
             self._stop_native_dictation(abort=True)
             self.voice_module.clear_pending()
@@ -1199,15 +1261,23 @@ class CodexWhipWindow:
         if not self.arm_value.get():
             self.armed.clear()
             self.mode_value.set("安全监听")
-            self.emit("log", "已解除武装；挥动只记录，不会向 Codex 输入")
+            self.ui.preferences.send_enabled = False
+            self.ui._persist()
+            self.emit("log", "发送已关闭；挥动只记录，不会向 Codex 输入")
             return
 
         self.arm_value.set(False)
         if not messagebox.askyesno(
-            "武装实际发送",
-            f"武装后，每次有效挥动都可能把 {self.settings.codex.target_app} 窗口置前并立即提交一条消息。\n\n"
-            "目标不明确或输入框已有草稿时，软件会拒绝发送。是否继续？",
+            "发送提醒",
+            "每次有效抽打会尝试向当前 Codex 对话发送预设文字。\n"
+            "开启语音输入后，只发送语音识别出的内容。\n\n是否开启发送？",
         ):
+            self.ui.preferences.send_enabled = False
+            self.ui._persist()
+            return
+        self.ui.preferences.send_enabled = True
+        if not self.ui._persist():
+            self.ui.preferences.send_enabled = False
             return
         self.mode_value.set("检查中")
         self.arm_check.configure(state="disabled")
@@ -1384,7 +1454,7 @@ class CodexWhipWindow:
                             self.send_device_command(self.power_store.command())
                             self._set_power_status('等待手柄确认…')
                         else:
-                            self._set_power_status('需要旧 XIAO 固件 0.6.1；当前尚未生效')
+                            self._set_power_status('当前固件不支持省电设置；请更新 XIAO 产品固件')
                         self.firmware_supports_settings = self._version_at_least(
                             self.firmware_version, (0, 3, 1)
                         )
@@ -1571,6 +1641,8 @@ class CodexWhipWindow:
                     self.armed.clear()
                     self.arm_value.set(False)
                     self.mode_value.set("发送已暂停")
+                    self.ui.preferences.send_enabled = False
+                    self.ui._persist()
                 elif kind == "worker_started":
                     self._append_log("监听服务已启动")
                 elif kind == "worker_stopped":
@@ -1607,6 +1679,8 @@ class CodexWhipWindow:
                         self.armed.clear()
                         self.arm_value.set(False)
                         self.mode_value.set("安全监听")
+                        self.ui.preferences.send_enabled = False
+                        self.ui._persist()
                         self._append_log(f"无法武装：{detail}")
                         messagebox.showwarning("无法武装", str(detail))
                 elif kind == "codex_result":
@@ -1731,8 +1805,8 @@ class CodexWhipWindow:
                         )
                     elif state == "recognizing":
                         system_beep("ok")
-                        self.voice_status_value.set("正在本地识别")
-                        self._append_log("录音接收完成，正在本地识别中文")
+                        self.voice_status_value.set("正在识别语音")
+                        self._append_log("录音接收完成，正在识别中文；完成后记录实际识别来源")
                     elif state == "ready":
                         self.voice_status_value.set("文字已就绪，等待下一鞭")
                     elif state == "dictation_ready":

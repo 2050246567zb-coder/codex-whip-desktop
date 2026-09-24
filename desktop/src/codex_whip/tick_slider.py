@@ -42,7 +42,7 @@ class TickSlider(tk.Canvas):
         self._animation = None
         super().__init__(parent, width=320, height=88, bd=0, highlightthickness=0,
                          highlightbackground=kwargs.get('bg', parent.cget('bg')),
-                         highlightcolor='#246BEB', takefocus=True,
+                         highlightcolor='#19191B', takefocus=True,
                          cursor='hand2', **kwargs)
         self.bind('<Configure>', self._draw)
         self.bind('<Button-1>', self._press)

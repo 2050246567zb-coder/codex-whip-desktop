@@ -26,8 +26,11 @@ def rotation(q):
 class DirectionCalibration:
     """Worker-thread state machine; saving/applying remains an explicit action."""
 
-    def __init__(self, tracker: SensorPoseTracker) -> None:
+    def __init__(self, tracker: SensorPoseTracker, *, first: str = "right") -> None:
+        if first not in {"right", "up"}:
+            raise ValueError("校准方向必须是 right 或 up")
         self.tracker = tracker
+        self.first = first
         self.stage = "neutral"
         self.candidate: MountingProfile | None = None
         self.centered = False
@@ -39,12 +42,14 @@ class DirectionCalibration:
         self._shock_ms = self._fast_ms = 0
         self._peak_accel = self._peak_speed = 0.0
         self.right_angle = 0.0
+        self.up_angle = 0.0
+        self._up_axis = None
         self._yaw_sign = 1
         self.feedback = ""
         self._diagnostic_frames = deque(maxlen=6000)
 
     def invalidate(self) -> None:
-        self.__init__(self.tracker)
+        self.__init__(self.tracker, first=self.first)
 
     def connection_lost(self) -> None:
         # Installation axes already learned remain valid after a transport
@@ -109,7 +114,7 @@ class DirectionCalibration:
             self.tracker.calibrate_neutral(allow_motion=True)
         finally:
             self.tracker.mounting = old
-        self.stage = "right_ready"
+        self.stage = f"{self.first}_ready"
         self.candidate = None
         self.centered = False
 
@@ -160,20 +165,34 @@ class DirectionCalibration:
             # positive gyro/gravity dot product is a physical right turn.
             self._yaw_sign = 1 if yaw > 0 else -1
             self.right_angle = self.angle
-            self.stage = "up_ready"
-            self.feedback = "已学到向右的方向。恢复舒服的握姿即可开始向上采集，不必精确返回起点。"
+            if self.first == "up":
+                self.candidate = MountingProfile(
+                    _unit(_cross(self._start_up, self._up_axis)), self.right_angle,
+                    self.up_angle, schema_version=2, yaw_sign=self._yaw_sign,
+                ).validated()
+                self.stage = "review"
+                self.feedback = "两个方向已录入。请归中试转，确认跟随方向正确后保存。"
+            else:
+                self.stage = "up_ready"
+                self.feedback = "已学到向右的方向。恢复舒服的握姿即可开始向上采集，不必精确返回起点。"
         else:
             horizontal = tuple(rv[i] - yaw * self._start_up[i] for i in range(3))
             if math.degrees(length(horizontal)) < 8 or length(horizontal) / total < .30:
                 raise ValueError("本次动作与左右转动太接近，上抬分量不足。"
                                  "当前采集保留：向上再抬一点后点录入，不必重开。")
             axis = _unit(horizontal)
-            self.candidate = MountingProfile(
-                _unit(_cross(self._start_up, axis)), self.right_angle, self.angle,
-                schema_version=2, yaw_sign=self._yaw_sign,
-            ).validated()
-            self.stage = "review"
-            self.feedback = "两个方向已录入。请归中试转；只有确认跟随方向正确后才会保存。"
+            self._up_axis = axis
+            self.up_angle = self.angle
+            if self.first == "up":
+                self.stage = "right_ready"
+                self.feedback = "已学到向上的方向。恢复舒服的握姿，接下来向右转动。"
+            else:
+                self.candidate = MountingProfile(
+                    _unit(_cross(self._start_up, axis)), self.right_angle, self.up_angle,
+                    schema_version=2, yaw_sign=self._yaw_sign,
+                ).validated()
+                self.stage = "review"
+                self.feedback = "两个方向已录入。请归中试转；只有确认跟随方向正确后才会保存。"
 
     def retry(self) -> None:
         if self.stage in ("right_capture", "up_capture"):

@@ -11,11 +11,18 @@ SOURCE = (ROOT / "firmware/codex_whip/codex_whip.ino").read_text(encoding="utf-8
 
 
 def test_xiao_firmware_uses_one_second_st_double_tap_only() -> None:
-    assert 'kFirmwareVersion[] = "0.8.1"' in SOURCE
+    assert 'kFirmwareVersion[] = "0.8.3"' in SOURCE
     assert "writeImuRegisterVerified(kTapDurationRegister, 0xDF)" in SOURCE
     assert 'command.startsWith("TAPCFG,")' in SOURCE
     assert 'sendLine("TAP2," + String(now)' in SOURCE
     assert "kTapRawTailMs" not in SOURCE
+
+
+def test_offline_idle_keeps_discoverable_at_one_second_interval() -> None:
+    assert "kOfflineSleepAdvertisingUnits = 1600" in SOURCE
+    assert "else advertiseWhileOfflineSleeping();" in SOURCE
+    assert "Bluefruit.Advertising.setInterval(kOfflineSleepAdvertisingUnits," in SOURCE
+    assert "else {\n    advertise();\n  }" in SOURCE
 
 
 def test_minimum_setting_prefers_saved_hardware_threshold() -> None:

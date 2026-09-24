@@ -46,6 +46,38 @@ def test_product_has_only_doubao_recording_v2():
     assert preset.url.endswith('/api/v3/auc/bigmodel/submit')
     assert preset.query_url.endswith('/api/v3/auc/bigmodel/query')
     assert VoiceSettings().speech_provider == PRODUCT_PROVIDER
+    assert VoiceSettings().precise_recognition is True
+
+
+def test_local_only_switch_never_reads_key_or_uploads(setup, monkeypatch):
+    store, local, keys = setup
+    store.update(VoiceSettings(enabled=True, precise_recognition=False))
+    local.transcribe.return_value = '本地识别结果'
+    keys.get.side_effect = AssertionError('local mode must not read the cloud key')
+    network = Mock(side_effect=AssertionError('local mode must not upload audio'))
+    monkeypatch.setattr('urllib.request.build_opener', network)
+
+    router = SpeechRouter(store, local, keys)
+    assert router.ready is False
+    router.prepare()
+    local.prepare.assert_called_once()
+    assert router.transcribe(16000, b'\0\0') == '本地识别结果'
+    keys.get.assert_not_called()
+    network.assert_not_called()
+
+
+def test_recognition_mode_is_snapshotted_at_recording_start(setup, monkeypatch):
+    store, local, keys = setup
+    store.update(VoiceSettings(enabled=True, precise_recognition=False))
+    local.transcribe.return_value = '本地识别结果'
+    router = SpeechRouter(store, local, keys).snapshot()
+    store.update(VoiceSettings(enabled=True, precise_recognition=True))
+    network = Mock(side_effect=AssertionError('current recording must remain local'))
+    monkeypatch.setattr('urllib.request.build_opener', network)
+
+    assert router.transcribe(16000, b'\0\0') == '本地识别结果'
+    keys.get.assert_not_called()
+    network.assert_not_called()
 
 
 def test_doubao_v2_submits_then_queries_same_request(setup, monkeypatch):
@@ -97,8 +129,13 @@ def test_missing_key_uses_local_recognizer(setup):
     store, local, keys = setup
     keys.get.return_value = ''
     local.transcribe.return_value = '本地结果'
-    assert SpeechRouter(store, local, keys).transcribe(16000, b'\0\0') == '本地结果'
+    diagnostic = {}
+    assert SpeechRouter(store, local, keys).transcribe(
+        16000, b'\0\0', diagnostic=diagnostic) == '本地结果'
     local.prepare.assert_called_once()
+    assert diagnostic['cloud_skip_reason'] == 'api_key_missing'
+    assert diagnostic['final_engine'] == 'whisper.cpp'
+    assert diagnostic['attempts'][0]['status'] == 'success'
 
 
 def test_cloud_failure_prepares_and_uses_local_fallback(setup, monkeypatch):

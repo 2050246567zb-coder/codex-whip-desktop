@@ -1,4 +1,5 @@
 import tkinter as tk
+import time
 
 import pytest
 
@@ -193,6 +194,10 @@ def test_visual_settings_adjust_and_save_wound_frequency(root: tk.Tk, tmp_path) 
     )
     try:
         assert window.visual_frequency_slider.winfo_exists()
+        window.visual_frequency_slider.set(5)
+        assert window.visual_frequency_label.get() == '伤口出现频率：每抽打5次出现一次'
+        assert window.visual_frequency_slider.minimum == 1
+        assert window.visual_frequency_slider.maximum == 10
         assert not hasattr(window, "visual_scare_hotkey_entry")
         window.visual_strikes_per_wound.set("5")
         window._save_visual_settings()
@@ -232,6 +237,109 @@ def test_hardware_tap_minimum_slider_is_the_only_tap_control(root: tk.Tk, tmp_pa
         assert not hasattr(window, 'tap_auto_button')
     finally:
         window.close()
+
+
+def test_voice_switches_persist_and_gain_explains_audio_tradeoff(root, tmp_path):
+    store = VoiceSettingsStore(tmp_path / 'voice.json')
+
+    def apply(settings):
+        store.update(settings)
+        return True
+
+    window = DetectorSettingsWindow(
+        root, DetectorProfile(), lambda _: True, lambda _: True,
+        voice_store=store, apply_voice_settings=apply,
+    )
+    try:
+        window.voice_enabled.set(True)
+        window._save_voice_enabled()
+        window.voice_precise_recognition.set(False)
+        window._save_voice_precision()
+        restored = VoiceSettingsStore(tmp_path / 'voice.json').settings
+        assert restored.enabled is True
+        assert restored.precise_recognition is False
+        assert window.voice_sensitivity_label.get().endswith('%')
+        card = window.voice_sensitivity_slider.master
+        text = [label.cget('text')
+                for frame in card.winfo_children() if isinstance(frame, tk.Frame)
+                for label in frame.winfo_children() if isinstance(label, tk.Label)]
+        assert '录音识别增益' in text
+        assert any('杂音影响' in value for value in text)
+        window.refresh_voice_settings(restored)
+        assert window.voice_precise_recognition.get() is False
+    finally:
+        window.close()
+
+
+def test_message_settings_autosaves_edit_add_and_order(root: tk.Tk, tmp_path) -> None:
+    store = MessageProfileStore(("first", "second"), tmp_path / "messages.json")
+    window = DetectorSettingsWindow(
+        root, DetectorProfile(), lambda _command: True,
+        lambda _profile: True, message_store=store,
+    )
+    try:
+        assert window.message_add_button.cget("text") == "+"
+        assert not any(
+            child.cget("text") == "保存消息设置"
+            for child in window.message_add_button.master.winfo_children()
+        )
+        text = window._message_widgets[0]
+        text.delete("1.0", "end")
+        text.insert("1.0", "edited")
+        root.update()
+        assert window._message_save_after is not None
+        deadline = time.monotonic() + 1.5
+        while window._message_save_after is not None and time.monotonic() < deadline:
+            root.update()
+            time.sleep(.01)
+        assert store.profile.messages == ("edited", "second")
+        assert window._message_save_after is None
+        window._add_message()
+        assert len(store.profile.messages) == 3
+        window._toggle_message_order()
+        assert store.profile.order == "sequential"
+        assert window._message_order_name() == "顺序发送"
+        window._show_message_order_tip()
+        assert window._message_order_tip.winfo_children()[0].cget("text") == "顺序发送"
+    finally:
+        window.close()
+
+
+def test_message_drag_to_trash_deletes_and_other_drop_reorders(root: tk.Tk, tmp_path) -> None:
+    from types import SimpleNamespace
+
+    root.deiconify()
+    store = MessageProfileStore(("first", "second", "third"), tmp_path / "messages.json")
+    window = DetectorSettingsWindow(
+        root, DetectorProfile(), lambda _command: True,
+        lambda _profile: True, message_store=store,
+    )
+    try:
+        root.update()
+        window._start_message_drag(1, SimpleNamespace())
+        root.update()
+        trash = window._message_trash
+        assert trash.winfo_ismapped()
+        drop = SimpleNamespace(
+            x_root=trash.winfo_rootx() + trash.winfo_width() // 2,
+            y_root=trash.winfo_rooty() + trash.winfo_height() // 2,
+        )
+        window._finish_message_drag(drop)
+        assert not trash.winfo_ismapped()
+        assert store.profile.messages == ("first", "third")
+
+        root.update()
+        window._start_message_drag(0, SimpleNamespace())
+        root.update()
+        target = SimpleNamespace(
+            x_root=window._message_cards[1].winfo_rootx() + 5,
+            y_root=window._message_cards[1].winfo_rooty() + window._message_cards[1].winfo_height(),
+        )
+        window._finish_message_drag(target)
+        assert store.profile.messages == ("third", "first")
+    finally:
+        window.close()
+        root.withdraw()
 
 
 def test_untrained_sensitivity_updates_real_thresholds_and_reopens(root, tmp_path, monkeypatch):

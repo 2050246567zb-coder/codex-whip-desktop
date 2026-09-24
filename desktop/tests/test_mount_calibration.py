@@ -63,6 +63,28 @@ def learn(mounting=(1, 0, 0, 0)):
     return session, sim
 
 
+def test_first_use_learns_up_before_right_without_changing_mount_result():
+    tracker = SensorPoseTracker()
+    session = DirectionCalibration(tracker, first="up")
+    sim = Motion(tracker, session)
+    sim.feed()
+    session.record_neutral()
+    assert session.stage == "up_ready"
+    session.begin()
+    sim.feed(axis=(-1, 0, 0), speed=30, count=100)
+    sim.feed()
+    session.finish()
+    assert session.stage == "right_ready"
+    sim.feed(axis=(1, 0, 0), speed=30, count=100)
+    sim.feed()
+    session.begin()
+    sim.feed(speed=30, count=100)
+    sim.feed()
+    session.finish()
+    assert session.stage == "review"
+    assert session.candidate.forward == pytest.approx((0, 0, 1), abs=.02)
+
+
 MOUNTS = [(1, 0, 0, 0), quat((1, 0, 0), 180), quat((0, 0, 1), 90),
           quat((0, 1, 0), 180), quat((1, 2, 3), 117)]
 
@@ -226,19 +248,19 @@ def test_processor_full_flow_safe_send_save_reload_and_cancel(tmp_path):
     sim.feed()
     p.mount_command("neutral", "a")
     p.mount_command("begin", "a")
-    sim.feed(speed=30, count=100)
+    sim.feed(axis=(-1, 0, 0), speed=30, count=100)
     sim.feed()
     p.mount_command("finish", "a")
-    sim.feed(speed=-30, count=100)
+    sim.feed(axis=(1, 0, 0), speed=30, count=100)
     sim.feed()
     p.mount_command("begin", "a")
-    sim.feed(axis=(-1, 0, 0), speed=30, count=100)
+    sim.feed(speed=30, count=100)
     sim.feed()
     p.mount_command("finish", "a")
     assert p._mount_session.stage == "review"
     p.mount_command("save", "a")  # Must explicitly recenter and verify first.
     assert not path.exists()
-    sim.feed(axis=(1, 0, 0), speed=30, count=100)
+    sim.feed(speed=-30, count=100)
     sim.feed()
     p.mount_command("center", "a")
     assert p._mount_session.centered
@@ -270,10 +292,10 @@ def test_processor_stale_stream_and_disconnect_do_not_apply(tmp_path):
     sim = Motion(p._sensor_pose, callback=lambda b: asyncio.run(p.handle(b)))
     sim.feed()
     p.mount_command("neutral", "a")
-    assert p._mount_session.stage == "right_ready"
+    assert p._mount_session.stage == "up_ready"
     p.mount_command("disconnect", "a")
     assert p._last_sensor_batch_at == 0
-    assert p._mount_session.stage == "right_ready"
+    assert p._mount_session.stage == "up_ready"
     assert not (tmp_path / "mounting-profile.json").exists()
 
 
@@ -314,12 +336,12 @@ def test_long_capture_has_no_timeout_in_processor():
     sim.feed()
     p.mount_command("neutral", "a")
     p.mount_command("begin", "a")
-    sim.feed(speed=30, count=100)
+    sim.feed(axis=(-1, 0, 0), speed=30, count=100)
     sim.feed(count=6000)  # One minute reaching for the mouse must not reset.
-    assert p._mount_session.stage == "right_capture"
+    assert p._mount_session.stage == "up_capture"
     assert p._sensor_pose._last_timestamp_ms is not None
     p.mount_command("finish", "a")
-    assert p._mount_session.stage == "up_ready"
+    assert p._mount_session.stage == "right_ready"
     assert not hasattr(p._mount_session, "_segments")  # No unbounded history.
 
 

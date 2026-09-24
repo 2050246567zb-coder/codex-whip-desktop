@@ -131,6 +131,35 @@ def sleep_pose(width, height, nodes, elapsed):
     ))
 
 
+def question_pose(width, height, nodes):
+    """The grip is the lower stroke; the attached rope draws an open '?' hook."""
+    size = min(width, height)
+    center_x, center_y = width / 2, height / 2
+
+    def point(x, y):
+        return center_x + x * size, center_y + y * size
+
+    def cubic(start, control_a, control_b, end, amount):
+        inverse = 1 - amount
+        return point(*(
+            inverse ** 3 * start[index]
+            + 3 * inverse ** 2 * amount * control_a[index]
+            + 3 * inverse * amount ** 2 * control_b[index]
+            + amount ** 3 * end[index]
+            for index in (0, 1)
+        ))
+
+    def rope(fraction):
+        if fraction <= .58:
+            return cubic((0, .19), (0, 0), (.30, -.12), (.12, -.32), fraction / .58)
+        return cubic((.12, -.32), (-.01, -.46), (-.23, -.37),
+                     (-.22, -.20), (fraction - .58) / .42)
+
+    return WhipPose(point(0, .32), point(0, .19), tuple(
+        rope(index / max(1, nodes - 1)) for index in range(nodes)
+    ))
+
+
 def cord_rotation(source, target, previous=None):
     def direction(pose):
         x,y = pose.handle_end

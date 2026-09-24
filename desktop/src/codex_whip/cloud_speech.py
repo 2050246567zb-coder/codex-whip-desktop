@@ -49,6 +49,11 @@ def _valid_secret(value):
     return isinstance(value, str) and 0 < len(value) <= 2048 and all(33 <= ord(c) <= 126 for c in value)
 
 
+def _safe_status_code(value) -> str:
+    text = str(value)
+    return text if len(text) <= 16 and text.isascii() and text.isdigit() else ''
+
+
 def bundled_doubao_key_path() -> Path:
     root = (Path(sys._MEIPASS) if getattr(sys, 'frozen', False)
             else Path(__file__).resolve().parents[2])
@@ -158,6 +163,8 @@ class SpeechRouter:
 
     @property
     def ready(self):
+        if not self.store.settings.precise_recognition:
+            return self.local.ready is True
         preset = self.store.settings.speech_provider
         try:
             key = self.keys.get(preset)
@@ -170,11 +177,17 @@ class SpeechRouter:
             return self.local.prepare(progress)
 
     def _cloud_ready(self):
+        ready, _reason = self._cloud_availability()
+        return ready
+
+    def _cloud_availability(self):
+        if not self.store.settings.precise_recognition:
+            return False, 'precise_recognition_disabled'
         provider = self.store.settings.speech_provider
         try:
-            return bool(self.keys.get(provider))
+            return (True, '') if self.keys.get(provider) else (False, 'api_key_missing')
         except SpeechError:
-            return False
+            return False, 'credential_read_failed'
 
     def _local_transcribe(self, sample_rate, pcm, on_started):
         if not self.local.ready:
@@ -183,22 +196,60 @@ class SpeechRouter:
             return self.local.transcribe(sample_rate, pcm)
         return self.local.transcribe(sample_rate, pcm, on_started=on_started)
 
-    def transcribe(self, sample_rate, pcm, *, on_started=None):
+    def transcribe(self, sample_rate, pcm, *, on_started=None, diagnostic=None):
+        diagnostic = diagnostic if diagnostic is not None else {}
+        attempts = diagnostic.setdefault('attempts', [])
         provider = self.store.settings.speech_provider
-        if not self._cloud_ready():
-            return self._local_transcribe(sample_rate, pcm, on_started)
+        cloud_ready, skip_reason = self._cloud_availability()
+        if not cloud_ready:
+            diagnostic['cloud_skip_reason'] = skip_reason
+            return self._record_local(sample_rate, pcm, on_started, attempts, diagnostic)
+        cloud_attempt = {'engine': provider, 'status': 'started', 'submitted': False}
+        attempts.append(cloud_attempt)
+        started = time.monotonic()
         try:
-            return self._transcribe_cloud(provider, sample_rate, pcm, on_started=on_started)
+            result = self._transcribe_cloud(
+                provider, sample_rate, pcm, on_started=on_started,
+                diagnostic=cloud_attempt)
         except SpeechError as cloud_error:
+            cloud_attempt.update(status='error', error=str(cloud_error))
+            cloud_attempt['duration_ms'] = round((time.monotonic() - started) * 1000)
+            diagnostic['fallback'] = True
             # Cloud dispatch may already have emitted ``on_started``. Avoid a
             # duplicate recording-state transition while preparing/retrying
             # locally. A first-run local model may need preparation here.
             try:
-                return self._local_transcribe(sample_rate, pcm, None)
+                return self._record_local(sample_rate, pcm, None, attempts, diagnostic)
             except Exception:
                 raise cloud_error from None
+        except Exception as exc:
+            cloud_attempt.update(status='error', error_type=type(exc).__name__)
+            raise
+        else:
+            cloud_attempt['status'] = 'success' if result else 'empty'
+            if cloud_attempt['submitted']:
+                diagnostic['final_engine'] = provider
+            return result
+        finally:
+            cloud_attempt.setdefault('duration_ms', round((time.monotonic() - started) * 1000))
 
-    def _transcribe_cloud(self, provider, sample_rate, pcm, *, on_started=None):
+    def _record_local(self, sample_rate, pcm, on_started, attempts, diagnostic):
+        attempt = {'engine': 'whisper.cpp', 'status': 'started'}
+        attempts.append(attempt)
+        started = time.monotonic()
+        try:
+            result = self._local_transcribe(sample_rate, pcm, on_started)
+        except Exception as exc:
+            attempt.update(status='error', error_type=type(exc).__name__)
+            raise
+        else:
+            attempt['status'] = 'success' if result else 'empty'
+            diagnostic['final_engine'] = 'whisper.cpp'
+            return result
+        finally:
+            attempt['duration_ms'] = round((time.monotonic() - started) * 1000)
+
+    def _transcribe_cloud(self, provider, sample_rate, pcm, *, on_started=None, diagnostic=None):
         preset = PRESETS[provider]
         if sample_rate != 16000 or len(pcm) % 2 or len(pcm) > 16000*2*31:
             raise SpeechError('录音格式或长度无效，未上传')
@@ -217,6 +268,8 @@ class SpeechRouter:
             wav.writeframes(pcm)
         body, content_type = request_body(preset, audio.getvalue())
         request_id = str(uuid.uuid4())
+        if diagnostic is not None:
+            diagnostic['request_id'] = request_id
         headers = doubao_headers(provider, key, request_id=request_id)
         headers['Content-Type'] = content_type
         request = urllib.request.Request(preset.url, data=body, method='POST',
@@ -225,7 +278,12 @@ class SpeechRouter:
             if on_started is not None:
                 on_started()
             opener = urllib.request.build_opener(_NoRedirect())
+            if diagnostic is not None:
+                diagnostic['submitted'] = True
             with opener.open(request, timeout=30) as response:
+                if diagnostic is not None:
+                    diagnostic['service_status_code'] = _safe_status_code(
+                        response.headers.get('X-Api-Status-Code', ''))
                 if not check_doubao_status(response.headers):
                     return ''
                 raw = response.read(1024*1024+1)
@@ -238,6 +296,8 @@ class SpeechRouter:
                         preset.query_url, data=b'{}', method='POST', headers=query_headers)
                     with opener.open(query, timeout=10) as response:
                         code = response.headers.get('X-Api-Status-Code', '')
+                        if diagnostic is not None:
+                            diagnostic['service_status_code'] = _safe_status_code(code)
                         raw = response.read(1024*1024+1)
                     if code == '20000000':
                         break
@@ -255,6 +315,8 @@ class SpeechRouter:
             if not isinstance(text, str):
                 raise ValueError('invalid transcript')
         except urllib.error.HTTPError as exc:
+            if diagnostic is not None:
+                diagnostic['http_status'] = exc.code
             messages = {401: 'API Key 无效', 403: 'API Key 无权限或地区不匹配',
                         429: '服务限流或额度不足', 404: '模型暂不可用',
                         413: '录音超过服务限制'}

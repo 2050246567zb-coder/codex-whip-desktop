@@ -76,7 +76,8 @@ def test_ui_hang_watchdog_persists_thread_dump(tmp_path) -> None:
         watchdog.stop()
 
     text = path.read_text(encoding="utf-8")
-    assert "version=2.2.64" in text
+    from codex_whip import __version__
+    assert f"version={__version__}" in text
     assert "context=voice-state:recording" in text
     assert "Current thread" in text
     assert "_run" in text
@@ -319,6 +320,25 @@ def test_pending_voice_text_has_priority_and_clears_only_after_send(tmp_path) ->
     whip_payload = next(payload for kind, payload in emitted if kind == "whip")
     assert whip_payload["voice_prompt"] is True
     assert voice.pending_text is None
+
+
+def test_voice_input_never_sends_a_preset_without_recognized_text(tmp_path) -> None:
+    emitted: list[tuple[str, object]] = []
+    voice = VoiceModule(VoiceSettingsStore(tmp_path / "voice.json"), lambda *event: None)
+    armed = threading.Event()
+    armed.set()
+    processor = GuiEventProcessor(
+        Settings(), armed, lambda kind, payload: emitted.append((kind, payload)),
+        voice_module=voice,
+    )
+    processor._live_sender = Mock()
+
+    asyncio.run(processor.handle(WhipEvent(46, 900, 3.0, 120)))
+
+    processor._live_sender.send.assert_not_called()
+    assert next(payload for kind, payload in emitted if kind == "whip")["prompt"] == ""
+    result = next(payload for kind, payload in emitted if kind == "send_result")
+    assert result.sent is False
 
 
 def test_native_dictation_draft_is_submitted_without_inserting_prompt(tmp_path) -> None:

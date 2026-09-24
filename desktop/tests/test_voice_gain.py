@@ -39,7 +39,7 @@ def test_gain_is_persisted_and_old_profiles_are_discarded(tmp_path):
     path=tmp_path/'voice.json'
     path.write_text('{"schema_version":1,"enabled":true}')
     store=VoiceSettingsStore(path)
-    assert store.settings.recording_gain==2 and not store.settings.enabled
+    assert store.settings.recording_gain==2 and store.settings.enabled
     store.update(replace(store.settings,recording_gain=4.5))
     assert VoiceSettingsStore(path).settings.recording_gain==4.5
 

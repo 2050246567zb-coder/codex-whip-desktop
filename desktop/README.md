@@ -11,7 +11,7 @@ automatically and remains in safe-listening mode until the user explicitly
 checks the live-send arm control. A packaged build can be created from the
 repository root with `scripts\build-desktop.ps1`.
 
-## Current product branch: desktop 2.2.64 / shared firmware 0.8.1
+## Current product branch: desktop 2.2.64 / shared firmware 0.8.3
 
 The 2.2.64 Windows/macOS product uses the XIAO nRF52840 Sense LSM6DS3TR-C hardware
 Shock/Quiet/Duration state machine for double taps. The desktop exposes only a
@@ -26,7 +26,7 @@ board-to-board or wake-up offset without continuously learning away real turns.
 Recording and recognizing presentation also remains authoritative during a
 temporary motion-stream pause, rather than flashing the connection loader.
 
-Firmware 0.8.1 sends CRC-checked binary ADPCM frames through a serialized BLE
+Firmware 0.8.3 sends CRC-checked binary ADPCM frames through a serialized BLE
 transport that fragments complete records when required by the negotiated MTU.
 It waits for the Windows connection interval and MTU negotiation before starting
 PDM capture, and uses the maximum Bluefruit notification queue. The desktop
