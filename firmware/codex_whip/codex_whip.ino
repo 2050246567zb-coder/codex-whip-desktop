@@ -14,7 +14,7 @@
 
 namespace {
 
-constexpr char kFirmwareVersion[] = "0.8.1";
+constexpr char kFirmwareVersion[] = "0.8.2";
 constexpr char kDeviceName[] = "CodexWhip";
 constexpr uint32_t kSampleRateHz = 416;
 constexpr uint32_t kSamplePeriodUs = 1000000UL / kSampleRateHz;
@@ -65,6 +65,13 @@ BLEDis deviceInfo;
 BLEUart bleUart;
 PowerIdle powerIdle;
 bool powerEnabled = false;
+
+// Advertising never depends on this setting. Without a central, use the
+// firmware's five-minute IMU idle policy even when the saved desktop switch
+// is off; once connected, the desktop preference owns the policy again.
+bool powerSavingActive() {
+  return powerSavingEnabled(Bluefruit.connected(), powerEnabled);
+}
 bool powerSleeping = false;
 bool powerFsReady = false;
 bool powerHardwareFault = false;
@@ -1429,6 +1436,14 @@ void loop() {
     return;
   }
 
+  // A board that fell asleep while advertising must resume full-rate sensing
+  // as soon as a host connects with the desktop switch off. Keep register
+  // writes in the sampling task, never in a BLE callback.
+  if (Bluefruit.connected() && !powerEnabled && powerSleeping && !wakePower()) {
+    powerHardwareFault = true;
+    sendLine("POWERERR,IMU_RESTORE");
+  }
+
   if (powerSleeping) { pollSleepingMotion(); return; }
 
   if (learningMode && !Bluefruit.connected()) {
@@ -1457,7 +1472,7 @@ void loop() {
     powerSettling = false;
   }
   if (learningMode) powerIdle.reset(sample.timestampMs);
-  else if (powerEnabled && !powerHardwareFault &&
+  else if (powerSavingActive() && !powerHardwareFault &&
            powerIdle.idle(sample.timestampMs, sample.accelX, sample.accelY, sample.accelZ,
                           sample.gyroX, sample.gyroY, sample.gyroZ)) {
     sleepPower(sample);
