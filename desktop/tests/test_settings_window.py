@@ -194,6 +194,10 @@ def test_visual_settings_adjust_and_save_wound_frequency(root: tk.Tk, tmp_path) 
     )
     try:
         assert window.visual_frequency_slider.winfo_exists()
+        window.visual_frequency_slider.set(5)
+        assert window.visual_frequency_label.get() == '伤口出现频率：每抽打5次出现一次'
+        assert window.visual_frequency_slider.minimum == 1
+        assert window.visual_frequency_slider.maximum == 10
         assert not hasattr(window, "visual_scare_hotkey_entry")
         window.visual_strikes_per_wound.set("5")
         window._save_visual_settings()

@@ -11,8 +11,8 @@ FIELD = "#F5F6F8"
 TEXT = "#24262B"
 MUTED = "#717681"
 LINE = "#E3E6EC"
-BLUE = "#246BEB"
-SELECTED = "#DCE7FB"
+BLUE = "#19191B"
+SELECTED = "#E7E7E9"
 RED = "#B64343"
 FONT = "Helvetica Neue" if sys.platform == "darwin" else "Microsoft YaHei UI"
 
@@ -21,6 +21,7 @@ class ActionButton(tk.Button):
     """Keep native focus, invoke, disabled and keyboard behavior; soften chrome."""
     def __init__(self, parent, text="", command=None, *, primary=False, **kwargs):
         self._nav = kwargs.pop("navigation", False)
+        self._icon = kwargs.pop("icon", False)
         background = kwargs.pop("bg", BLUE if primary else CARD)
         foreground = kwargs.pop("fg", "#FFFFFF" if primary else TEXT)
         self._fill = background
@@ -58,18 +59,18 @@ class ActionButton(tk.Button):
 
     def _paint(self, *, hover=False, pressed=False):
         font = tkfont.Font(root=self, font=self.cget("font"))
-        width = 148 if self._nav else font.measure(self.cget("text")) + 28
-        height = 38 if self._nav else max(32, font.metrics("linespace") + 14)
+        height = 38 if self._nav or self._icon else max(32, font.metrics("linespace") + 14)
+        width = 148 if self._nav else height if self._icon else font.measure(self.cget("text")) + 28
         fill = self._fill
         disabled = str(self.cget("state")) == "disabled"
         if disabled:
             # Use the same geometry in both states; a noninteractive label
             # covers Windows' disabled-image stipple without enabling the button.
-            fill = "#AFC5EB" if self._fill == BLUE else FIELD
+            fill = "#A4A4AA" if self._fill == BLUE else FIELD
         elif pressed:
-            fill = "#1857C4" if fill == BLUE else "#DFE4EB"
+            fill = "#101012" if fill == BLUE else "#DFE4EB"
         elif hover:
-            fill = "#1D60DA" if fill == BLUE else "#E8EDF5"
+            fill = "#343438" if fill == BLUE else "#E8EDF5"
         if self._disabled_surface is not None:
             self._disabled_surface.place_forget()
         key = (width, height, fill, self.master.cget("bg"), self.cget('text'), disabled)

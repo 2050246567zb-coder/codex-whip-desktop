@@ -17,7 +17,7 @@ are implemented separately so each platform can use its native APIs.
 
 Firmware does not guess the host from a BLE address or MTU. After connecting,
 the desktop detects `sys.platform` and automatically negotiates `HOST,WINDOWS`,
-`HOST,MACOS`, `HOST,LINUX`, or `HOST,COMPATIBLE`. Firmware 0.8.1 then selects
+`HOST,MACOS`, `HOST,LINUX`, or `HOST,COMPATIBLE`. Firmware 0.8.3 then selects
 the matching connection interval and motion batch policy. This is invisible to
 the user and preserves compatibility with older firmware that does not advertise
 the `HOST_PROFILE` capability.
@@ -115,7 +115,7 @@ and its onboard LSM6DS3TR-C.
 
 ## Shared firmware contract
 
-- Product firmware: `0.8.1`
+- Product firmware: `0.8.3`
 - BLE local name: `CodexWhip`
 - Nordic UART service: `6e400001-b5a3-f393-e0a9-e50e24dcca9e`
 - IMU: onboard LSM6DS3TR-C, ±16 g, ±2000 dps, 416 Hz

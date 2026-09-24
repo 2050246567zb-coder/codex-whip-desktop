@@ -1,7 +1,7 @@
 """A right-to-left, real-time voice expiry indicator; never owns send state."""
 import math
 import time
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw
 from .morphing_title import MorphingTitle
 
 
@@ -59,11 +59,11 @@ class SandCountdownTitle(MorphingTitle):
         if self._deadline is None and not self._fade_gray:
             return super()._show(mask)
         self._mask = mask
+        if self._raster_only:
+            return
         surface = sand_surface(mask, 1 if self._deadline is None else 1-(self._deadline-time.monotonic())/10,
                                self.cget('bg'),particles=not self._reduce_motion())
-        self._photo = ImageTk.PhotoImage(surface.resize(self._output_size,Image.Resampling.LANCZOS),master=self)
-        # Avoid triggering another text transition.
-        super().configure(image=self._photo)
+        self._paint_surface(surface)
 
     def _sand_tick(self):
         self._sand_timer = None

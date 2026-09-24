@@ -1,4 +1,5 @@
 import time
+import sys
 from types import SimpleNamespace
 import tkinter as tk
 from unittest.mock import Mock
@@ -14,7 +15,7 @@ from codex_whip.settings import Settings
 
 def test_clock_tilts_and_exits_when_pointer_is_far(app):
     app.ui.hero.set_mode('whip')
-    app.ui.hero._clock_started -= 1
+    advance_motion(app.ui.hero)
     from codex_whip.effects import CodexWhipEffects
     hero = app.ui.hero
     app.effects.preview_frame.return_value = (CodexWhipEffects.IDLE,(0.,0.))
@@ -25,15 +26,32 @@ def test_clock_tilts_and_exits_when_pointer_is_far(app):
     hero._hover_motion(SimpleNamespace(x=w/2+30,y=h/2))
     assert hero._tilt_target[1] > 0
     hero._tilt_at -= 1
-    hero._clock_started -= 1
+    advance_motion(hero)
     hero._draw_live_whip()
     assert hero._tilt[1] > 0
     hero._hover_motion(SimpleNamespace(x=w*2,y=h*2))
+    assert hero._clock_hover  # The clock remains visible for its first second.
+    hero._clock_exit_due = time.monotonic() - 1
+    hero._draw_live_whip()
     assert not hero._clock_hover
     assert hero._tilt_target == (0,0)
-    hero._clock_started -= 1
+    advance_motion(hero)
     hero._draw_live_whip()
     assert all(hero.itemcget(i,'state')=='hidden' for i in hero._dial_edges)
+
+
+def test_clock_exit_hold_is_cancelled_when_pointer_returns(app):
+    hero = app.ui.hero
+    hero.set_mode('whip')
+    hero.set_preview_visible(True)
+    hero.clock_enabled = True
+    hero._set_clock(True)
+    hero._set_clock(False)
+    assert hero._clock_exit_due is not None
+    width, height = max(120, hero.winfo_width()), max(120, hero.winfo_height())
+    hero._hover_motion(SimpleNamespace(x=width/2, y=height/2))
+    assert hero._clock_hover
+    assert hero._clock_exit_due is None
 
 
 def test_visual_error_does_not_stop_whip_event_pump(app):
@@ -87,7 +105,7 @@ def test_send_switch_label_and_confirmation_only_explain_behavior(app, monkeypat
 
 def test_hover_clock_is_local_interruptible_and_yields_to_recording(app):
     app.ui.hero.set_mode('whip')
-    app.ui.hero._clock_started -= 1
+    advance_motion(app.ui.hero)
     from codex_whip.effects import CodexWhipEffects
     hero = app.ui.hero
     app.effects.preview_frame.return_value = (CodexWhipEffects.IDLE, (0.,0.))
@@ -96,14 +114,15 @@ def test_hover_clock_is_local_interruptible_and_yields_to_recording(app):
     original = hero._display_pose
     hero._hover_motion(SimpleNamespace(x=original.handle_end[0],y=original.handle_end[1]))
     assert hero._clock_hover
-    hero._clock_started -= 1
+    advance_motion(hero)
     hero._draw_live_whip()
     assert hero._display_pose.handle_end == (max(120,hero.winfo_width())/2,max(120,hero.winfo_height())/2)
     assert hero._clock_alpha == 1
     clock = hero._display_pose
+    hero._clock_entered_at -= 1.1
     hero._set_clock(False)
     assert hero._clock_source == clock
-    hero._clock_started -= 1
+    advance_motion(hero)
     hero._draw_live_whip()
     assert hero._display_pose == original
     hero._set_clock(True)
@@ -143,12 +162,49 @@ def refresh(ui):
     ui.root.update_idletasks()
 
 
+def advance_motion(hero, kind='clock', fraction=1.):
+    motion = getattr(hero, f'_{kind}_motion', None)
+    if motion is not None:
+        motion.elapsed = motion.duration * fraction
+        motion._last_frame_at = time.monotonic()
+
+
+def finish_title(title):
+    if title._motion is not None:
+        title._motion.elapsed = title._motion.duration
+        title._motion._last_frame_at = time.monotonic()
+        if title._timer is not None:
+            title.after_cancel(title._timer)
+        title._frame()
+
+
+def advance_title(title, fraction):
+    if title._motion is not None:
+        title._motion.elapsed = title._motion.duration * fraction
+        title._motion._last_frame_at = time.monotonic()
+        if title._timer is not None:
+            title.after_cancel(title._timer)
+        title._frame()
+
+
+def ready_to_advance(ui):
+    ui.hero._draw_live_whip()
+    for kind in ('clock', 'voice', 'loading'):
+        advance_motion(ui.hero, kind)
+    ui.hero._draw_live_whip()
+    finish_title(ui.title)
+    current = ui._presentation_timeline.current
+    if current is not None:
+        ui._presentation_timeline.mark_presented(current.key, time.monotonic()-1.1)
+
+
 def test_home_title_changes_with_clock_hover(app):
     connected(app)
     ui = app.ui
     ui.stage = 'ready'
     refresh(ui)
-    assert ui.title.cget('text') == 'just beat it'
+    assert ui.title.cget('text') == ''
+    assert ui.title._duration == 1.0
 
 
 def test_power_setting_round_trip_and_disconnect_status(app):
@@ -184,8 +240,7 @@ def test_sleep_title_animates_only_the_ellipsis(app):
     assert [sleep_dot_count(value) for value in (0, .9, 1.8, 2.7, 3.6)] == [1, 2, 3, 2, 1]
     title = app.ui.title
     title.configure(text='deep sleep.')
-    title._at -= 1
-    title._frame()
+    finish_title(title)
     assert title._timer is None
     title.configure(text='deep sleep..')
     assert title.cget('text') == 'deep sleep..'
@@ -199,8 +254,8 @@ def test_disconnected_loader_returns_to_whip(app):
     assert ui.hero.mode == 'connecting'
     assert not ui.connection_label.winfo_manager()
     assert not ui.hero.clock_enabled
-    ui.hero._clock_started -= 1
-    ui.hero._loading_transition_at -= 1
+    advance_motion(ui.hero, 'clock')
+    advance_motion(ui.hero, 'loading')
     ui.hero._draw_live_whip()
     ring = ui.hero._display_pose
     assert ui.hero._loading_alpha == 1
@@ -208,8 +263,8 @@ def test_disconnected_loader_returns_to_whip(app):
     refresh(ui)
     assert ui.hero.mode == 'whip'
     assert ui.hero._clock_source == ring
-    ui.hero._clock_started -= 1
-    ui.hero._loading_transition_at -= 1
+    advance_motion(ui.hero, 'clock')
+    advance_motion(ui.hero, 'loading')
     ui.hero._draw_live_whip()
     assert ui.hero._loading_alpha == 0
     assert all(ui.hero.itemcget(i,'state') == 'hidden' for i in ui.hero._loading_dots)
@@ -217,8 +272,10 @@ def test_disconnected_loader_returns_to_whip(app):
     refresh(ui)
     assert ui.title.cget('text') == "Don't waste time on AI"
     ui.hero._set_clock(False)
+    ui.hero._clock_exit_due = time.monotonic() - 1
+    ui.hero._draw_live_whip()
     refresh(ui)
-    assert ui.title.cget('text') == 'just beat it'
+    assert ui.title.cget('text') == ''
 
 
 def test_home_battery_indicator_tracks_device_and_disconnect(app):
@@ -283,6 +340,155 @@ def test_single_settings_page_preserves_controls_and_reopen(app):
     assert app.settings_window._messages_panel.winfo_manager() == 'pack'
 
 
+def test_settings_reopens_at_top_and_scrolls_up_over_slider(app):
+    connected(app)
+    ui = app.ui
+    ui.open_preferences()
+    app.root.update()
+    canvas = ui._advanced_canvas
+    canvas.yview_moveto(.55)
+    app.root.update_idletasks()
+    assert canvas.yview()[0] > 0
+    ui.hide_preferences()
+    ui.open_preferences()
+    app.root.update()
+    assert canvas.yview()[0] == 0
+    canvas.yview_moveto(.55)
+    slider = app.settings_window.tolerance_scale
+    slider.event_generate('<MouseWheel>', delta=120)
+    app.root.update_idletasks()
+    assert canvas.yview()[0] < .55
+
+
+def test_calibration_actions_restore_only_direction_and_restart_tour(app, monkeypatch):
+    from codex_whip.mount_profile import load_mounting_profile
+    connected(app)
+    app.ui.open_preferences()
+    original = MountingProfile((0., -1., 0.), 30., 30.)
+    save_mounting_profile(original, app.mounting_path)
+    monkeypatch.setattr('codex_whip.gui.messagebox.askyesno', lambda *a, **kw: True)
+    app.restore_factory_direction()
+    assert load_mounting_profile(app.mounting_path) != original
+    card = app.ui._calibration_action_card
+    actions = {child.cget('text'): child for child in card.winfo_children()
+               if isinstance(child, tk.Button)}
+    assert {'恢复默认', '引导教程', '开始校准'} <= actions.keys()
+    assert len({(button.winfo_height(), button.cget('bg')) for button in actions.values()}) == 1
+    actions['引导教程'].invoke()
+    assert app.ui.stage == 'connect'
+
+
+def test_home_preview_hides_when_codex_is_not_active(app):
+    connected(app)
+    ui = app.ui
+    ui.stage = 'ready'
+    app.effects.target_active.return_value = True
+    refresh(ui)
+    assert ui.hero._preview_visible
+    app.effects.target_active.return_value = False
+    refresh(ui)
+    assert not ui.hero._preview_visible
+    assert ui.hero.mode == 'away'
+    assert not ui.hero.clock_enabled
+    assert ui.title.cget('text') == '切回 Codex 继续'
+    assert app.effects.set_presentation.call_args.kwargs['mode'] != 'away'
+    app.effects.target_active.return_value = True
+    refresh(ui)
+    assert ui.hero._preview_visible
+    assert ui.hero.mode == 'away'  # Finish the question-mark state first.
+
+
+def test_away_question_morphs_from_current_whip_and_back(app):
+    from codex_whip.effects import CodexWhipEffects
+    from codex_whip.hover_clock import question_pose
+
+    connected(app)
+    ui = app.ui
+    ui.stage = 'ready'
+    app.effects.preview_frame.return_value = (CodexWhipEffects.IDLE, (0., 0.))
+    refresh(ui)
+    ui.hero._draw_live_whip()
+    original = ui.hero._display_pose
+
+    app.effects.target_active.return_value = False
+    refresh(ui)
+    assert ui.hero.mode == 'away'
+    assert ui.hero._clock_source == original
+    advance_motion(ui.hero)
+    ui.hero._draw_live_whip()
+    width, height = max(120, ui.hero.winfo_width()), max(120, ui.hero.winfo_height())
+    question = question_pose(width, height, len(original.cord))
+    assert ui.hero._display_pose == question
+    assert ui.hero._whip_drawing.visible
+    assert app.effects.set_presentation.call_args.kwargs['mode'] == 'whip'
+
+    app.effects.target_active.return_value = True
+    ui._away_at -= 1.1
+    refresh(ui)
+    assert ui.hero.mode == 'whip'
+    assert ui.hero._clock_source == question
+
+
+def test_ble_connected_without_worker_snapshot_does_not_show_loader(app):
+    app.ui.stage = 'ready'
+    app.ble_connected = True
+    app.worker_loop = None
+    app.effects.target_active.return_value = True
+    refresh(app.ui)
+    assert app.ui.hero.mode == 'whip'
+    assert app.ui.title.cget('text') == ''
+
+
+def test_recording_starts_from_empty_normal_title(app):
+    connected(app)
+    ui = app.ui
+    ui.stage = 'ready'
+    refresh(ui)
+    finish_title(ui.title)
+    assert ui.title._mask.getbbox() is None
+    ui.observe('voice_state', {'state': 'recording'})
+    refresh(ui)
+    assert ui.hero.mode == 'recording'
+    assert ui.title.cget('text') == 'recording'
+    assert ui.title._old.getbbox() is None
+
+
+def test_settings_group_labels_and_message_actions(app):
+    connected(app)
+    app.ui.open_preferences()
+    app.root.update()
+    ui, window = app.ui, app.settings_window
+    assert ui._other_heading.winfo_manager() == 'pack'
+    assert window.sensitivity_label.get().startswith('挥鞭识别灵敏度：')
+    assert window.tap_minimum_label.get().startswith('双敲识别灵敏度：')
+    assert window.visual_frequency_label.get() == '伤口出现频率：每抽打1次出现一次'
+    assert window.visual_frequency_slider.minimum == 1
+    assert window.visual_frequency_slider.maximum == 10
+    assert window.message_add_button.master == window.message_order_button.master
+    assert window.message_add_button.winfo_height() == window.message_order_button.winfo_height()
+    assert window.message_add_button.winfo_width() == window.message_order_button.winfo_width()
+    assert window.message_add_button._fill == window.message_order_button._fill
+    assert ui._sending_card.winfo_exists()
+    row = app.arm_check.master
+    assert row.pack_slaves()[0] is app.arm_check
+
+
+def test_enabling_voice_also_enables_send(app, monkeypatch):
+    from dataclasses import replace
+    from codex_whip.interface_state import InterfacePreferences
+    ui = app.ui
+    ui.stage = 'ready'
+    monkeypatch.setattr(app, 'prepare_voice_model', lambda: None)
+    assert app.apply_voice_settings(replace(app.voice_store.settings, enabled=False))
+    ui.preferences.send_enabled = False
+    assert ui._persist()
+    app.armed.clear()
+    app.arm_value.set(False)
+    assert app.apply_voice_settings(replace(app.voice_store.settings, enabled=True))
+    assert app.arm_value.get() and app.armed.is_set()
+    assert InterfacePreferences.load(ui.path, already_calibrated=True).send_enabled
+
+
 def test_generated_assets_have_real_alpha_and_content():
     for name in ("whip.png", "microphone.png"):
         with Image.open(asset_path(name)) as image:
@@ -336,17 +542,18 @@ def test_title_chinese_glyphs_are_not_identical_missing_boxes(app):
 
 def test_morphing_title_interrupts_and_fits_long_text(app):
     title = app.ui.title
+    photo = title._photo
     title.configure(text='just beat it')
+    assert title._photo is photo
     title.after_cancel(title._timer)
-    title._at -= .14
-    title._frame()
+    advance_title(title, .14)
     shown = title._mask.copy()
     title.configure(text="Don't waste time on AI")
     assert title._old.tobytes() == shown.tobytes()
     title.after_cancel(title._timer)
-    title._at -= 1
-    title._frame()
+    finish_title(title)
     assert title._mask.tobytes() == title._new.tobytes()
+    assert title._photo is photo
     box = title._mask.getbbox()
     assert box and box[0]>0 and box[2]<880
     assert title._timer is None
@@ -366,7 +573,7 @@ def test_connection_must_have_fresh_sensor_data_before_calibration(app):
     assert not app.armed.is_set()
 
 
-def test_skip_learning_preserves_profiles_and_restores_default_send(app, tmp_path):
+def test_saved_direction_setup_enters_ready_without_extra_page(app, tmp_path):
     profile = tmp_path / "detector-profile.json"
     profile.write_text("keep this byte-for-byte")
     save_mounting_profile(MountingProfile((0, 0, 1), 30, 30), app.mounting_path)
@@ -374,8 +581,7 @@ def test_skip_learning_preserves_profiles_and_restores_default_send(app, tmp_pat
     app.ui._mount_token = 'test-token'
     app.ui._calibration_return_stage = 'choices'
     app.ui.observe("mount_closed", {"token": "test-token", "saved": True})
-    assert app.ui.stage == "choices"
-    app.ui.skip_learning()
+    assert app.ui.stage == "ready"
     refresh(app.ui)
     assert app.ui.stage == "ready"
     assert app.mounting_path.read_bytes() == before
@@ -388,6 +594,8 @@ def test_settings_sections_embed_all_existing_capabilities(app):
     for section in ("general", "messages", "voice", "detector", "visual"):
         app.ui.open_preferences(section)
         app.root.update_idletasks()
+        assert not app.root.winfo_viewable()
+        assert app.ui.settings.winfo_viewable()
     window = app.settings_window
     assert window._embedded
     assert window.record_button.winfo_exists()
@@ -395,9 +603,39 @@ def test_settings_sections_embed_all_existing_capabilities(app):
     assert window.visual_frequency_slider.winfo_exists()
     assert window._message_widgets
     app.ui.hide_preferences()
+    assert app.root.winfo_viewable()
+    assert not app.ui.settings.winfo_viewable()
     assert app.settings_window is None
     assert app.log_text.winfo_exists()
     assert app.arm_check.winfo_exists()
+
+
+def test_first_use_tour_waits_for_arrows_and_calibration_demos_up_first(app):
+    connected(app)
+    ui = app.ui
+    refresh(ui)
+    assert ui.stage == 'tour'
+    first = ui._tour_index
+    ui._tour_started -= 60
+    refresh(ui)
+    assert ui._tour_index == first  # No automatic page turn.
+    ui.next_tour()
+    refresh(ui)
+    assert ui._tour_index == first + 1
+    ui.previous_tour()
+    assert ui._tour_index == first
+    ui.stage = 'calibrate'
+    ui._mount_token = 'test-token'
+    ui._mount_inline_state = 'up_ready'
+    refresh(ui)
+    assert ui.primary.cget('text') == '我准备好了'
+    assert ui.hero._demo_direction == 'up'
+    ui._mount_inline_state = 'up_capture'
+    refresh(ui)
+    assert ui.hero._demo_direction is None
+    ui._mount_inline_state = 'right_ready'
+    refresh(ui)
+    assert ui.hero._demo_direction == 'right'
 
 
 def test_recording_pending_and_errors_render_without_changing_backend(app):
@@ -414,6 +652,8 @@ def test_recording_pending_and_errors_render_without_changing_backend(app):
     ui.hero._draw()
     assert ui.hero._levels[-1] == 0
     ui.observe("voice_state", {"state": "recognizing"})
+    assert ui.hero.mode == "recording"
+    ready_to_advance(ui)
     refresh(ui)
     assert ui.title.cget("text") == "recognizing voice"
     ui.observe("voice_pending", "测试语音")
@@ -422,6 +662,8 @@ def test_recording_pending_and_errors_render_without_changing_backend(app):
     assert ui.pending.cget("text") == "测试语音"
     ui.observe("voice_pending", None)
     ui.observe("voice_state", {"state": "empty"})
+    assert ui.hero.mode == "recognizing"
+    ready_to_advance(ui)
     refresh(ui)
     assert ui.hero.mode == "whip"
     ui.observe("whip", {})
@@ -438,7 +680,7 @@ def test_empty_voice_feedback_expires_and_new_recording_wins(app, monkeypatch):
     ui.stage = "ready"
     ui.observe("voice_state", {"state": "empty"})
     refresh(ui)
-    assert ui.title.cget("text") == "just beat it"
+    assert ui.title.cget("text") == ""
     assert ui.subtitle.cget("text") == ""
     clock[0] += 3.1
     refresh(ui)
@@ -628,7 +870,7 @@ def test_minimal_header_and_footer(app):
 
 def test_hero_reads_exact_overlay_pose_and_relative_motion(app):
     app.ui.hero.set_mode('whip')
-    app.ui.hero._clock_started -= 1
+    advance_motion(app.ui.hero)
     from codex_whip.effects import CodexWhipEffects
     pose = CodexWhipEffects.IDLE
     hero = app.ui.hero
@@ -683,7 +925,10 @@ def test_settings_layout_stacking_and_group_ownership(app):
     siblings = list(ui.host.winfo_children())
     assert siblings.index(ui._general_body) > siblings.index(ui._advanced_panel)
     assert not hasattr(win, "visual_scare_hotkey_entry")
-    app.effects.set_settings_open.assert_called_with(True)
+    if sys.platform == 'win32':
+        app.effects.set_settings_open.assert_not_called()
+    else:
+        app.effects.set_settings_open.assert_called_with(True)
     ui.open_preferences("input")
     app.root.update_idletasks()
     assert ui._sending_card.winfo_manager() == "pack"
@@ -695,4 +940,7 @@ def test_settings_layout_stacking_and_group_ownership(app):
     assert win.tap_minimum_slider.winfo_manager()
     assert not hasattr(win, 'tap_auto_button')
     ui.hide_preferences()
-    app.effects.set_settings_open.assert_called_with(False)
+    if sys.platform == 'win32':
+        app.effects.set_settings_open.assert_not_called()
+    else:
+        app.effects.set_settings_open.assert_called_with(False)

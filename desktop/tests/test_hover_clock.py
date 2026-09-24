@@ -1,7 +1,7 @@
 from datetime import datetime
 import math
 import pytest
-from codex_whip.hover_clock import clock_pose, morph, shortest_angle, near_whip, ease
+from codex_whip.hover_clock import clock_pose, morph, shortest_angle, near_whip, ease, question_pose
 from codex_whip.effects import CodexWhipEffects
 from codex_whip.effects import WhipPose
 from codex_whip.hover_clock import cord_rotation
@@ -76,6 +76,18 @@ def test_morph_keeps_junction_and_endpoints():
     assert morph(source,target,1).cord[-1] == pytest.approx(target.cord[-1])
     assert near_whip(target,*target.handle_start)
     assert not near_whip(target,-100,-100)
+
+
+def test_question_pose_keeps_grip_below_attached_open_hook():
+    pose = question_pose(300, 300, 22)
+    assert pose.handle_start[0] == pose.handle_end[0] == 150
+    assert pose.handle_start[1] > pose.handle_end[1] > 150
+    assert pose.cord[0] == pose.handle_end
+    assert pose.cord[-1][0] < 150
+    assert pose.cord[-1][1] < 150
+    assert max(point[0] for point in pose.cord) > 150
+    assert min(point[1] for point in pose.cord) < 75
+    assert all(0 <= coordinate <= 300 for point in pose.cord for coordinate in point)
 
 
 def test_curve_is_monotonic_and_bounded():

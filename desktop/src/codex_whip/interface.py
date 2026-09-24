@@ -28,8 +28,10 @@ from .whip_drawing import WhipDrawing, SupersampledWhipDrawing
 from .gear_button import GearButton
 from .battery_indicator import BatteryIndicator
 from .morphing_title import MorphingTitle
+from .motion_clock import ACTIVE_FRAME_MS, MotionFrameTrace, RenderClock
+from .presentation_timeline import PresentationFrame, PresentationTimeline
 from .sand_countdown import SandCountdownTitle
-from .hover_clock import clock_pose, morph, ease, near_whip, project, project_pose, pointer_tilt, loading_pose, recognizing_pose, sleep_pose, cord_rotation
+from .hover_clock import clock_pose, morph, ease, near_whip, project, project_pose, pointer_tilt, loading_pose, recognizing_pose, sleep_pose, question_pose, cord_rotation
 
 
 def sleep_dot_count(elapsed: float) -> int:
@@ -38,7 +40,7 @@ def sleep_dot_count(elapsed: float) -> int:
 
 BG, CARD, SOFT = "#F5F5F7", "#FFFFFF", "#EAEAED"
 TEXT, MUTED, LINE = "#1D1D1F", "#68686F", "#DEDEE3"
-BLUE, GREEN, RED = "#0066CC", "#237C4B", "#BC3434"
+BLUE, GREEN, RED = "#19191B", "#237C4B", "#BC3434"
 FONT = "Helvetica Neue" if sys.platform == "darwin" else "Microsoft YaHei UI"
 
 
@@ -56,7 +58,7 @@ def label(parent, text="", *, size=10, color=TEXT, bold=False, **kwargs):
 def button(parent, text, command, *, primary=False, **kwargs):
     value = tk.Button(parent, text=text, command=command,
                       bg=BLUE if primary else SOFT, fg="white" if primary else TEXT,
-                      activebackground="#0055AA" if primary else LINE,
+                      activebackground="#343438" if primary else LINE,
                       activeforeground="white" if primary else TEXT,
                       disabledforeground="#939399", relief="flat", bd=0,
                       padx=18, pady=10, cursor="hand2", takefocus=True,
@@ -94,9 +96,13 @@ class Hero(tk.Canvas):
         self._whip_drawing = (SupersampledWhipDrawing(self, supersample=4)
                               if high_resolution else WhipDrawing(self))
         self._preview_key = None
+        self._preview_visible = True
         self.clock_enabled = False
         self._clock_hover = False
+        self._clock_entered_at = -100.
+        self._clock_exit_due = None
         self._clock_started = -100.
+        self._clock_motion = None
         self._clock_source = None
         self._cord_turn = None
         self._display_pose = None
@@ -108,14 +114,22 @@ class Hero(tk.Canvas):
         self._sleep_at = time.monotonic()
         self._loading_alpha = self._loading_from = 0.
         self._loading_transition_at = -100.
+        self._loading_motion = None
         self._loading_dots = []
         self._dial_edges = []
         self._tilt = self._tilt_from = self._tilt_target = (0.,0.)
         self._tilt_at = 0.
         self._voice_amount = self._voice_from = self._voice_target = 0.
         self._voice_at = -100.
+        self._voice_motion = None
         self._voice_source = None
+        self._last_rendered_mode = None
+        self._last_rendered_at = None
+        self._motion_trace = None
+        self.transition_observer = None
         self._voice_scale = 1.
+        self._demo_direction = None
+        self._demo_at = time.monotonic()
         for key, file in (("microphone", "microphone.png"),):
             with Image.open(asset_path(file)) as source:
                 self._sources[key] = source.convert("RGBA")
@@ -130,10 +144,21 @@ class Hero(tk.Canvas):
             self._leave_binding = self._pointer_host.bind('<Leave>', self._outer_motion, add='+')
         self._wake()
 
-    def _set_clock(self, active):
+    def _set_clock(self, active, *, force=False):
+        now = time.monotonic()
+        if active:
+            self._clock_exit_due = None
+        elif (self._clock_hover and not force
+              and now - self._clock_entered_at < 1.0):
+            self._clock_exit_due = self._clock_entered_at + 1.0
+            return
         if active == self._clock_hover:
             return
         self._clock_hover = active
+        if active:
+            self._clock_entered_at = now
+        else:
+            self._clock_exit_due = None
         callback = getattr(self, 'clock_title_changed', None)
         if callback:
             callback(active)
@@ -142,12 +167,23 @@ class Hero(tk.Canvas):
         self._clock_source = self._display_pose
         self._cord_turn = None
         self._clock_from_alpha = self._clock_alpha
-        self._clock_started = time.monotonic()
+        self._clock_started = now
+        self._clock_motion = RenderClock(.28)
         self._preview_key = None
         self._wake()
 
+    @property
+    def transition_active(self):
+        return (self._clock_source is not None or self._voice_source is not None
+                or any(motion is not None and not motion.complete for motion in (
+                    self._clock_motion, self._voice_motion, self._loading_motion)))
+
+    @property
+    def transition_complete(self):
+        return not self.transition_active
+
     def _hover_motion(self, event):
-        if not self.clock_enabled or self.mode != "whip":
+        if not self._preview_visible or not self.clock_enabled or self.mode != "whip":
             self._set_clock(False)
             return
         w,h = max(120,self.winfo_width()),max(120,self.winfo_height())
@@ -155,6 +191,7 @@ class Hero(tk.Canvas):
             if math.hypot(event.x-w/2,event.y-h/2) > min(w,h)*.49*1.5:
                 self._set_clock(False)
             else:
+                self._clock_exit_due = None
                 self._retarget_tilt(pointer_tilt(event.x,event.y,w,h))
             return
         if self._display_pose and near_whip(self._display_pose, event.x, event.y):
@@ -213,19 +250,27 @@ class Hero(tk.Canvas):
 
     def set_mode(self, mode):
         if self.mode != mode:
+            if self._motion_trace is not None:
+                self._motion_trace.mode += f'→{mode}中断'
+                report = self._motion_trace.report()
+                if report is not None and self.transition_observer:
+                    self.transition_observer(report)
             voice_target = 1. if mode == 'recording' else 0.
             if voice_target != self._voice_target or self._voice_source is not None:
                 self._voice_source = self._display_pose
                 self._voice_from = self._voice_amount
                 self._voice_target = voice_target
                 self._voice_at = time.monotonic()
+                self._voice_motion = RenderClock(.64)
                 self._preview_key = None
             if mode != 'whip':
-                self._set_clock(False)
-            if mode in {'recognizing', 'sleep'} or self.mode in {'recognizing', 'sleep'}:
+                self._set_clock(False, force=True)
+            if mode in {'recognizing', 'sleep', 'away'} or self.mode in {'recognizing', 'sleep', 'away'}:
                 self._clock_source = self._display_pose
                 self._cord_turn = None
                 self._clock_started = time.monotonic()
+                self._clock_motion = RenderClock(.64 if mode in {'recognizing', 'whip'}
+                                                 and self.mode in {'recording', 'recognizing'} else .28)
                 self._clock_from_alpha = self._clock_alpha
                 if mode == 'recognizing':
                     self._recognizing_at = time.monotonic()
@@ -237,14 +282,17 @@ class Hero(tk.Canvas):
                 self._clock_source = self._display_pose
                 self._cord_turn = None
                 self._clock_started = time.monotonic()
+                self._clock_motion = RenderClock(.28)
                 self._loading_from = self._loading_alpha
                 self._loading_transition_at = time.monotonic()
+                self._loading_motion = RenderClock(.28)
                 if mode == 'connecting':
                     self._loading_at = time.monotonic()
                 self._preview_key = None
             self._from_surface = self._surface
             self._transition_at = time.monotonic()
             self.mode = mode
+            self._motion_trace = MotionFrameTrace(mode, self._transition_at)
             self._levels = deque([0.0] * 35, maxlen=35)
             self._level = 0.0
             self._image_key = None
@@ -252,6 +300,30 @@ class Hero(tk.Canvas):
 
     def pose(self, x, y):
         # The overlay supplies the actual frame; raw pose never drives a second simulation.
+        self._wake()
+
+    def set_demo(self, direction):
+        if direction != self._demo_direction:
+            self._demo_direction = direction
+            self._demo_at = time.monotonic()
+            self._preview_key = None
+            self._wake()
+
+    def set_preview_visible(self, visible: bool) -> None:
+        """Mirror the overlay's Windows foreground visibility on the home page."""
+        visible = bool(visible)
+        if visible == self._preview_visible:
+            return
+        self._preview_visible = visible
+        if not visible:
+            self._set_clock(False, force=True)
+            if self.mode != 'away':
+                self._whip_drawing.hide()
+                self.delete('voice_art')
+                self.delete('demo_art')
+                for item in self._clock_items + self._dial_edges + self._loading_dots:
+                    self.itemconfigure(item, state='hidden')
+        self._preview_key = None
         self._wake()
 
     def strike(self):
@@ -264,25 +336,51 @@ class Hero(tk.Canvas):
         self._wake()
 
     def _draw(self):
+        started = time.perf_counter()
         if self._timer is not None:
             self.after_cancel(self._timer)
         self._timer = None
         if self._closed:
             return
         self._draw_live_whip()
-        self._timer = self.after(100 if self.reduce_motion else 16, self._draw)
+        budget = 100 if self.reduce_motion else ACTIVE_FRAME_MS if self.transition_active else 16
+        delay = max(1, math.ceil(budget - (time.perf_counter() - started) * 1000))
+        self._timer = self.after(delay, self._draw)
     def _draw_live_whip(self):
+        draw_started = time.perf_counter()
+        if self._clock_exit_due is not None and time.monotonic() >= self._clock_exit_due:
+            self._set_clock(False, force=True)
+        if not self._preview_visible and self.mode != 'away':
+            return
         self.delete("voice_art")
+        self.delete("demo_art")
         frame = self._frame_provider() if self._frame_provider else None
+        if self._demo_direction:
+            pose = CodexWhipEffects.IDLE
+            if self._demo_direction == 'strike':
+                phase = (time.monotonic() - self._demo_at) % 2.2
+                sequence = (
+                    (.35, .60, CodexWhipEffects.IDLE, CodexWhipEffects.WINDUP),
+                    (.60, .78, CodexWhipEffects.WINDUP, CodexWhipEffects.STRIKE),
+                    (.78, 1.12, CodexWhipEffects.STRIKE, CodexWhipEffects.RECOIL),
+                    (1.12, 1.52, CodexWhipEffects.RECOIL, CodexWhipEffects.IDLE),
+                )
+                for start, end, source, target in sequence:
+                    if start <= phase < end:
+                        pose = morph(source, target, ease((phase-start)/(end-start)))
+                        break
+            frame = (pose, (0.0, 0.0))
         if not (isinstance(frame, tuple) and len(frame) == 2 and isinstance(frame[0], WhipPose)):
             frame = (CodexWhipEffects.IDLE, (0.0, 0.0))
         pose, position = frame
         w, h = max(120, self.winfo_width()), max(120, self.winfo_height())
-        key = (pose, position, w, h)
+        key = ((w, h, 'away') if self.mode == 'away'
+               else (pose, position, w, h, self._demo_direction))
         if not self.clock_enabled:
-            self._set_clock(False)
-        animated = (self._clock_hover or self._clock_source is not None or self.mode in {'connecting', 'recognizing', 'sleep'}
-                    or self._loading_alpha > 0 or self._voice_source is not None or self._voice_amount > 0)
+            self._set_clock(False, force=self.mode != 'whip')
+        animated = (self._demo_direction or self._clock_hover or self.transition_active
+                    or self.mode in {'connecting', 'recording', 'recognizing', 'sleep'}
+                    or self._loading_alpha > 0 or self._voice_amount > 0)
         if key == self._preview_key and not animated:
             return
         self._preview_key = key
@@ -297,6 +395,28 @@ class Hero(tk.Canvas):
                         tuple(screen(p) for p in pose.cord))
         if self.direct_pose:
             live, scale = pose, 1.0
+        # A double-tap can arrive before the first idle frame was painted.
+        # Use that first live frame as the morph source instead of snapping.
+        if (self._clock_source is None and self._clock_motion is not None
+                and not self._clock_motion.complete
+                and (self.mode in {'connecting', 'recognizing', 'sleep', 'away'} or self._clock_hover)):
+            self._clock_source = live
+        if (self._voice_source is None and self._voice_motion is not None
+                and not self._voice_motion.complete and self._voice_target > 0):
+            self._voice_source = live
+        if self._demo_direction in {'up', 'right'}:
+            phase = (time.monotonic() - self._demo_at) % 2.4 / 2.4
+            amount = (1 - math.cos(math.tau * phase)) / 2
+            angle = (-.20 if self._demo_direction == 'up' else .20) * amount
+            shift_x = (w * .15 * amount) if self._demo_direction == 'right' else 0.
+            shift_y = (-h * .15 * amount) if self._demo_direction == 'up' else 0.
+            pivot = live.handle_start
+            def turn(point):
+                x, y = point[0] - pivot[0], point[1] - pivot[1]
+                return (pivot[0] + x*math.cos(angle) - y*math.sin(angle) + shift_x,
+                        pivot[1] + x*math.sin(angle) + y*math.cos(angle) + shift_y)
+            live = WhipPose(turn(live.handle_start), turn(live.handle_end),
+                            tuple(turn(point) for point in live.cord))
         self._update_tilt()
         target = project_pose(clock_pose(w,h,len(pose.cord)),w,h,self._tilt) if self._clock_hover else live
         if self.mode == 'connecting':
@@ -307,18 +427,21 @@ class Hero(tk.Canvas):
         elif self.mode == 'sleep':
             target = sleep_pose(w, h, len(pose.cord),
                                 0 if self.reduce_motion else time.monotonic()-self._sleep_at)
-        elapsed = (time.monotonic()-self._clock_started)/.28
-        progress = ease(elapsed)
-        if self.reduce_motion:
-            progress = 1.
+        elif self.mode == 'away':
+            target = question_pose(w, h, len(pose.cord))
+        progress = (1. if self.reduce_motion else
+                    ease(self._clock_motion.sample(time.monotonic()))
+                    if self._clock_motion is not None else 1.)
         if self._clock_source is not None:
             self._cord_turn = cord_rotation(self._clock_source,target,self._cord_turn)
         self._display_pose = (morph(self._clock_source,target,progress,self._cord_turn)
-                              if self._clock_source is not None and elapsed < 1 else target)
+                              if self._clock_source is not None and progress < 1 else target)
         self._clock_alpha = self._clock_from_alpha + ((1. if self._clock_hover else 0.)-self._clock_from_alpha)*progress
-        if elapsed >= 1:
+        if progress >= 1:
             self._clock_source = None
-        voice_progress = 1. if self.reduce_motion else ease((time.monotonic()-self._voice_at)/.28)
+        voice_progress = (1. if self.reduce_motion else
+                          ease(self._voice_motion.sample(time.monotonic()))
+                          if self._voice_motion is not None else 1.)
         self._voice_amount = self._voice_from + (self._voice_target-self._voice_from)*voice_progress
         if self._voice_source is not None or self._voice_amount > 0:
             # The rope joint is the microphone head; it settles at canvas center.
@@ -339,6 +462,19 @@ class Hero(tk.Canvas):
         self._whip_drawing._draw_pose(self._display_pose, scale*clock_scale*(1+voice_scale*self._voice_amount))
         self._draw_voice(w,h)
         self._draw_loading(w,h)
+        if self._demo_direction in {'up', 'right'}:
+            self.create_text(w*.83, h*.19, text='↑' if self._demo_direction == 'up' else '→',
+                             fill=BLUE, font=(FONT, 25, 'bold'), tags='demo_art')
+        now = time.monotonic()
+        self._last_rendered_mode = self.mode
+        self._last_rendered_at = now
+        if self._motion_trace is not None:
+            self._motion_trace.frame(now, (time.perf_counter() - draw_started) * 1000)
+            if self.transition_complete:
+                report = self._motion_trace.report()
+                self._motion_trace = None
+                if report is not None and report.frames > 1 and self.transition_observer:
+                    self.transition_observer(report)
 
     def _draw_voice(self,w,h):
         alpha = self._voice_amount
@@ -370,7 +506,9 @@ class Hero(tk.Canvas):
                          fill='#171717',capstyle='round',tags='voice_art')
 
     def _draw_loading(self,w,h):
-        amount = ease((time.monotonic()-self._loading_transition_at)/.28)
+        amount = (1. if self.reduce_motion else
+                  ease(self._loading_motion.sample(time.monotonic()))
+                  if self._loading_motion is not None else 1.)
         self._loading_alpha = self._loading_from + ((1. if self.mode=='connecting' else 0.)-self._loading_from)*amount
         if not self._loading_dots:
             self._loading_dots = [self.create_oval(0,0,0,0,outline='') for _ in range(3)]
@@ -405,12 +543,14 @@ class Hero(tk.Canvas):
 
 class Interface:
     TOUR = (
-        ('whip', '方向跟随', '转动手柄，屏幕上的鞭子会跟随你的方向移动。'),
-        ('strike', '抽打', '快速挥动会播放抽打效果，并执行你允许的输入。'),
-        ('recording', '正在录音', '双敲手柄后，麦克风形态表示正在收音。'),
-        ('recognizing', '正在识别', '无限形态表示正在把声音识别成文字。'),
+        ('connecting', '正在连接', '连接手柄时会看到旋转的圆环与三个圆点。'),
+        ('whip', '方向跟随', '转动手柄，屏幕上的鞭子会跟着转向。'),
+        ('strike', '挥鞭抽打', '快速挥动手柄，会播放抽打动画与反馈。'),
+        ('recording', '正在录音', '双敲手柄后，鞭子变成麦克风，开始收音。'),
+        ('recognizing', '正在识别', '录音结束后，无限符号表示正在识别声音。'),
+        ('pending', '等待发送', '识别出文字后，再挥鞭即可发送；超时会消失。'),
         ('sleep', '省电模式', '长时间不动会变成 Z；移动手柄即可唤醒。'),
-        ('clock', '时间表盘', '右键点击目标窗口上的鞭子，可以查看时间。'),
+        ('clock', '时间表盘', '右键点击 Codex 窗口上的鞭子，可以查看时间。'),
     )
 
     def __init__(self, app):
@@ -419,12 +559,15 @@ class Interface:
         self.path = user_data_dir() / "interface-preferences.json"
         calibrated = load_mounting_profile(app.mounting_path) is not None
         self.preferences = InterfacePreferences.load(self.path, already_calibrated=calibrated)
-        self.stage = "ready" if self.preferences.setup_complete else (
-            "choices" if calibrated else "connect")
+        self.stage = "ready" if self.preferences.setup_complete else "connect"
         self._sensor_at = -100.0
         self._closed = False
         self._timer = None
+        self._refreshing = False
         self._voice_state = ""
+        self._presentation_timeline = PresentationTimeline()
+        self._last_presentation_diagnostic = None
+        self._away_at = None
         self._pending = ""
         self._pending_until = 0.
         self._notice = ""
@@ -456,6 +599,7 @@ class Interface:
         self._refresh()
 
     def _build_home(self):
+        from .settings_style import Switch
         self.root.title("Codex 鞭子")
         self.root.geometry("560x660")
         self.root.minsize(500, 620)
@@ -474,8 +618,14 @@ class Interface:
         self.step_label.pack(pady=(20, 0))
         self.hero = Hero(shell, reduce_motion=self.preferences.reduce_motion, size=275,
                          frame_provider=self._whip_frame, high_resolution=True)
+        self.hero.transition_observer = lambda report: self.app.emit(
+            'log', f'软件动画帧：{report.mode} {report.frames} 帧 / {report.duration_ms} ms，'
+            f'首帧等待 {report.first_frame_wait_ms} ms，'
+                   f'间隔 P95 {report.interval_p95_ms} ms、最大 {report.interval_max_ms} ms，'
+                   f'绘制 P95 {report.draw_p95_ms} ms')
         self.hero.pack(fill="both", expand=True, pady=(0, 0))
-        self.title = MorphingTitle(shell, lambda: self.preferences.reduce_motion)
+        self.title = MorphingTitle(shell, lambda: self.preferences.reduce_motion,
+                                   duration=1.0)
         self.hero.clock_title_changed = self._clock_title_changed
         self.title.pack(pady=(0, 9))
         self.subtitle = SandCountdownTitle(shell, lambda: self.preferences.reduce_motion,point_size=10,height=44)
@@ -485,14 +635,19 @@ class Interface:
         self.tap_choice = tk.BooleanVar(master=self.root, value=False)
         for text, variable in (("抽打动作 · 15 次", self.whip_choice),
                                ("开启双敲语音 · 使用芯片硬件识别", self.tap_choice)):
-            tk.Checkbutton(self.choices, text=text, variable=variable, bg=BG, fg=TEXT,
-                           activebackground=BG, selectcolor=CARD, font=(FONT, 10),
-                           cursor="hand2").pack(anchor="w", pady=3)
+            Switch(self.choices, text=text, variable=variable).pack(anchor="w", pady=3)
         self.actions = tk.Frame(shell, bg=BG)
         self.primary = button(self.actions, "开始方向校准", self.advance, primary=True)
         self.primary.pack(side="right")
         self.skip = button(self.actions, "以后再录入", self.skip_learning)
         self.skip_setup_button = button(self.actions, "跳过引导", self.skip_setup)
+        self.tour_nav = tk.Frame(shell, bg=BG)
+        self.tour_previous = button(self.tour_nav, "←", self.previous_tour)
+        self.tour_previous.pack(side="left")
+        self.tour_counter = label(self.tour_nav, size=9, color=MUTED)
+        self.tour_counter.pack(side="left", expand=True)
+        self.tour_next = button(self.tour_nav, "→", self.next_tour)
+        self.tour_next.pack(side="right")
         self.progress = label(shell, size=9, color=MUTED, wraplength=440, justify="center")
         self.progress.pack(pady=(12, 0))
         self.pending = label(shell, size=11, color=TEXT, wraplength=430, justify="center",
@@ -517,7 +672,11 @@ class Interface:
         self.settings.geometry("1060x820")
         self.settings.minsize(970, 760)
         self.settings.configure(bg=BG)
-        self.settings.transient(self.root)
+        # Windows has one visible product window at a time: the home page is
+        # withdrawn while settings is open, so settings must not be transient
+        # to the withdrawn parent. Keep the native macOS ownership unchanged.
+        if sys.platform != "win32":
+            self.settings.transient(self.root)
         self.settings.protocol("WM_DELETE_WINDOW", self.hide_preferences)
         self.settings.bind("<Escape>", lambda _e: self.hide_preferences())
         sidebar = tk.Frame(self.settings, bg=SOFT, width=184, padx=16, pady=28)
@@ -534,6 +693,7 @@ class Interface:
         canvas.configure(yscrollcommand=scroll.set)
         body = self._general_body = tk.Frame(self.host, bg=BG)
         self._advanced_panel = tk.Frame(self.host, bg=BG)
+        self._settings_scroll_reset = False
         advanced_canvas = tk.Canvas(self._advanced_panel, bg=BG, highlightthickness=0)
         advanced_scroll = tk.Scrollbar(self._advanced_panel, command=advanced_canvas.yview)
         advanced_scroll.pack(side="right", fill="y")
@@ -548,7 +708,7 @@ class Interface:
                                                      self.advanced_host.winfo_reqheight()))
             advanced_canvas.configure(scrollregion=advanced_canvas.bbox("all"))
             height = max(1, self.advanced_host.winfo_reqheight(), advanced_canvas.winfo_height())
-            advanced_canvas.yview_moveto(max(0, top) / height)
+            advanced_canvas.yview_moveto(0 if self._settings_scroll_reset else max(0, top) / height)
         self._resize_advanced = resize_advanced
         self._advanced_canvas = advanced_canvas
         advanced_canvas.bind("<Configure>", resize_advanced)
@@ -586,12 +746,12 @@ class Interface:
         label(sending, "发送控制", size=12, bold=True).pack(anchor="w", pady=(0,12))
         send_row = tk.Frame(sending, bg=CARD)
         send_row.pack(anchor="w")
-        label(send_row, "发送开关", size=10).pack(side="left", padx=(0, 12))
         a.arm_check = style.Switch(send_row, text="",
                                     variable=a.arm_value, command=a.toggle_arm,
                                     bg=CARD, activebackground=CARD, fg=TEXT, selectcolor=CARD,
                                     font=(FONT, 10), cursor="hand2", takefocus=True)
-        a.arm_check.pack(side="left")
+        a.arm_check.pack(side="left", padx=(0, 4))
+        label(send_row, "发送开关", size=10).pack(side="left")
 
         speech_disclosure = self._speech_panel = Disclosure(self.host, "下一鞭的语音文字", bg=BG)
         speech = style.RoundedCard(speech_disclosure.body, padx=20, pady=16)
@@ -606,7 +766,6 @@ class Interface:
         button(row, "清除候选", a.clear_voice_pending).pack(side="left", padx=8)
 
         experience = self._experience_card = style.RoundedCard(self.host, padx=24, pady=24)
-        label(experience, "外观与反馈", size=12, bold=True).pack(anchor="w", pady=(0,12))
         self.reduce_motion = tk.BooleanVar(master=self.root, value=self.preferences.reduce_motion)
         style.Switch(experience, text="减少主界面动态效果", variable=self.reduce_motion,
                        command=self.set_reduced_motion, bg=CARD, fg=TEXT, selectcolor=CARD,
@@ -626,11 +785,13 @@ class Interface:
                          font=(FONT, 10)).pack(anchor="w", pady=(12,0))
 
         self._calibration_action_card = style.RoundedCard(self.host, padx=24, pady=24)
-        label(self._calibration_action_card, "校准", size=12, bold=True).pack(
-            side='left', anchor='w')
+        button(self._calibration_action_card, "恢复默认", a.restore_factory_direction,
+               primary=True).pack(side='left')
+        button(self._calibration_action_card, "引导教程", self.restart_setup,
+               primary=True).pack(side='left', padx=(8, 0))
         a.sensor_calibrate_button = button(
             self._calibration_action_card, "开始校准", a.open_mount_calibration, primary=True)
-        a.sensor_calibrate_button.pack(side='right')
+        a.sensor_calibrate_button.pack(side='left', padx=(8, 0))
 
         def section_title(text):
             frame = tk.Frame(self.host, bg=BG)
@@ -639,6 +800,7 @@ class Interface:
         self._input_heading = section_title('输入')
         self._recognition_heading = section_title('识别')
         self._feedback_heading = section_title('外观与反馈')
+        self._other_heading = section_title('其他')
         self._developer_back = tk.Frame(self.host, bg=BG)
         button(self._developer_back, '返回设置', self.open_preferences).pack(anchor='w')
 
@@ -660,9 +822,11 @@ class Interface:
                              relief="flat", padx=10, pady=10, font=("Consolas", 9), state="disabled")
         a.log_text.pack(fill="x")
         def scroll_general(event):
-            if event.widget.winfo_class() not in {"Text", "Scale", "Listbox"}:
-                target = advanced_canvas
-                target.yview_scroll(-int(event.delta / 120), "units")
+            if not advanced_canvas.winfo_ismapped() or event.widget.winfo_class() == 'Text':
+                return
+            if event.delta:
+                advanced_canvas.yview_scroll(-1 if event.delta > 0 else 1, 'units')
+                return 'break'
         self.settings.bind("<MouseWheel>", scroll_general, add="+")
         style.restyle_fields(self.settings)
 
@@ -672,12 +836,13 @@ class Interface:
             messagebox.showinfo("正在录入动作", "请先完成或跳过当前动作录入，再打开设置。", parent=self.root)
             return
         self._advanced_section = 'developer' if developer else 'settings'
+        self._settings_scroll_reset = True
         self.general.pack_forget()
         self._advanced_panel.pack_forget()
         external = (self._general_body,self._direction_card,self._speech_panel,
                     self._sending_card,self._experience_card,self.diagnostics,
                     self._input_heading,self._recognition_heading,self._feedback_heading,
-                    self._calibration_action_card,self._developer_back)
+                    self._other_heading,self._calibration_action_card,self._developer_back)
         for panel in external:
             panel.pack_forget()
         self.app._ensure_settings()
@@ -696,7 +861,7 @@ class Interface:
                 window.voice_feature_card, self._speech_panel,
                 self._recognition_heading, window._detector_panel, window._calibration_panel,
                 self._feedback_heading, self._experience_card, window._visual_panel,
-                self._calibration_action_card,
+                self._other_heading, self._calibration_action_card,
             )
             for panel in (window._messages_panel, window.voice_feature_card, window._voice_panel,
                           window._detector_panel, window._calibration_panel, window._visual_panel):
@@ -708,18 +873,35 @@ class Interface:
         self.settings.update_idletasks()
         self._resize_advanced()
         self._advanced_canvas.yview_moveto(0)
-        if hasattr(self.app.effects, "set_settings_open"):
+        if sys.platform == "win32":
+            # Release any full-desktop mouse capture before focusing settings;
+            # the passive Codex overlay stays visible behind this window.
+            if getattr(self.app.effects, '_manual_armed', False):
+                self.app.effects.disarm_manual(log=False)
+        elif hasattr(self.app.effects, "set_settings_open"):
             self.app.effects.set_settings_open(True)
         self.settings.deiconify()
         self.settings.lift()
+        def finish_scroll_reset():
+            if self.settings.winfo_viewable():
+                self._resize_advanced()
+                self._advanced_canvas.yview_moveto(0)
+            self._settings_scroll_reset = False
+        self.settings.after_idle(finish_scroll_reset)
+        if sys.platform == "win32":
+            self.root.withdraw()
 
     def open_developer_preferences(self):
         """Unadvertised integration hook for Codex/development tools."""
         self.open_preferences('developer')
 
     def hide_preferences(self):
+        self._settings_scroll_reset = False
         self.settings.withdraw()
-        if hasattr(self.app.effects, "set_settings_open"):
+        if sys.platform == "win32" and self.root.winfo_exists():
+            self.root.deiconify()
+            self.root.lift()
+        if sys.platform != "win32" and hasattr(self.app.effects, "set_settings_open"):
             self.app.effects.set_settings_open(False)
         if self.stage != "learning":
             self._close_advanced()
@@ -756,15 +938,22 @@ class Interface:
         self._tour_started = time.monotonic()
         self._render_key = None
 
-    def skip_setup(self):
-        if self._mount_token:
-            self.app._send_mount_command('cancel', self._mount_token)
-            self._mount_token = ''
+    def _finish_onboarding(self):
         previous = self.preferences.setup_complete
         self.preferences.setup_complete = True
         if not self._persist():
             self.preferences.setup_complete = previous
-            return
+            return False
+        self.stage = 'ready'
+        self._mount_detail = ''
+        self.app._restore_send_state()
+        self._render_key = None
+        return True
+
+    def skip_setup(self):
+        if self._mount_token:
+            self.app._send_mount_command('cancel', self._mount_token)
+            self._mount_token = ''
         self._learning_queue = []
         self._learning_kind = ''
         self._close_advanced()  # Cancels unfinished capture; never saves a draft.
@@ -772,9 +961,7 @@ class Interface:
         self.app._arm_generation += 1
         self.app.arm_value.set(False)
         self.app.mode_value.set('安全监听')
-        self.stage = 'ready'
-        self.app._restore_send_state()
-        self._render_key = None
+        self._finish_onboarding()
 
     def start_inline_calibration(self):
         """Run the existing direction-calibration state machine on the home page."""
@@ -790,7 +977,7 @@ class Interface:
         self.app.arm_value.set(False)
         self.app.mode_value.set('校准 · 暂停发送')
         self._calibration_return_stage = (
-            'choices' if not self.preferences.setup_complete else 'ready')
+            'tour' if not self.preferences.setup_complete else 'ready')
         self._mount_token = uuid.uuid4().hex
         self._mount_inline_state = 'neutral'
         self._mount_centered = False
@@ -810,20 +997,26 @@ class Interface:
         if action and self._mount_token:
             self.app._send_mount_command(action, self._mount_token)
 
-    def _advance_tour(self):
-        if self._tour_complete:
+    def previous_tour(self):
+        if self.stage != 'tour' or self._tour_index <= 0:
+            return
+        self._tour_index -= 1
+        self._tour_started = time.monotonic()
+        self._render_key = None
+
+    def next_tour(self):
+        if self.stage != 'tour':
+            return
+        if self._tour_index >= len(self.TOUR) - 1:
             self.start_inline_calibration()
             return
         self._tour_index += 1
-        if self._tour_index >= len(self.TOUR):
-            self._tour_index = len(self.TOUR) - 1
-            self._tour_complete = True
         self._tour_started = time.monotonic()
         self._render_key = None
 
     def advance(self):
         if self.stage == 'tour':
-            self._advance_tour()
+            self.next_tour()
         elif self.stage == 'calibrate':
             self._advance_inline_calibration()
         elif self.stage == "connect":
@@ -921,14 +1114,19 @@ class Interface:
             saved = bool(payload.get("saved"))
             self._mount_token = ""
             self.app.mode_value.set("安全监听")
-            self.stage = self._calibration_return_stage if saved else (
-                "ready" if self.preferences.setup_complete else "connect")
-            if self.stage == "ready":
-                self.app._restore_send_state()
+            if saved:
+                self._finish_onboarding()
+            else:
+                self.stage = self._calibration_return_stage
+                if self.stage == 'ready':
+                    self.app._restore_send_state()
             self._mount_detail = ""
             self._render_key = None
         elif kind == "voice_state":
             self._voice_state = str(payload.get("state", ""))
+            if self.stage == 'ready' and self._voice_state in {'recording', 'recognizing'}:
+                self._presentation_timeline.note(self._voice_state, time.monotonic())
+                self._request_refresh()
             if self._voice_state == "empty":
                 self._voice_state = ""
                 self._notice, self._notice_until = "没听清，再敲两下试试", time.monotonic() + 3
@@ -939,13 +1137,19 @@ class Interface:
         elif kind == "voice_pending":
             self._pending = str(payload or "")
             self._pending_until = time.monotonic()+10. if self._pending else 0.
+            if self.stage == 'ready' and self._pending and self._voice_state == 'recording':
+                # Very fast successful recognition may finish before the worker
+                # publishes its optional recognizing progress event.
+                self._presentation_timeline.note('recognizing', time.monotonic())
             if not self._pending and self._voice_state == "ready":
                 self._voice_state = ""
+            self._request_refresh()
         elif kind in {"voice_error", "voice_model_error", "send_error"}:
             self._voice_state = "" if kind != "send_error" else self._voice_state
             self._notice = ("发送已暂停，请在设置中查看原因" if kind == "send_error"
                             else "录音没完成，再敲两下试试；详情见设置")
             self._notice_until = time.monotonic() + (10 if kind == "send_error" else 3)
+            self._request_refresh()
         elif kind == "voice_calibration":
             self._tap_count = int(payload.get("done", 0))
         elif kind in {"voice_calibration_done", "tap_calibration_saved"}:
@@ -962,22 +1166,63 @@ class Interface:
             self._voice_state = ""
 
     def _clock_title_changed(self, active):
-        if self.stage == 'ready' and self.hero.mode == 'whip' and not self._pending and self._voice_state not in {'recording','recognizing'}:
-            self.title.configure(text="Don't waste time on AI" if active else 'just beat it')
+        if (self.hero._preview_visible and self.stage == 'ready' and self.hero.mode == 'whip'
+                and self._presentation_timeline.current is not None
+                and self._presentation_timeline.current.key == 'whip'
+                and not self._pending and self._voice_state not in {'recording','recognizing'}):
+            self.title.configure(text="Don't waste time on AI" if active else '')
+
+    def _request_refresh(self):
+        if self._closed or self._refreshing:
+            return
+        if self._timer is not None:
+            self.root.after_cancel(self._timer)
+        self._timer = self.root.after_idle(self._refresh)
+
+    def _visual_transition_complete(self, preview_visible):
+        if not preview_visible:
+            return True
+        home_complete = self.hero.transition_complete and self.title.animation_complete
+        presenter = getattr(getattr(self.app, 'effects', None), '_presentation', None)
+        if not isinstance(getattr(presenter, 'hero', None), Hero):
+            return home_complete
+        return home_complete and presenter.transition_complete
+
+    def _mark_presentation_frame(self, preview_visible, now):
+        timeline = self._presentation_timeline
+        current = timeline.current
+        if current is None:
+            return
+        if not preview_visible:
+            timeline.mark_presented(current.key, now)
+            return
+        presenter = getattr(getattr(self.app, 'effects', None), '_presentation', None)
+        visual = presenter.hero if isinstance(getattr(presenter, 'hero', None), Hero) else self.hero
+        rendered_at = getattr(visual, '_last_rendered_at', None)
+        if (rendered_at is not None and rendered_at >= timeline.entered_at
+                and visual._last_rendered_mode == current.mode):
+            timeline.mark_presented(current.key, rendered_at)
 
     def _refresh(self):
+        self._timer = None
         if self._closed:
             return
+        self._refreshing = True
         a = self.app
         a.voice_module.expire_pending()
         if self._pending and time.monotonic() >= self._pending_until:
             self.observe('voice_pending', None)
-        connected = a.ble_connected and self.app.worker_loop is not None
+        # BLE is the connection status shown to users. Worker readiness only
+        # gates commands; it must not restart the loader for an already linked
+        # handle while the worker state is briefly being published.
+        connected = bool(a.ble_connected)
+        effects = getattr(a, 'effects', None)
+        preview_visible = (self.stage != 'ready' or sys.platform != 'win32'
+                           or effects is None or bool(effects.target_active()))
         fresh = connected and time.monotonic() - self._sensor_at < 1.5
         if self.stage == "connect" and fresh:
             self.stage = "tour"
             self._tour_index = 0
-            self._tour_complete = False
             self._tour_started = time.monotonic()
             self._render_key = None
         notice = self._notice if time.monotonic() < self._notice_until else ""
@@ -992,35 +1237,35 @@ class Interface:
             primary, enabled = "等待连接…", False
         elif self.stage == "tour":
             mode, title, subtitle = self.TOUR[self._tour_index]
-            step = f"功能演示  {self._tour_index + 1:02d} / {len(self.TOUR):02d}"
-            primary = "开始校准" if self._tour_complete else "下一项"
+            step = "功能演示"
+            primary = "开始方向校准" if self._tour_index == len(self.TOUR) - 1 else ""
             if mode == "strike":
                 mode = "whip"
-                if time.monotonic() - self._tour_started < .15:
-                    self.hero.strike()
+            elif mode == "pending":
+                mode, title, subtitle = "whip", "识别后的文字", "beat it, then send"
+                progress = self.TOUR[self._tour_index][2]
             if self.TOUR[self._tour_index][0] == "clock":
                 mode = "whip"
                 self.hero.clock_enabled = True
                 self.hero._set_clock(True)
             else:
                 self.hero._set_clock(False)
-            if not self._tour_complete and time.monotonic() - self._tour_started >= 2.8:
-                self._advance_tour()
         elif self.stage == "calibrate":
             calibration = {
-                "neutral": (1, "舒服地握住手柄", "像平时使用一样，大致指向屏幕。轻微手抖没关系。", "记录这个姿势"),
-                "right_ready": (2, "向右转动手腕", "点击后自然地向右转动，约 20–40°。", "开始向右转"),
-                "right_capture": (2, "保持向右的位置", "可以有轻微上下晃动，录入前不要转回。", "录入刚才动作"),
-                "up_ready": (3, "向上抬起手腕", "回到自然握姿，点击后向上抬起约 20–40°。", "开始向上抬"),
-                "up_capture": (3, "保持向上的位置", "可以有轻微左右转动，录入前不要放下。", "录入刚才动作"),
-                "review": (4, "看看方向对不对", "恢复平时握姿，左右转、上下抬进行确认。", "方向正确，保存"),
+                "neutral": (1, "鞭绳端对着屏幕", "按平时使用的姿势握住手柄；轻微手抖没关系。", "我握好了"),
+                "up_ready": (2, "先看向上转动", "看鞭子的向上动画。等会请照着转动手柄约 20–40°。", "我准备好了"),
+                "up_capture": (2, "现在向上转动", "向上转到目标位置，再点完成；不必保持完全静止。", "完成向上录入"),
+                "right_ready": (3, "再看向右转动", "回到自然握姿，看动画后向右转动约 20–40°。", "我准备好了"),
+                "right_capture": (3, "现在向右转动", "向右转到目标位置，再点完成；轻微上下晃动没关系。", "完成向右录入"),
+                "review": (4, "居中测试", "恢复自然握姿，先归中，再试着上下左右转动。", "归中并测试"),
             }
             number, title, subtitle, primary = calibration.get(
                 self._mount_inline_state, calibration["neutral"])
             step = f"校准  {number:02d} / 04"
             progress = self._mount_detail
-            if self._mount_inline_state == "review" and not self._mount_centered:
-                primary = "归中并试试方向"
+            if self._mount_inline_state == "review" and self._mount_centered:
+                title, subtitle = "方向跟手吗？", "如果上下左右都正确，确认后就可以开始使用。"
+                primary = "确认，开始使用" if not self.preferences.setup_complete else "确认并保存"
             enabled = connected and bool(self._mount_token)
         elif self.stage == "choices":
             step, title = "03  /  03 · 可选", "让它更懂你的动作"
@@ -1047,7 +1292,7 @@ class Interface:
             if not connected:
                 progress = "连接已断开。重新连接后可以继续，已录入的样本仍在。"
         else:
-            title = "Don't waste time on AI" if self.hero._clock_hover else "just beat it"
+            title = "Don't waste time on AI" if self.hero._clock_hover else ""
             subtitle = "" if connected else "等待手柄连接"
             if notice:
                 subtitle = notice
@@ -1072,9 +1317,50 @@ class Interface:
             title = 'Connecting'
         if self.stage == 'ready' and not (connected and self._pending and self._voice_state not in {'recording','recognizing'}):
             subtitle = ''
+        now = time.monotonic()
+        if self.stage == 'ready':
+            self._mark_presentation_frame(preview_visible, now)
+            state_key = ('pending' if self._pending and mode == 'whip' else mode)
+            desired = PresentationFrame(
+                state_key, mode, title, subtitle,
+                self._pending_until if subtitle == 'beat it, then send' else None,
+            )
+            shown = self._presentation_timeline.resolve(
+                desired, now,
+                visual_complete=self._visual_transition_complete(preview_visible))
+            mode, title, subtitle, deadline = (
+                shown.mode, shown.title, shown.subtitle, shown.deadline)
+            diagnostic = (desired.key, shown.key, preview_visible,
+                          self._visual_transition_complete(preview_visible))
+            if diagnostic != self._last_presentation_diagnostic:
+                self._last_presentation_diagnostic = diagnostic
+                self.app.emit('log',
+                              '画面状态：期望 {} / 展示 {} / 可见 {} / 过渡完成 {}'.format(
+                                  diagnostic[0], diagnostic[1], int(diagnostic[2]),
+                                  int(diagnostic[3])))
+            if not preview_visible and self._away_at is None:
+                self._away_at = now
+        else:
+            self._presentation_timeline.reset()
+            self._away_at = None
+            deadline = None
+        home_away = (self.stage == 'ready' and self._away_at is not None
+                     and (not preview_visible or now - self._away_at < 1.0))
+        if not home_away:
+            self._away_at = None
+        home_mode = 'away' if home_away else mode
+        home_title = '切回 Codex 继续' if home_away else title
+        home_subtitle = '' if home_away else subtitle
+        home_deadline = None if home_away else deadline
+        clock_enabled = (
+            (self.stage == "tour" and self.TOUR[self._tour_index][0] == "clock")
+            or (self.stage == "ready" and preview_visible and connected
+                and shown.key == 'whip' and not home_away)
+        )
         key = (self.stage, self._tour_index, self._mount_inline_state,
-               title, subtitle, step, primary, progress, enabled,
-               a.ble_value.get(), a.mode_value.get(), mode, self._pending)
+               home_title, home_subtitle, step, primary, progress, enabled,
+               a.ble_value.get(), a.mode_value.get(), home_mode, self._pending,
+               preview_visible, clock_enabled, home_deadline)
         if key != self._render_key:
             old_stage = self._render_key[0] if self._render_key else None
             self._render_key = key
@@ -1082,14 +1368,18 @@ class Interface:
                 a.arm_check.configure(state="disabled")
             elif old_stage != "ready":
                 a.arm_check.configure(state="normal")
-            self.title.configure(text=title)
-            self.subtitle.configure(text=subtitle)
-            self.subtitle.set_countdown(self._pending_until if subtitle == 'beat it, then send' else None)
+            self.subtitle.configure(text=home_subtitle)
+            self.subtitle.set_countdown(home_deadline)
             self.step_label.configure(text=step)
-            self.hero.clock_enabled = (
-                self.stage == "tour" and self.TOUR[self._tour_index][0] == "clock"
-            ) or (self.stage == "ready" and connected and not self._pending and mode == 'whip')
-            self.hero.set_mode(mode)
+            self.hero.clock_enabled = clock_enabled
+            demo = (self._mount_inline_state.removesuffix('_ready')
+                    if self.stage == 'calibrate' and self._mount_inline_state in {'up_ready', 'right_ready'}
+                    else 'strike' if self.stage == 'tour' and self.TOUR[self._tour_index][0] == 'strike'
+                    else None)
+            self.hero.set_demo(demo)
+            self.hero.set_mode(home_mode)
+            self.hero.set_preview_visible(preview_visible)
+            self.title.configure(text=home_title)
             # Reserve room for first-run choices/actions at the minimum window
             # size. The hero yields space before any primary action can clip.
             self.hero.configure(height=(150 if self.stage == "choices" else
@@ -1098,17 +1388,32 @@ class Interface:
                                         275))
             self.primary.configure(text=primary, state="normal" if enabled else "disabled")
             self.progress.configure(text=progress)
+            if self.stage == 'tour':
+                self.tour_counter.configure(text=f"{self._tour_index + 1} / {len(self.TOUR)}")
+                self.tour_previous.configure(state='normal' if self._tour_index else 'disabled')
+                self.tour_next.configure(text='→')
             if self.stage == "choices":
                 self.choices.pack(before=self.progress, pady=(15, 4))
             else:
                 self.choices.pack_forget()
             if self.stage == "ready":
                 self.actions.pack_forget()
+                self.tour_nav.pack_forget()
                 self.skip_setup_button.pack_forget()
             else:
                 self.actions.pack(before=self.progress, pady=(16, 0))
+                if self.stage == 'tour':
+                    self.tour_nav.pack(before=self.actions, fill='x', pady=(12, 0))
+                    if primary:
+                        self.primary.pack(side='right')
+                    else:
+                        self.primary.pack_forget()
+                else:
+                    self.tour_nav.pack_forget()
+                    self.primary.pack(side='right')
                 self.skip_setup_button.pack(side='left', padx=(0,8))
-                self.skip_setup_button.configure(text="取消" if self.stage == "calibrate" and self.preferences.setup_complete else "跳过引导")
+                self.skip_setup_button.configure(
+                    text=("跳过校准" if self.stage == 'calibrate' else "跳过引导"))
             if self.stage in {"choices", "learning"}:
                 self.skip.configure(text="跳过这组" if self.stage == "learning" else "以后再录入")
                 self.skip.pack(side="left", padx=(0, 12))
@@ -1122,11 +1427,12 @@ class Interface:
         sync_presentation = getattr(getattr(a, 'effects', None), 'set_presentation', None)
         if sync_presentation:
             sync_presentation(mode=mode, title=title, subtitle=subtitle,
-                              deadline=self._pending_until if self._pending else None,
-                              clock_enabled=self.hero.clock_enabled,
+                              deadline=deadline,
+                              clock_enabled=clock_enabled and not home_away,
                               reduce_motion=self.hero.reduce_motion,
                               level=self.hero._level)
         self._timer = self.root.after(100, self._refresh)
+        self._refreshing = False
 
     def close(self):
         self._closed = True

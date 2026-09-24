@@ -255,7 +255,10 @@ class SupersampledWhipDrawing:
         width = max(1, int(round(width)))
         if len(points) < 2:
             return
-        draw.line(points, fill=fill, width=width, joint="curve")
+        # Catmull-Rom already supplies a dense smooth polyline. Pillow's
+        # joint="curve" adds a small pie slice at every sampled point; on a
+        # four-times surface that is thousands of extra draws per frame.
+        draw.line(points, fill=fill, width=width)
         radius = width / 2
         for x, y in (points[0], points[-1]):
             draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill)
@@ -337,7 +340,10 @@ class SupersampledWhipDrawing:
         ))
         self._round_line(draw, highlight, fill=self._rgba("#343840"), width=2 * scale * ss)
 
-        surface = surface.resize((width, height), Image.Resampling.LANCZOS)
+        # The source is already rendered at an integer supersampling factor.
+        # Area averaging preserves its antialiased edge without the costly
+        # Lanczos convolution on every 60 Hz transition frame.
+        surface = surface.resize((width, height), Image.Resampling.BOX)
         self._photo = ImageTk.PhotoImage(surface, master=self.canvas)
         self.canvas.coords(self._image_item, left, top)
         self.canvas.itemconfigure(self._image_item, image=self._photo, state="normal")

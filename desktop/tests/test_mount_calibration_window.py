@@ -81,7 +81,7 @@ def test_main_window_first_use_reopen_and_stale_arm_result(tmp_path, monkeypatch
         window._drain_events()
         assert window.mount_window is None  # Connect first; user chooses to begin.
         window.ui.stage = "tour"
-        window.ui._tour_complete = True
+        window.ui._tour_index = len(window.ui.TOUR) - 1
         window.ui.advance()
         window._drain_events()
         assert window.mount_window is None

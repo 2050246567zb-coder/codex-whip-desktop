@@ -76,7 +76,8 @@ def test_ui_hang_watchdog_persists_thread_dump(tmp_path) -> None:
         watchdog.stop()
 
     text = path.read_text(encoding="utf-8")
-    assert "version=2.2.68" in text
+    from codex_whip import __version__
+    assert f"version={__version__}" in text
     assert "context=voice-state:recording" in text
     assert "Current thread" in text
     assert "_run" in text

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from codex_whip.effects import CodexWhipEffects, WhipPose
 from codex_whip.overlay_presentation import OverlayPresentation
-from test_interface import host
+from test_interface import host, advance_motion
 
 
 @pytest.fixture
@@ -20,14 +20,14 @@ def overlay(host):
     root.destroy()
 
 
-def update(p,mode='whip',title='just beat it',subtitle='',deadline=None):
+def update(p,mode='whip',title='',subtitle='',deadline=None):
     p.update(mode=mode,title=title,subtitle=subtitle,deadline=deadline,
              clock_enabled=mode=='whip' and not subtitle,reduce_motion=False,level=.2)
 
 
 def test_overlay_geometry_preserves_live_pose_and_text_follows(overlay):
     p = overlay
-    update(p)
+    update(p,title='测试文字',subtitle='beat it, then send')
     p.render()
     assert p.hit_pose == p.effects._preview_pose
     before = p.canvas.coords(p.text_items[0])
@@ -44,23 +44,25 @@ def test_overlay_clock_is_right_click_only_and_voice_takes_priority(overlay):
     update(p,title="Don't waste time on AI")
     assert not p.hero._clock_hover
     assert not p.hero.bind('<Motion>')
-    assert p.title.cget('text') == 'just beat it'
+    assert p.title.cget('text') == ''
     p.render()
     p.toggle_clock()
     assert p.hero._clock_hover
     assert p.title.cget('text') == "Don't waste time on AI"
-    p.hero._clock_started -= 1
+    advance_motion(p.hero)
     p.render()
     update(p,'recording','recording')
     assert not p.hero._clock_hover
-    p.hero._voice_at -= 1
+    p.render()
+    advance_motion(p.hero, 'voice')
     p.render()
     assert p.hero._voice_amount == 1
     p.toggle_clock()
     assert not p.hero._clock_hover
     update(p,'recognizing','recognizing voice')
-    p.hero._voice_at -= 1
-    p.hero._clock_started -= 1
+    p.render()
+    advance_motion(p.hero, 'voice')
+    advance_motion(p.hero)
     p.render()
     assert p.hero.mode == 'recognizing'
     update(p,title='测试文字',subtitle='beat it, then send',deadline=123.)
@@ -71,7 +73,8 @@ def test_overlay_clock_is_right_click_only_and_voice_takes_priority(overlay):
 def test_overlay_render_item_pool_does_not_leak(overlay):
     p=overlay
     update(p,'recording','recording')
-    p.hero._voice_at -= 1
+    p.render()
+    advance_motion(p.hero, 'voice')
     for _ in range(30): p.render()
     count=len(p.canvas.find_all())
     for _ in range(30): p.render()
@@ -111,3 +114,42 @@ def test_failed_presentation_keeps_original_whip(overlay):
     assert effect._presentation_failed
     effect._draw_pose(CodexWhipEffects.STRIKE)
     effect._whip_drawing.draw.assert_called_with(CodexWhipEffects.STRIKE)
+
+
+def test_ordinary_text_hidden_but_clock_and_voice_text_remain(overlay):
+    p = overlay
+    update(p)
+    p.render()
+    assert p.normal_title == ''
+    assert p.title._mask.getbbox() is None
+    assert p.title._duration == 1.0
+    assert p.title._photo is None
+    assert p.subtitle._photo is None
+    assert all(p.canvas.itemcget(i,'state') == 'hidden' for i in p.text_items)
+    update(p,'recording','recording')
+    assert p.title._old.getbbox() is None
+    update(p)
+    p.toggle_clock()
+    p.render()
+    assert all(p.canvas.itemcget(i,'state') == 'normal' for i in p.text_items)
+    update(p,'recognizing','recognizing voice')
+    p.render()
+    assert p.canvas.itemcget(p.text_items[0],'state') == 'normal'
+
+
+def test_native_text_surface_preserves_partial_alpha(overlay):
+    class FakeLayer:
+        def __init__(self): self.image = None
+        def paint(self,image,*_): self.image = image
+        def move(self,*_): pass
+        def hide(self): pass
+        def close(self): pass
+    p = overlay
+    p._native_text = FakeLayer()
+    update(p,'recording','recording')
+    p.title._mask = p.title._raster('Recording 录音')
+    p.render()
+    assert p._native_text.image is not None
+    assert any(0 < a < 255 and count for count,a in
+               p._native_text.image.getchannel('A').getcolors())
+    assert p.canvas.itemcget(p.text_items[0],'state') == 'hidden'

@@ -233,7 +233,7 @@ class DetectorSettingsWindow:
         learning = self._card(self._detector_panel, padx=18, pady=15)
         learning.pack(fill="x", pady=(0, 14))
         top = tk.Frame(learning, bg=self.CARD)
-        top.pack(fill="x")
+        self._learning_header = top
         tk.Label(
             top,
             text="挥鞭识别",
@@ -360,12 +360,12 @@ class DetectorSettingsWindow:
                    if self._motion_engine is not None and self._motion_engine.trained
                    else self._sensitivity.percent)
         self.tolerance_value = tk.DoubleVar(value=percent)
-        self.sensitivity_label = tk.StringVar(value=f"挥鞭灵敏度：{percent:.0f}%")
+        self.sensitivity_label = tk.StringVar(value=f"挥鞭识别灵敏度：{percent:.0f}%")
         tk.Label(tuning, textvariable=self.sensitivity_label, bg=self.CARD,
                  fg=self.TEXT, font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w", pady=(0,4))
         self.tolerance_scale = TickSlider(tuning, minimum=60, maximum=180,
             variable=self.tolerance_value, formatter=lambda value:f'{value:.0f}%',
-            command=lambda value:self.sensitivity_label.set(f"挥鞭灵敏度：{value:.0f}%"), bg=self.CARD)
+            command=lambda value:self.sensitivity_label.set(f"挥鞭识别灵敏度：{value:.0f}%"), bg=self.CARD)
         self.tolerance_scale.pack(fill="x")
         self.tolerance_scale.bind("<ButtonRelease-1>", self._commit_tolerance, add="+")
         self.tolerance_scale.bind("<KeyRelease>", self._commit_tolerance, add="+")
@@ -525,10 +525,12 @@ class DetectorSettingsWindow:
 
     def _sync_learning_controls(self):
         active = self._stage in {"positive", "negative"}
+        self._learning_header.pack_forget()
         self._learning_status_label.pack_forget()
         self._learning_average_label.pack_forget()
         self.stage_badge.pack_forget()
         if self._stage != "idle":
+            self._learning_header.pack(fill='x', before=self._sensitivity_row)
             self.stage_badge.pack(side="right")
             self._learning_status_label.pack(fill="x", before=self._sensitivity_row, pady=(18,12))
             self._learning_average_label.pack(fill="x", before=self._sensitivity_row, pady=(0,12))
@@ -600,45 +602,27 @@ class DetectorSettingsWindow:
         assert self._visual_store is not None
         card = self._card(parent, padx=18, pady=15)
         card.pack(fill="x", pady=(0, 14))
-        tk.Label(
-            card,
-            text="伤口频率",
-            bg=self.CARD,
-            fg=self.TEXT,
-            font=("Microsoft YaHei UI", 12, "bold"),
-        ).pack(anchor="w")
         row = tk.Frame(card, bg=self.CARD)
-        row.pack(fill="x", pady=(24,0))
+        row.pack(fill="x")
         self.visual_strikes_per_wound = tk.StringVar(
             value=str(self._visual_store.settings.strikes_per_wound)
         )
         self.visual_frequency_label = tk.StringVar()
         initial_count = max(1, min(10, self._visual_store.settings.strikes_per_wound or 1))
-        self.visual_frequency_value = tk.DoubleVar(value=round(100 / initial_count))
+        self.visual_frequency_value = tk.DoubleVar(value=initial_count)
         def frequency_changed(value):
-            percent = max(10, min(100, round(float(value))))
-            count = max(1, min(10, round(100 / percent)))
+            count = max(1, min(10, round(float(value))))
             self.visual_strikes_per_wound.set(str(count))
-            self.visual_frequency_label.set(f'{percent}%')
+            self.visual_frequency_label.set(f'伤口出现频率：每抽打{count}次出现一次')
         frequency_changed(self.visual_frequency_value.get())
         tk.Label(row, textvariable=self.visual_frequency_label, bg=self.CARD, fg=self.TEXT,
                  font=('Microsoft YaHei UI',10,'bold')).pack(anchor='w')
-        self.visual_frequency_slider = TickSlider(row, minimum=10, maximum=100,
+        self.visual_frequency_slider = TickSlider(row, minimum=1, maximum=10, step=1,
             variable=self.visual_frequency_value, command=frequency_changed,
-            ticks=(10,25,50,75,100), formatter=lambda v:f'{v:.0f}%', bg=self.CARD)
+            ticks=(1,3,5,7,10), formatter=lambda v:f'{v:.0f}次', bg=self.CARD)
         self.visual_frequency_slider.pack(fill='x')
 
-        footer = tk.Frame(card, bg=self.CARD)
-        footer.pack(fill="x", pady=(16, 0))
         self.visual_status = tk.StringVar(value="")
-        tk.Label(
-            footer,
-            textvariable=self.visual_status,
-            bg=self.CARD,
-            fg=self.MUTED,
-            anchor="w",
-            font=("Microsoft YaHei UI", 8),
-        ).pack(side="left", fill="x", expand=True)
         self.visual_frequency_slider.bind("<ButtonRelease-1>", lambda _e: self._save_visual_settings(), add='+')
         self.visual_frequency_slider.bind("<KeyRelease>", lambda _e: self._save_visual_settings(), add='+')
 
@@ -862,16 +846,14 @@ class DetectorSettingsWindow:
     def _build_calibration_panel(self, parent):
         card = self._card(parent, padx=24, pady=24)
         card.pack(fill='x', pady=(0, 16))
-        tk.Label(card, text='双敲识别', bg=self.CARD, fg=self.TEXT,
-                 font=('Microsoft YaHei UI', 12, 'bold')).pack(anchor='w')
         settings = self._voice_store.settings if self._voice_store else VoiceSettings()
         minimum = self._tap_minimum_value(settings)
         self.tap_minimum = tk.DoubleVar(master=self.window, value=minimum)
         percent = self._tap_minimum_to_percent(minimum)
         self.tap_sensitivity = tk.DoubleVar(master=self.window, value=percent)
-        self.tap_minimum_label = tk.StringVar(master=self.window, value=f'灵敏度  {percent:.0f}%')
+        self.tap_minimum_label = tk.StringVar(master=self.window, value=f'双敲识别灵敏度：{percent:.0f}%')
         tk.Label(card, textvariable=self.tap_minimum_label, bg=self.CARD, fg=self.TEXT,
-                 font=('Microsoft YaHei UI',10,'bold')).pack(anchor='w')
+                 font=('Microsoft YaHei UI',10,'bold')).pack(anchor='w', pady=(0, 4))
         self.tap_minimum_slider = TickSlider(
             card, minimum=0, maximum=100, variable=self.tap_sensitivity,
             ticks=(0,25,50,75,100), formatter=lambda value:f'{value:.0f}%',
@@ -914,7 +896,7 @@ class DetectorSettingsWindow:
     def _tap_minimum_changed(self, value):
         minimum = self._tap_percent_to_minimum(value)
         self.tap_minimum.set(minimum)
-        self.tap_minimum_label.set(f'灵敏度  {float(value):.0f}%')
+        self.tap_minimum_label.set(f'双敲识别灵敏度：{float(value):.0f}%')
         self.tap_range_status.set(
             f'芯片实际阈值：{self._effective_tap_threshold(minimum):.1f} g · 双敲窗口固定 1 秒')
 
@@ -1071,22 +1053,25 @@ class DetectorSettingsWindow:
         )
         self._render_message_cards()
 
-        footer = tk.Frame(messages, bg=self.CARD)
-        footer.pack(fill="x", pady=(12, 0))
         self.message_status = tk.StringVar(value="")
-        tk.Label(
-            footer, textvariable=self.message_status, bg=self.CARD, fg=self.RED,
-            font=(style.FONT, 9), anchor="w",
-        ).pack(side="left", fill="x", expand=True)
+        self._message_status_label = tk.Label(
+            messages, textvariable=self.message_status, bg=self.CARD, fg=self.RED,
+            font=(style.FONT, 9), anchor="w")
+        def show_message_error(*_args):
+            if self.message_status.get():
+                self._message_status_label.pack(fill='x', pady=(12, 0))
+            else:
+                self._message_status_label.pack_forget()
+        self.message_status.trace_add('write', show_message_error)
         self.message_order_button = style.ActionButton(
-            footer, self._message_order_icon(), self._toggle_message_order)
-        self.message_order_button.configure(font=("Segoe UI Symbol", 13), takefocus=True)
+            order, self._message_order_icon(), self._toggle_message_order,
+            primary=True, icon=True)
+        self.message_order_button.configure(font=("Segoe UI Symbol", 15), takefocus=True)
         self.message_order_button.bind("<Enter>", self._show_message_order_tip, add="+")
         self.message_order_button.bind("<Leave>", self._hide_message_order_tip, add="+")
-        self.message_add_button = self._button(
-            footer, "+", self._add_message, self.CARD_ALT, self.TEXT
-        )
-        self.message_add_button.configure(font=("Segoe UI", 17), takefocus=True)
+        self.message_add_button = style.ActionButton(
+            order, "+", self._add_message, primary=True, icon=True)
+        self.message_add_button.configure(font=("Segoe UI Symbol", 15), takefocus=True)
         self.message_add_button.pack(side="right")
         self.message_order_button.pack(side="right", padx=(0, 8))
 

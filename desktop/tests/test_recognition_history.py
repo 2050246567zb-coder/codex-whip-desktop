@@ -48,7 +48,8 @@ def test_cloud_success_records_actual_engine_and_request_without_secret(tmp_path
     asyncio.run(_record(module))
 
     record = _last_record(store)
-    assert record['app_version'] == '2.2.68'
+    from codex_whip import __version__
+    assert record['app_version'] == __version__
     assert record['result'] == 'success'
     assert record['transcript'] == '继续完成任务'
     assert record['audio']['duration_ms'] == 500

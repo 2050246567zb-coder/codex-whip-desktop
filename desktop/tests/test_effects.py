@@ -1,5 +1,6 @@
 import io
 import math
+import os
 from types import SimpleNamespace
 import wave
 
@@ -41,8 +42,38 @@ from codex_whip.effects import (
     shake_offset,
     transform_whip_pose,
 )
+
+
 from codex_whip.gui import CodexWhipWindow
 from codex_whip.sensor_pose import SensorPose
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows foreground policy')
+def test_overlay_only_available_while_codex_is_foreground(monkeypatch):
+    from codex_whip import effects as module
+    effect = object.__new__(CodexWhipEffects)
+    effect._target_hwnd = 101
+    fake = SimpleNamespace(IsWindow=lambda _: True, IsWindowVisible=lambda _: True,
+                           IsIconic=lambda _: False, GetForegroundWindow=lambda: 202,
+                           GetAncestor=lambda hwnd, _: hwnd)
+    monkeypatch.setattr(module, '_user32', fake)
+    assert not effect._target_available()
+    effect._product_window_roots = frozenset({202, 303})
+    assert effect._target_available()
+    assert effect._overlay_z_anchor() == 202
+    fake.GetForegroundWindow = lambda: 404
+    assert not effect._target_available()
+    fake.GetForegroundWindow = lambda: 101
+    assert effect._target_available()
+    assert effect._overlay_z_anchor() == module.HWND_TOPMOST
+
+
+def test_overlay_activity_does_not_require_settings_to_have_been_opened():
+    effect = object.__new__(CodexWhipEffects)
+    effect._target_available = lambda: True
+    assert effect.target_active()
+    effect._settings_open = True
+    assert not effect.target_active()
 
 
 class FakeEffects:

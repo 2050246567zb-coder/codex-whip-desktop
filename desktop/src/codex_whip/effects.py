@@ -19,6 +19,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageTk
 
 from .sensor_pose import SensorPose, SensorPoseTracker
 from .paths import user_data_dir
+from .motion_clock import ACTIVE_FRAME_MS
 
 if os.name == "nt":
     from ctypes import wintypes
@@ -1265,6 +1266,8 @@ if os.name == "nt":
     _user32.IsZoomed.restype = wintypes.BOOL
     _user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
     _user32.GetAncestor.restype = wintypes.HWND
+    _user32.GetForegroundWindow.argtypes = ()
+    _user32.GetForegroundWindow.restype = wintypes.HWND
     _user32.GetCursorPos.argtypes = (ctypes.POINTER(CURSOR_POINT),)
     _user32.GetCursorPos.restype = wintypes.BOOL
     _user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
@@ -1556,6 +1559,8 @@ class CodexWhipEffects:
         self._root = root
         self._log = log
         self._target_hwnd: int | None = None
+        self._product_window_roots: frozenset[int] = frozenset()
+        self._settings_open = False
         self._animation_started_at = 0.0
         self._impact_fired = False
         self._animation_after: str | None = None
@@ -1730,7 +1735,7 @@ class CodexWhipEffects:
         _user32.SetLayeredWindowAttributes(hwnd, 0x00FF00FF, 255, LWA_COLORKEY)
         _user32.SetWindowPos(
             hwnd,
-            HWND_TOPMOST,
+            self._overlay_z_anchor(),
             0,
             0,
             0,
@@ -1963,7 +1968,7 @@ class CodexWhipEffects:
         if os.name == "nt":
             _user32.SetWindowPos(
                 self._damage_hwnd,
-                HWND_TOPMOST,
+                self._overlay_z_anchor(),
                 0,
                 0,
                 0,
@@ -2173,7 +2178,7 @@ class CodexWhipEffects:
         _user32.SetLayeredWindowAttributes(hwnd, 0, 1, LWA_ALPHA)
         _user32.SetWindowPos(
             hwnd,
-            HWND_TOPMOST,
+            self._overlay_z_anchor(),
             0,
             0,
             0,
@@ -2198,7 +2203,7 @@ class CodexWhipEffects:
             return
         _user32.SetWindowPos(
             self._window_handle(window),
-            HWND_TOPMOST,
+            self._overlay_z_anchor(),
             rectangle.left,
             rectangle.top,
             width,
@@ -2219,7 +2224,7 @@ class CodexWhipEffects:
             return
         _user32.SetWindowPos(
             self._overlay_hwnd,
-            HWND_TOPMOST,
+            self._overlay_z_anchor(),
             0,
             0,
             0,
@@ -2335,6 +2340,9 @@ class CodexWhipEffects:
             self._make_click_through()
             self._show_idle_hitbox()
         else:
+            presentation = getattr(self, '_presentation', None)
+            if presentation is not None:
+                presentation.hide()
             self.window.withdraw()
             self.hit_window.withdraw()
             self.capture_window.withdraw()
@@ -2347,6 +2355,9 @@ class CodexWhipEffects:
         self._hide_scare(restore=False)
         self._target_hwnd = None
         self._sensor_physics = None
+        presentation = getattr(self, '_presentation', None)
+        if presentation is not None:
+            presentation.hide()
         self.hit_window.withdraw()
         self.capture_window.withdraw()
         self.window.withdraw()
@@ -2453,11 +2464,40 @@ class CodexWhipEffects:
             return _target_exists(self._target_hwnd)
         if os.name != "nt":
             return False
+        foreground = _user32.GetForegroundWindow()
+        foreground_root = int(_user32.GetAncestor(foreground, GA_ROOT)) if foreground else None
         return bool(
             _user32.IsWindow(self._target_hwnd)
             and _user32.IsWindowVisible(self._target_hwnd)
             and not _user32.IsIconic(self._target_hwnd)
+            and foreground_root is not None
+            and (foreground_root == int(_user32.GetAncestor(self._target_hwnd, GA_ROOT))
+                 or foreground_root in getattr(self, "_product_window_roots", ()))
         )
+
+    def set_product_windows(self, *windows: tk.Misc) -> None:
+        """Register the product UI windows allowed to retain the Codex overlay."""
+        if os.name == "nt":
+            self._product_window_roots = frozenset(
+                self._window_handle(window) for window in windows
+            )
+
+    def _own_foreground_root(self) -> int | None:
+        if os.name != "nt":
+            return None
+        foreground = _user32.GetForegroundWindow()
+        if not foreground:
+            return None
+        root = int(_user32.GetAncestor(foreground, GA_ROOT))
+        return root if root in getattr(self, "_product_window_roots", ()) else None
+
+    def _overlay_z_anchor(self) -> int:
+        # Keep the overlay above Codex but behind our own active UI.
+        return self._own_foreground_root() or HWND_TOPMOST
+
+    def target_active(self) -> bool:
+        """Whether the home preview should mirror the visible Codex overlay."""
+        return not getattr(self, "_settings_open", False) and self._target_available()
 
     def _move_visual(self, origin: Point) -> None:
         if getattr(self, "_settings_open", False):
@@ -2470,7 +2510,7 @@ class CodexWhipEffects:
             return
         _user32.SetWindowPos(
             self._overlay_hwnd,
-            HWND_TOPMOST,
+            self._overlay_z_anchor(),
             x,
             y,
             self.WIDTH,
@@ -2860,7 +2900,10 @@ class CodexWhipEffects:
         # Include rendering time in the frame budget instead of adding it to
         # every frame. Do not catch up with a burst after a blocked UI thread.
         spent = (time.perf_counter() - getattr(self, "_sync_started_at", time.perf_counter())) * 1000
-        delay = max(1, math.ceil(self.SYNC_INTERVAL_MS - spent))
+        presentation = getattr(self, '_presentation', None)
+        budget = (ACTIVE_FRAME_MS if getattr(presentation, 'transition_active', False) is True
+                  else self.SYNC_INTERVAL_MS)
+        delay = max(1, math.ceil(budget - spent))
         self._sync_after = self._root.after(delay, self._sync_tick)
 
     def set_settings_open(self, opened: bool) -> None:
@@ -2868,6 +2911,9 @@ class CodexWhipEffects:
         if opened:
             self.disarm_manual(log=False)
             self._cancel_animation()
+            presentation = getattr(self, '_presentation', None)
+            if presentation is not None:
+                presentation.hide()
             for window in (self.window, self.hit_window, self.capture_window, self.damage_window):
                 window.withdraw()
 
@@ -2920,6 +2966,9 @@ class CodexWhipEffects:
                 self.disarm_manual(log=False)
                 self.hit_window.withdraw()
                 self.capture_window.withdraw()
+                presentation = getattr(self, '_presentation', None)
+                if presentation is not None:
+                    presentation.hide()
                 self.window.withdraw()
                 self.damage_window.withdraw()
                 self._hide_scare(restore=False)

@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 import tkinter as tk
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops, ImageTk
+from .motion_clock import ACTIVE_FRAME_MS, RenderClock
 
 
 def blend_masks(old,new,progress):
@@ -19,24 +20,38 @@ def blend_masks(old,new,progress):
     # then feColorMatrix alpha = 255*alpha - 140. No extra timing ease or cooldown.
     # Scale blur to our 23pt font (reference base 40pt), on the 2x render surface.
     blur_unit = 8*(23/40)*2
-    outgoing = old.filter(ImageFilter.GaussianBlur(min(100,blur_unit*p/(1-p))))
-    incoming = new.filter(ImageFilter.GaussianBlur(min(100,blur_unit*(1-p)/p)))
-    outgoing = outgoing.point([round(x*(1-p)**.4) for x in range(256)])
-    incoming = incoming.point([round(x*p**.4) for x in range(256)])
-    alpha = ImageChops.screen(outgoing,incoming)
+    old_blank = old.getbbox() is None
+    new_blank = new.getbbox() is None
+    if old_blank and new_blank:
+        return old.copy()
+    outgoing = None if old_blank else old.filter(
+        ImageFilter.GaussianBlur(min(100,blur_unit*p/(1-p))))
+    incoming = None if new_blank else new.filter(
+        ImageFilter.GaussianBlur(min(100,blur_unit*(1-p)/p)))
+    if outgoing is not None:
+        outgoing = outgoing.point([round(x*(1-p)**.4) for x in range(256)])
+    if incoming is not None:
+        incoming = incoming.point([round(x*p**.4) for x in range(256)])
+    alpha = (ImageChops.screen(outgoing,incoming) if outgoing is not None and incoming is not None
+             else outgoing if outgoing is not None else incoming)
     fused = alpha.point([max(0,min(255,(x-140)*255)) for x in range(256)])
     return fused.filter(ImageFilter.GaussianBlur(.6*2))
 
 
 class MorphingTitle(tk.Label):
-    def __init__(self,parent,reduce_motion=lambda:False,point_size=23,height=52):
+    def __init__(self,parent,reduce_motion=lambda:False,point_size=23,height=52,
+                 duration=.8,raster_only=False):
         self._ready = False
         self._timer = None
         self._reduce_motion = reduce_motion
+        self._duration = duration
+        self._motion = None
+        self._raster_only = raster_only
         self._raster_size = (880,height*2)
         self._output_size = (440,height)
         self._mask = Image.new('L',self._raster_size)
         self._old = self._new = self._mask
+        self._photo = None
         super().__init__(parent,text='',bg=parent.cget('bg'),bd=0,padx=0,pady=0)
         candidates = ['C:/Windows/Fonts/msyhbd.ttc',
                       '/System/Library/Fonts/PingFang.ttc',
@@ -104,29 +119,49 @@ class MorphingTitle(tk.Label):
                 # The sleeping state is persistent; only its ellipsis ticks.
                 # Re-morphing the entire phrase every cycle looks like loading.
                 self._old = self._new
+                self._motion = None
                 self._show(self._new)
                 return result
             self._at = time.monotonic()
+            self._motion = RenderClock(self._duration)
             self._frame()
         return result
 
     config = configure
 
+    @property
+    def animation_complete(self):
+        return self._motion is None
+
     def _show(self,mask):
         self._mask = mask
+        if self._raster_only:
+            return
         surface = Image.new('RGB',mask.size,self.cget('bg'))
         surface.paste('#1D1D1F',(0,0,*mask.size),mask)
-        self._photo = ImageTk.PhotoImage(surface.resize(self._output_size,Image.Resampling.LANCZOS),master=self)
-        super().configure(image=self._photo)
+        self._paint_surface(surface)
+
+    def _paint_surface(self, surface):
+        frame = surface.resize(self._output_size,Image.Resampling.LANCZOS)
+        if self._photo is None:
+            self._photo = ImageTk.PhotoImage(frame,master=self)
+            super().configure(image=self._photo)
+        else:
+            # Replacing the Tk image on every frame forces a costly widget
+            # reconfiguration and photo deletion. Update its pixels in place.
+            self._photo.paste(frame)
 
     def _frame(self):
+        started = time.perf_counter()
         self._timer = None
-        p = min(1.,(time.monotonic()-self._at)/.8)
-        if self._reduce_motion():
-            p = 1.
+        p = (1. if self._reduce_motion() else self._motion.sample(time.monotonic())
+             if self._motion is not None else 1.)
         self._show(blend_masks(self._old,self._new,p))
         if p<1:
-            self._timer = self.after(16,self._frame)
+            delay = max(1,math.ceil(ACTIVE_FRAME_MS-(time.perf_counter()-started)*1000))
+            self._timer = self.after(delay,self._frame)
+        else:
+            self._motion = None
 
     def destroy(self):
         if self._timer:
