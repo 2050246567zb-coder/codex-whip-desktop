@@ -2,6 +2,16 @@
 #include <stdint.h>
 #include <math.h>
 
+// A disconnected handle is always allowed to idle, independently of the
+// last computer's preference. A connected handle follows that preference.
+constexpr bool powerSavingEnabled(bool connected, bool desktopEnabled) {
+  return !connected || desktopEnabled;
+}
+static_assert(powerSavingEnabled(false, false), "offline sleep must be on");
+static_assert(powerSavingEnabled(false, true), "offline sleep must be on");
+static_assert(!powerSavingEnabled(true, false), "connected desktop off must win");
+static_assert(powerSavingEnabled(true, true), "connected desktop on must win");
+
 // Hardware-independent policy. No acceleration integration or absolute position.
 class PowerIdle {
  public:
