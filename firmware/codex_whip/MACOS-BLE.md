@@ -1,11 +1,11 @@
-# 0.8.2：macOS / Windows 蓝牙与语音流控
+# 0.8.3：macOS / Windows 蓝牙与语音流控
 
 适用硬件：**Seeed XIAO nRF52840 Sense（LSM6DS3TR-C）**。不是 ESP32-C3 固件。
 基于 GitHub `codex/product-macos` 的 `5bc18e7` / 桌面 2.2.58，保留本地 Mac 原生叠层、鼠标交互和姿态连续显示修复。
 
 ## 自动选择方案
 
-固件对 `PING` 回应 `PONG,0.8.2`、`CAPS,HOST_PROFILE,1` 与
+固件对 `PING` 回应 `PONG,0.8.3`、`CAPS,HOST_PROFILE,1` 与
 `CAPS,VOICE_FLOW,1`。
 更新后的桌面端仅在收到这一能力声明时，按运行系统发送一次 `HOST,MACOS`、`HOST,WINDOWS` 或 `HOST,LINUX`。
 这是自动握手，不要求用户选择。仅靠 BLE 地址、MTU 或连接节奏无法可靠判断操作系统，固件不作此类猜测。
@@ -58,7 +58,7 @@ scripts/upload-firmware-macos.sh
 CLI 下载核验官方 SHA256；第一次安装需要网络。可按环境配置 HTTP(S) 代理，脚本不内置某个代理端口。
 刷写脚本只自动选择唯一的匹配 XIAO 板；必要时手工传入已确认的 `/dev/cu.usbmodem…`。
 先停止桌面端蓝牙连接、关闭串口监视器；使用支持数据传输的 USB 线。
-成功必须看到 `Device programmed.`，随后重新连接桌面端确认 `PONG,0.8.2` 和 `HOST,OK,MACOS`。
+成功必须看到 `Device programmed.`，随后重新连接桌面端确认 `PONG,0.8.3` 和 `HOST,OK,MACOS`。
 无需刷写 bootloader；不要将此包刷到 ESP32 或其他型号。
 
 ## 软件验证
