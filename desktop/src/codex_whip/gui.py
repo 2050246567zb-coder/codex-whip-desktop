@@ -753,6 +753,13 @@ class CodexWhipWindow:
         # control links to the developer page.
         self.root.bind('<<OpenDeveloperSettings>>', lambda _event: self.open_developer_settings())
 
+    def _restore_send_state(self) -> None:
+        if self.ui.stage != "ready" or not self.ui.preferences.send_enabled:
+            return
+        self.armed.set()
+        self.arm_value.set(True)
+        self.mode_value.set("实际发送已开启")
+
 
     def _restore_send_state(self) -> None:
         if self.ui.stage != "ready" or not self.ui.preferences.send_enabled:

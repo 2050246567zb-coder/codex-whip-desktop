@@ -27,7 +27,7 @@ def update(p,mode='whip',title='just beat it',subtitle='',deadline=None):
 
 def test_overlay_geometry_preserves_live_pose_and_text_follows(overlay):
     p = overlay
-    update(p)
+    update(p, title='测试文字', subtitle='beat it, then send')
     p.render()
     assert p.hit_pose == p.effects._preview_pose
     before = p.canvas.coords(p.text_items[0])
@@ -111,3 +111,31 @@ def test_failed_presentation_keeps_original_whip(overlay):
     assert effect._presentation_failed
     effect._draw_pose(CodexWhipEffects.STRIKE)
     effect._whip_drawing.draw.assert_called_with(CodexWhipEffects.STRIKE)
+
+
+def test_ordinary_text_hidden_but_clock_and_voice_text_remain(overlay):
+    p = overlay
+    update(p)
+    p.render()
+    assert all(p.canvas.itemcget(i, 'state') == 'hidden' for i in p.text_items)
+    p.toggle_clock()
+    p.render()
+    assert all(p.canvas.itemcget(i, 'state') == 'normal' for i in p.text_items)
+    update(p, 'recognizing', 'recognizing voice')
+    p.render()
+    assert p.canvas.itemcget(p.text_items[0], 'state') == 'normal'
+
+
+def test_mac_text_keeps_retina_pixels_and_partial_alpha(overlay):
+    import sys
+    from PIL import ImageTk
+    if sys.platform != 'darwin':
+        pytest.skip('AppKit alpha compositing')
+    p = overlay
+    update(p, 'recording', 'recording')
+    p.title._mask = p.title._raster('Recording 录音')
+    p.render()
+    image = ImageTk.getimage(p.photos[0])
+    logical = p.canvas._native_image_sizes[p.text_items[0]]
+    assert image.width >= logical[0] * 2
+    assert any(0 < a < 255 and count for count, a in image.getchannel('A').getcolors())

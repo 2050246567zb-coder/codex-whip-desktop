@@ -153,4 +153,3 @@ def test_cloud_and_local_failure_record_both_attempts_without_key(tmp_path, monk
         'error', 'error']
     assert 'SECRET-DO-NOT-PERSIST' not in RecognitionHistory(store.path).path.read_text(encoding='utf-8')
     assert any(kind == 'voice_error' for kind, _payload in events)
-

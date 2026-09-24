@@ -640,11 +640,14 @@ class Interface:
 
         sending = self._sending_card = style.RoundedCard(self.host, padx=24, pady=24)
         label(sending, "发送控制", size=12, bold=True).pack(anchor="w", pady=(0,12))
-        a.arm_check = style.Switch(sending, text="发送开关",
+        send_row = tk.Frame(sending, bg=CARD)
+        send_row.pack(anchor="w")
+        a.arm_check = style.Switch(send_row, text="",
                                     variable=a.arm_value, command=a.toggle_arm,
                                     bg=CARD, activebackground=CARD, fg=TEXT, selectcolor=CARD,
                                     font=(FONT, 10), cursor="hand2", takefocus=True)
-        a.arm_check.pack(anchor="w")
+        a.arm_check.pack(side="left")
+        label(send_row, "发送开关", size=10).pack(side="left", padx=(12, 0))
 
         speech_disclosure = self._speech_panel = Disclosure(self.host, "下一鞭的语音文字", bg=BG)
         speech = style.RoundedCard(speech_disclosure.body, padx=20, pady=16)

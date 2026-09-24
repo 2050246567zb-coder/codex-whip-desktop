@@ -110,6 +110,7 @@ class BleWhipClient:
         audio_active = False
 
         def on_disconnect(_: BleakClient) -> None:
+            logging.getLogger(__name__).info("BLE link disconnected")
             disconnected.set()
 
         def on_notification(_: object, data: bytearray) -> None:
@@ -134,6 +135,10 @@ class BleWhipClient:
                             host_profile_pending = True
                         elif message.kind in {"HOST", "LINK", "TAP2", "TAPENGINE"}:
                             logging.getLogger(__name__).info("BLE %s: %s", message.kind, ",".join(message.fields))
+                    if isinstance(message, AudioStart):
+                        logging.getLogger(__name__).info("BLE audio start: session=%s rate=%s", message.session, message.sample_rate)
+                    elif isinstance(message, AudioEnd):
+                        logging.getLogger(__name__).info("BLE audio end: session=%s samples=%s reason=%s", message.session, message.total_samples, message.reason)
                     queue.put_nowait(message)
             except ProtocolError as exc:
                 queue.put_nowait(

@@ -60,6 +60,31 @@ def test_product_is_codex_only_and_hides_manual_listen_control(app):
     assert app.listen_button is None
 
 
+def test_send_switch_label_and_confirmation_only_explain_behavior(app, monkeypatch):
+    from codex_whip.interface_state import InterfacePreferences
+
+    app.ui.stage = "ready"
+    assert app.arm_check.cget("text") == ""
+    assert any(child.cget("text") == "发送开关"
+               for child in app.arm_check.master.winfo_children()
+               if isinstance(child, tk.Label))
+    assert app.ui.preferences.send_enabled is True
+    app.arm_value.set(False)
+    app.toggle_arm()
+    assert not app.armed.is_set()
+    assert InterfacePreferences.load(app.ui.path, already_calibrated=True).send_enabled is False
+
+    reminder = []
+    monkeypatch.setattr("codex_whip.gui.messagebox.askyesno",
+                        lambda title, body: reminder.append((title, body)) or False)
+    app.arm_value.set(True)
+    app.toggle_arm()
+    assert reminder[0][0] == "发送提醒"
+    assert "预设文字" in reminder[0][1]
+    assert "只发送语音识别出的内容" in reminder[0][1]
+    assert not app.armed.is_set()
+
+
 def test_hover_clock_is_local_interruptible_and_yields_to_recording(app):
     app.ui.hero.set_mode('whip')
     app.ui.hero._clock_started -= 1

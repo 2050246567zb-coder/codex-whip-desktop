@@ -21,4 +21,3 @@ class RecognitionHistory:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as output:
                 output.write(line + "\n")
-
