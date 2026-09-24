@@ -12,7 +12,8 @@ from codex_whip.motion_v3 import MotionEngine
 
 
 @pytest.mark.parametrize('version, expected', [('0.6.0',False),('0.6.1',True),
-    ('0.6.2',True),('0.7.7',False),('bad',False),('0.6',False)])
+    ('0.6.2',True),('0.7.7',False),('0.8.1',True),('0.8.2',True),
+    ('0.9.0',False),('bad',False),('0.6',False)])
 def test_capability_is_not_accidentally_enabled_on_c3(version, expected):
     assert supports_power_saving(version) == expected
 
@@ -31,7 +32,8 @@ def test_preference_is_opt_in_persistent_and_strict(tmp_path):
 
 
 @pytest.mark.parametrize('connected,version,expected', [
-    (False,'0.6.1',None),(True,'0.6.0',None),(True,'0.7.7',None),(True,'0.6.1','POWER,1')])
+    (False,'0.6.1',None),(True,'0.6.0',None),(True,'0.7.7',None),
+    (True,'0.6.1','POWER,1'),(True,'0.8.2','POWER,1')])
 def test_apply_only_syncs_capable_connected_board(tmp_path,connected,version,expected):
     app=object.__new__(CodexWhipWindow)
     app.power_store=PowerSettings(tmp_path/'power.json')
