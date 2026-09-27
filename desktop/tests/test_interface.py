@@ -151,6 +151,20 @@ def test_home_title_changes_with_clock_hover(app):
     assert ui.title.cget('text') == ''
 
 
+def test_ready_home_shows_question_when_codex_loses_focus(app):
+    connected(app)
+    ui = app.ui
+    ui.stage = 'ready'
+    app.effects.target_active.return_value = False
+    refresh(ui)
+    assert ui.hero.mode == 'away'
+    assert ui.title.cget('text') == '切回 Codex 继续'
+    app.effects.target_active.return_value = True
+    refresh(ui)
+    assert ui.hero.mode == 'whip'
+    assert ui.title.cget('text') == ''
+
+
 def test_power_setting_round_trip_and_disconnect_status(app):
     from codex_whip.models import DeviceMessage
     app._ensure_settings()
@@ -278,7 +292,10 @@ def test_single_settings_page_preserves_controls_and_reopen(app):
         assert window.voice_feature_card.winfo_manager() == 'pack'
         assert app.voice_text.get('1.0','end-1c') == '未保存的语音文字'
     ui.hide_preferences()
+    assert ui.root.state() == 'normal'
     ui.open_preferences('input')
+    assert ui.root.state() == 'withdrawn'
+    assert ui.settings.state() == 'normal'
     assert app.voice_text.get('1.0','end-1c') == '未保存的语音文字'
     assert app.settings_window._messages_panel.winfo_manager() == 'pack'
 

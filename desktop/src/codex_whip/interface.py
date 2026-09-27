@@ -60,7 +60,8 @@ def button(parent, text, command, *, primary=False, **kwargs):
                       activeforeground="white" if primary else TEXT,
                       disabledforeground="#939399", relief="flat", bd=0,
                       padx=18, pady=10, cursor="hand2", takefocus=True,
-                      highlightthickness=1, highlightbackground=parent.cget("bg"),
+                      highlightthickness=0 if sys.platform == "darwin" else 1,
+                      highlightbackground=parent.cget("bg"),
                       highlightcolor=BLUE, font=(FONT, 10), **kwargs)
     # Native active state gives immediate pressed feedback; no animation lockout.
     return value
@@ -573,7 +574,8 @@ class Interface:
         self.settings.geometry("1060x820")
         self.settings.minsize(970, 760)
         self.settings.configure(bg=BG)
-        self.settings.transient(self.root)
+        # The home window is hidden while settings is open. A transient child
+        # would disappear with its parent on macOS as well.
         self.settings.protocol("WM_DELETE_WINDOW", self.hide_preferences)
         self.settings.bind("<Escape>", lambda _e: self.hide_preferences())
         sidebar = tk.Frame(self.settings, bg=SOFT, width=184, padx=16, pady=28)
@@ -773,6 +775,7 @@ class Interface:
             self.app.effects.set_settings_open(True)
         self.settings.deiconify()
         self.settings.lift()
+        self.root.withdraw()
         def finish_scroll_reset():
             if self._settings_scroll_reset and self._advanced_canvas.winfo_exists():
                 self._resize_advanced()
@@ -786,6 +789,9 @@ class Interface:
 
     def hide_preferences(self):
         self.settings.withdraw()
+        if self.root.winfo_exists():
+            self.root.deiconify()
+            self.root.lift()
         self._settings_scroll_reset = False
         if hasattr(self.app.effects, "set_settings_open"):
             self.app.effects.set_settings_open(False)
@@ -1165,9 +1171,16 @@ class Interface:
             title = 'Connecting'
         if self.stage == 'ready' and not (connected and self._pending and self._voice_state not in {'recording','recognizing'}):
             subtitle = ''
+        effects = getattr(a, 'effects', None)
+        codex_foreground = (self.stage != 'ready' or effects is None
+                            or bool(effects.target_active()))
+        home_mode = mode if codex_foreground else 'away'
+        home_title = title if codex_foreground else '切回 Codex 继续'
+        home_subtitle = subtitle if codex_foreground else ''
         key = (self.stage, self._tour_index, self._mount_inline_state,
-               title, subtitle, step, primary, progress, enabled,
-               a.ble_value.get(), a.mode_value.get(), mode, self._pending)
+               home_title, home_subtitle, step, primary, progress, enabled,
+               a.ble_value.get(), a.mode_value.get(), home_mode, self._pending,
+               codex_foreground)
         if key != self._render_key:
             old_stage = self._render_key[0] if self._render_key else None
             self._render_key = key
@@ -1175,19 +1188,20 @@ class Interface:
                 a.arm_check.configure(state="disabled")
             elif old_stage != "ready":
                 a.arm_check.configure(state="normal")
-            self.title.configure(text=title)
-            self.subtitle.configure(text=subtitle)
-            self.subtitle.set_countdown(self._pending_until if subtitle == 'beat it, then send' else None)
+            self.title.configure(text=home_title)
+            self.subtitle.configure(text=home_subtitle)
+            self.subtitle.set_countdown(self._pending_until if home_subtitle == 'beat it, then send' else None)
             self.step_label.configure(text=step)
             self.hero.clock_enabled = (
                 self.stage == "tour" and self.TOUR[self._tour_index][0] == "clock"
-            ) or (self.stage == "ready" and connected and not self._pending and mode == 'whip')
+            ) or (self.stage == "ready" and codex_foreground and connected
+                  and not self._pending and mode == 'whip')
             demo = (self._mount_inline_state.removesuffix('_ready')
                     if self.stage == 'calibrate' and self._mount_inline_state in {'up_ready', 'right_ready'}
                     else 'strike' if self.stage == 'tour' and self.TOUR[self._tour_index][0] == 'strike'
                     else None)
             self.hero.set_demo(demo)
-            self.hero.set_mode(mode)
+            self.hero.set_mode(home_mode)
             # Reserve room for first-run choices/actions at the minimum window
             # size. The hero yields space before any primary action can clip.
             self.hero.configure(height=(150 if self.stage == "choices" else

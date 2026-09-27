@@ -1,5 +1,6 @@
 import tkinter as tk
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -278,7 +279,17 @@ def test_message_settings_autosaves_edit_add_and_order(root: tk.Tk, tmp_path) ->
         lambda _profile: True, message_store=store,
     )
     try:
-        assert window.message_add_button.cget("text") == "+"
+        window._resize_message_shell(SimpleNamespace(width=740))
+        assert window.message_add_button.cget("text") == ""
+        assert window.message_add_button._icon_asset == "plus-lg"
+        assert window.message_order_button._icon_asset == "shuffle"
+        assert window._message_trash.cget("image")
+        assert window.message_add_button._images[0].width() == window.message_add_button._images[0].height()
+        old_size = window.message_add_button._images[0].width()
+        window._resize_message_shell(SimpleNamespace(width=1000))
+        assert window.message_add_button._images[0].width() > old_size
+        assert window.message_add_button._images[0].width() == window.message_add_button._images[0].height()
+        assert window._message_trash.winfo_reqwidth() == window._message_trash.winfo_reqheight()
         assert not any(
             child.cget("text") == "保存消息设置"
             for child in window.message_add_button.master.winfo_children()
@@ -299,6 +310,7 @@ def test_message_settings_autosaves_edit_add_and_order(root: tk.Tk, tmp_path) ->
         window._toggle_message_order()
         assert store.profile.order == "sequential"
         assert window._message_order_name() == "顺序发送"
+        assert window.message_order_button._icon_asset == "arrow-down-up"
         window._show_message_order_tip()
         assert window._message_order_tip.winfo_children()[0].cget("text") == "顺序发送"
     finally:

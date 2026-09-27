@@ -1,5 +1,15 @@
 """Accessible, initially collapsed containers; hiding never resets values."""
+import sys
 import tkinter as tk
+
+
+class _DisclosureLabel(tk.Label):
+    def __init__(self, parent, command, **kwargs):
+        self._command = command
+        super().__init__(parent, **kwargs)
+
+    def invoke(self):
+        return self._command()
 
 
 class Disclosure(tk.Frame):
@@ -7,12 +17,19 @@ class Disclosure(tk.Frame):
         super().__init__(parent, bg=bg)
         self.expanded = False
         self.title = title
-        self.toggle = tk.Button(
-            self, text="▸  " + title, command=self.toggle_open, anchor="w",
-            bg=bg, fg="#68686F", activebackground=bg, relief="flat",
-            bd=0, padx=0, pady=9, cursor="hand2", takefocus=True,
-            font=("Microsoft YaHei UI", 10),
-        )
+        options = dict(text="▸  " + title, anchor="w", bg=bg, fg="#68686F",
+                       relief="flat", bd=0, padx=0, pady=9,
+                       cursor="hand2", takefocus=True,
+                       font=("Helvetica Neue" if sys.platform == "darwin" else "Microsoft YaHei UI", 10))
+        if sys.platform == "darwin":
+            self.toggle = _DisclosureLabel(self, self.toggle_open,
+                                           highlightthickness=0, **options)
+            self.toggle.bind("<Button-1>", lambda _event: self.toggle.invoke())
+            self.toggle.bind("<space>", lambda _event: self.toggle.invoke())
+            self.toggle.bind("<Return>", lambda _event: self.toggle.invoke())
+        else:
+            self.toggle = tk.Button(self, command=self.toggle_open,
+                                    activebackground=bg, **options)
         self.toggle.pack(fill="x")
         self.body = tk.Frame(self, bg=bg)
 

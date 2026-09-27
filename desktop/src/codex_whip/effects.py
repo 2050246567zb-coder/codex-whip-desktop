@@ -2480,7 +2480,13 @@ class CodexWhipEffects:
         if self._target_hwnd is None:
             return False
         if sys.platform == "darwin":
-            return _target_exists(self._target_hwnd)
+            try:
+                from .macos_api import frontmost_pid
+
+                return (_target_exists(self._target_hwnd)
+                        and frontmost_pid() == self._target_hwnd)
+            except Exception:
+                return False
         if os.name != "nt":
             return False
         return bool(
@@ -2910,6 +2916,10 @@ class CodexWhipEffects:
             self._cancel_animation()
             for window in (self.window, self.hit_window, self.capture_window, self.damage_window):
                 window.withdraw()
+
+    def target_active(self) -> bool:
+        """Whether Codex is foreground and its overlay can be shown."""
+        return not self._settings_open and self._target_available()
 
     def _sync_tick(self) -> None:
         now = time.perf_counter()

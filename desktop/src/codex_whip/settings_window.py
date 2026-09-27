@@ -4,6 +4,7 @@ import tkinter as tk
 from dataclasses import dataclass, fields, replace
 from tkinter import messagebox, ttk
 from typing import Callable
+from PIL import Image, ImageTk
 from .disclosure import Disclosure
 from . import settings_style as style
 from .tick_slider import TickSlider
@@ -123,6 +124,7 @@ class DetectorSettingsWindow:
         )
         self._message_widgets: list[tk.Text] = []
         self._message_cards: list[tk.Frame] = []
+        self._message_drag_handles: list[tk.Label] = []
         self._message_drag_index: int | None = None
         self._message_save_after: str | None = None
         self._message_order_tip: tk.Toplevel | None = None
@@ -1023,17 +1025,10 @@ class DetectorSettingsWindow:
         self._message_scrollbar = scrollbar
         self._message_canvas.configure(yscrollcommand=scrollbar.set)
         self._message_canvas.pack(side="left", fill="both", expand=True)
-        self._message_trash = tk.Canvas(
-            self._message_side, width=58, height=88, bg="#FCEBEB", bd=0,
-            highlightthickness=0, cursor="hand2",
+        self._message_trash = tk.Label(
+            self._message_side, bg="#FCEBEB", bd=0, relief="flat",
+            highlightthickness=0, padx=0, pady=0, cursor="hand2",
         )
-        self._message_trash.create_line(16, 32, 42, 32, fill=self.RED, width=2)
-        self._message_trash.create_line(23, 27, 35, 27, fill=self.RED, width=2)
-        self._message_trash.create_line(
-            20, 37, 23, 61, 35, 61, 38, 37, fill=self.RED, width=2,
-        )
-        self._message_trash.create_line(26, 41, 26, 55, fill=self.RED, width=2)
-        self._message_trash.create_line(32, 41, 32, 55, fill=self.RED, width=2)
         self._message_list = tk.Frame(self._message_canvas, bg=self.CARD)
         self._message_canvas_window = self._message_canvas.create_window(
             (0, 0), window=self._message_list, anchor="nw"
@@ -1064,23 +1059,22 @@ class DetectorSettingsWindow:
                 self._message_status_label.pack_forget()
         self.message_status.trace_add('write', show_message_error)
         self.message_order_button = style.ActionButton(
-            order, self._message_order_icon(), self._toggle_message_order,
-            primary=True, icon=True)
-        self.message_order_button.configure(font=("Segoe UI Symbol", 15), takefocus=True)
+            order, "", self._toggle_message_order,
+            primary=True, icon=True, icon_asset=self._message_order_icon())
         self.message_order_button.bind("<Enter>", self._show_message_order_tip, add="+")
         self.message_order_button.bind("<Leave>", self._hide_message_order_tip, add="+")
         self.message_add_button = style.ActionButton(
-            order, "+", self._add_message, primary=True, icon=True)
-        self.message_add_button.configure(font=("Segoe UI Symbol", 15), takefocus=True)
+            order, "", self._add_message, primary=True, icon=True,
+            icon_asset="plus-lg")
         self.message_add_button.pack(side="right")
         self.message_order_button.pack(side="right", padx=(0, 8))
 
     def _message_order_icon(self):
-        return '↕' if self.message_order.get() == 'sequential' else '⤨'
+        return 'arrow-down-up' if self.message_order.get() == 'sequential' else 'shuffle'
 
     def _toggle_message_order(self):
         self.message_order.set('random' if self.message_order.get() == 'sequential' else 'sequential')
-        self.message_order_button.configure(text=self._message_order_icon())
+        self.message_order_button.set_icon_asset(self._message_order_icon())
         self._save_messages()
         if self._message_order_tip is not None:
             self._message_order_tip.winfo_children()[0].configure(text=self._message_order_name())
@@ -1109,6 +1103,16 @@ class DetectorSettingsWindow:
     def _resize_message_shell(self, event):
         # The editable column occupies 80%, left-aligned; the delete target uses the right rail.
         self._message_side.configure(width=max(88, round(float(event.width) * .20)))
+        extent = max(32, min(64, round(38 * float(event.width) / 740)))
+        self.message_order_button.set_icon_extent(extent)
+        self.message_add_button.set_icon_extent(extent)
+        trash_size = round(extent * 1.5)
+        glyph_size = round(trash_size * .58)
+        glyph = style.icon_image("trash3").resize(
+            (glyph_size, glyph_size), Image.Resampling.LANCZOS)
+        self._message_trash_photo = ImageTk.PhotoImage(glyph, master=self._message_trash)
+        self._message_trash.configure(image=self._message_trash_photo,
+                                      width=trash_size, height=trash_size)
 
     def _update_message_scrollbar(self, _event: tk.Event | None = None) -> None:
         # One page scrollbar: nested scrollbars clip the final action column
@@ -1123,12 +1127,13 @@ class DetectorSettingsWindow:
             child.destroy()
         self._message_widgets.clear()
         self._message_cards.clear()
+        self._message_drag_handles.clear()
         for index, value in enumerate(self._message_values):
             card = style.RoundedCard(
                 self._message_list,
                 bg=self.CARD_ALT,
                 highlightbackground=self.LINE,
-                highlightthickness=1,
+                highlightthickness=0,
                 padx=10,
                 pady=9,
             )
@@ -1143,6 +1148,7 @@ class DetectorSettingsWindow:
                 font=("Segoe UI", 15, "bold"),
             )
             drag.pack(side="left", fill="y", padx=(0, 8))
+            self._message_drag_handles.append(drag)
             drag.bind("<ButtonPress-1>", lambda event, i=index: self._start_message_drag(i, event))
             drag.bind("<B1-Motion>", self._move_message_drag)
             drag.bind("<ButtonRelease-1>", self._finish_message_drag)
@@ -1221,7 +1227,7 @@ class DetectorSettingsWindow:
     def _start_message_drag(self, index: int, _event: tk.Event) -> str:
         self._collect_message_values()
         self._message_drag_index = index
-        self._message_cards[index].configure(highlightbackground=self.ACCENT, highlightthickness=1)
+        self._message_drag_handles[index].configure(fg=self.ACCENT)
         self._show_message_trash()
         return "break"
 
@@ -1237,11 +1243,8 @@ class DetectorSettingsWindow:
             return "break"
         self._message_trash.configure(bg="#F3CBCB" if self._message_over_trash(event.x_root, event.y_root) else "#FCEBEB")
         target = self._message_drop_index(float(event.y_root))
-        for index, card in enumerate(self._message_cards):
-            card.configure(
-                highlightbackground=self.ACCENT if index == target else self.LINE,
-                highlightthickness=1 if index == target else 0,
-            )
+        for index, handle in enumerate(self._message_drag_handles):
+            handle.configure(fg=self.ACCENT if index == target else self.MUTED)
         return "break"
 
     def _finish_message_drag(self, event: tk.Event) -> str:
@@ -1252,10 +1255,10 @@ class DetectorSettingsWindow:
         delete = self._message_over_trash(event.x_root, event.y_root)
         self._message_drag_index = None
         self._hide_message_trash()
+        for handle in self._message_drag_handles:
+            handle.configure(fg=self.MUTED)
         if delete:
             self._delete_message(source)
-            if len(self._message_values) <= 1:
-                self._message_cards[0].configure(highlightbackground=self.LINE)
             return "break"
         if source != target:
             self._message_values = list(
@@ -1264,9 +1267,6 @@ class DetectorSettingsWindow:
         if source != target:
             self._render_message_cards()
             self._save_messages()
-        else:
-            for card in self._message_cards:
-                card.configure(highlightbackground=self.LINE)
         return "break"
 
     def _save_messages(self) -> None:

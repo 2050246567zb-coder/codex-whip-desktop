@@ -9,6 +9,7 @@ from pathlib import Path
 import tempfile
 import time
 import tkinter as tk
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 
@@ -30,6 +31,7 @@ def main(argv=None) -> int:
         stack.enter_context(patch.dict(os.environ, {"CODEX_WHIP_DATA_DIR": data}))
         fake_effects = Mock()
         fake_effects.preview_frame.return_value = (CodexWhipEffects.IDLE, (0., 0.))
+        fake_effects.target_active.return_value = True
         stack.enter_context(patch("codex_whip.gui.CodexWhipEffects", return_value=fake_effects))
         for method in ("start_listening", "check_codex", "_replace_scare_hotkey",
                        "_schedule_effect_target_refresh"):
@@ -64,9 +66,21 @@ def main(argv=None) -> int:
             app.worker_loop = Mock()
             app.ui.observe("battery", {"percent": 68, "charging": False})
             settle_and_capture("02-whip")
+            fake_effects.target_active.return_value = False
+            settle_and_capture("02-away", .35)
+            fake_effects.target_active.return_value = True
+            settle_and_capture("02-return-to-codex", .35)
             app.ui.open_preferences("calibration")
             app.ui.settings.geometry("1060x820+100+40")
             settle_and_capture("02a-hardware-tap-settings", .3, app.ui.settings)
+            if root.state() != "withdrawn" or app.ui.settings.state() != "normal":
+                report["callback_errors"].append("home and settings window visibility overlap")
+            app.settings_window._start_message_drag(0, SimpleNamespace())
+            settle_and_capture("02a-message-drag", .2, app.ui.settings)
+            card = app.settings_window._message_cards[0]
+            app.settings_window._finish_message_drag(SimpleNamespace(
+                x_root=card.winfo_rootx() + 5,
+                y_root=card.winfo_rooty() + card.winfo_height() // 2))
             app.ui._advanced_canvas.yview_moveto(.31)
             settle_and_capture("02a-voice-settings", .2, app.ui.settings)
             app.ui._advanced_canvas.yview_moveto(.43)

@@ -57,6 +57,25 @@ class FakeEffects:
         self.detached += 1
 
 
+def test_macos_overlay_only_available_when_codex_is_frontmost(monkeypatch):
+    import sys
+
+    if sys.platform != 'darwin':
+        pytest.skip('macOS foreground application behavior')
+    effect = object.__new__(CodexWhipEffects)
+    effect._target_hwnd = 123
+    effect._settings_open = False
+    monkeypatch.setattr('codex_whip.effects._target_exists', lambda pid: pid == 123)
+    monkeypatch.setattr('codex_whip.macos_api.frontmost_pid', lambda: 456)
+    assert not effect._target_available()
+    assert not effect.target_active()
+    monkeypatch.setattr('codex_whip.macos_api.frontmost_pid', lambda: 123)
+    assert effect._target_available()
+    assert effect.target_active()
+    effect._settings_open = True
+    assert not effect.target_active()
+
+
 def test_delayed_animation_frame_still_fires_hit_exactly_once(monkeypatch):
     from unittest.mock import Mock
     effect=object.__new__(CodexWhipEffects)
