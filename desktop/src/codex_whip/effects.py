@@ -2485,7 +2485,7 @@ class CodexWhipEffects:
                 from .macos_api import frontmost_pid
 
                 return (_target_exists(self._target_hwnd)
-                        and frontmost_pid() == self._target_hwnd)
+                        and frontmost_pid() in (self._target_hwnd, os.getpid()))
             except Exception:
                 return False
         if os.name != "nt":
@@ -2919,7 +2919,7 @@ class CodexWhipEffects:
                 window.withdraw()
 
     def target_active(self) -> bool:
-        """Whether Codex is foreground and its overlay can be shown."""
+        """Whether Codex or this app is foreground and its overlay can be shown."""
         return not getattr(self, "_settings_open", False) and self._target_available()
 
     def _sync_tick(self) -> None:

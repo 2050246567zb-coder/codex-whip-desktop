@@ -57,7 +57,8 @@ class FakeEffects:
         self.detached += 1
 
 
-def test_macos_overlay_only_available_when_codex_is_frontmost(monkeypatch):
+def test_macos_overlay_available_when_codex_or_whip_is_frontmost(monkeypatch):
+    import os
     import sys
 
     if sys.platform != 'darwin':
@@ -66,10 +67,13 @@ def test_macos_overlay_only_available_when_codex_is_frontmost(monkeypatch):
     effect._target_hwnd = 123
     effect._settings_open = False
     monkeypatch.setattr('codex_whip.effects._target_exists', lambda pid: pid == 123)
-    monkeypatch.setattr('codex_whip.macos_api.frontmost_pid', lambda: 456)
+    monkeypatch.setattr('codex_whip.macos_api.frontmost_pid', lambda: os.getpid() + 1)
     assert not effect._target_available()
     assert not effect.target_active()
     monkeypatch.setattr('codex_whip.macos_api.frontmost_pid', lambda: 123)
+    assert effect._target_available()
+    assert effect.target_active()
+    monkeypatch.setattr('codex_whip.macos_api.frontmost_pid', os.getpid)
     assert effect._target_available()
     assert effect.target_active()
     del effect._settings_open

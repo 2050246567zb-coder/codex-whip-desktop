@@ -1,4 +1,4 @@
-# Codex Whip 产品版 2.2.70 for macOS
+# Codex Whip 产品版 2.2.71 for macOS
 
 macOS 与 Windows 共用动作识别、校准、设置、界面动画、鞭绳物理、伤口、消息和
 语音状态机；窗口控制使用 macOS Accessibility/AppKit/Quartz，BLE 使用
@@ -37,6 +37,11 @@ bash macos/verify-macos.sh
 GitHub Actions 可验证 Apple Silicon 构建、单元测试和合成 UI 冒烟；真实蓝牙、
 BLE、当前 Codex AX 元素、屏幕叠层和语音识别仍须在目标 Mac 按
 `MACOS_ACCEPTANCE.md` 实测。
+
+## 2.2.71 前台应用适配
+
+Codex 或 Codex Whip 处于前台时，Codex 叠层保持可见，主页保留鞭子形态；
+切换到其他应用时才隐藏叠层并显示问号。设置窗口仍按既有行为隐藏叠层。
 
 ## 2.2.69 界面适配
 
