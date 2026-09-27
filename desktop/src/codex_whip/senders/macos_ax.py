@@ -43,7 +43,7 @@ class MacOSCodexSender:
         self._settings = settings
         if not macos_api.accessibility_trusted(prompt=prompt_permission):
             raise CodexTargetError(
-                "需要在 系统设置 > 隐私与安全性 > 辅助功能 中允许 Codex Whip"
+                "需要在 系统设置 > 隐私与安全性 > 设备控制和数据访问（辅助功能）中允许 Codex Whip"
             )
 
     def _single_window(self) -> macos_api.MacWindow:

@@ -287,9 +287,10 @@ def test_message_settings_autosaves_edit_add_and_order(root: tk.Tk, tmp_path) ->
         assert window.message_add_button._images[0].width() == window.message_add_button._images[0].height()
         old_size = window.message_add_button._images[0].width()
         window._resize_message_shell(SimpleNamespace(width=1000))
-        assert window.message_add_button._images[0].width() > old_size
+        assert window.message_add_button._images[0].width() == old_size
         assert window.message_add_button._images[0].width() == window.message_add_button._images[0].height()
         assert window._message_trash.winfo_reqwidth() == window._message_trash.winfo_reqheight()
+        assert window._message_trash.winfo_reqwidth() == 57
         assert not any(
             child.cget("text") == "保存消息设置"
             for child in window.message_add_button.master.winfo_children()

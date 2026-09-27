@@ -32,11 +32,12 @@ _ActionBase = tk.Label if sys.platform == "darwin" else tk.Button
 
 class ActionButton(_ActionBase):
     """Keep native focus, invoke, disabled and keyboard behavior; soften chrome."""
+    ICON_SIZE = 38
+
     def __init__(self, parent, text="", command=None, *, primary=False, **kwargs):
         self._nav = kwargs.pop("navigation", False)
         self._icon = kwargs.pop("icon", False)
         self._icon_asset = kwargs.pop("icon_asset", None)
-        self._icon_extent = 38
         background = kwargs.pop("bg", BLUE if primary else CARD)
         foreground = kwargs.pop("fg", "#FFFFFF" if primary else TEXT)
         self._fill = background
@@ -97,16 +98,9 @@ class ActionButton(_ActionBase):
         self._paint_key = None
         self._paint()
 
-    def set_icon_extent(self, size: int) -> None:
-        size = max(30, int(size))
-        if size != self._icon_extent:
-            self._icon_extent = size
-            self._paint_key = None
-            self._paint()
-
     def _paint(self, *, hover=False, pressed=False):
         font = tkfont.Font(root=self, font=self.cget("font"))
-        height = self._icon_extent if self._icon else 38 if self._nav else max(32, font.metrics("linespace") + 14)
+        height = self.ICON_SIZE if self._icon else 38 if self._nav else max(32, font.metrics("linespace") + 14)
         width = 148 if self._nav else height if self._icon else font.measure(self.cget("text")) + 28
         fill = self._fill
         disabled = str(self.cget("state")) == "disabled"

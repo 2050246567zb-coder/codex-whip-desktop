@@ -152,7 +152,7 @@ class GlobalHotkey:
 
             if not accessibility_trusted(prompt=False):
                 raise HotkeyRegistrationError(
-                    "需要在 系统设置 > 隐私与安全性 > 辅助功能 中允许 Codex Whip"
+                    "需要在 系统设置 > 隐私与安全性 > 设备控制和数据访问（辅助功能）中允许 Codex Whip"
                 )
 
             def global_handler(event: object) -> None:

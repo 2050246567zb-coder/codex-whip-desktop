@@ -62,6 +62,22 @@ def _fake_accessibility(monkeypatch, *, value: str, placeholder: str = "Message 
     return attributes, composer, window
 
 
+def test_open_privacy_settings_uses_matching_macos_pane(monkeypatch):
+    opened = []
+    workspace = SimpleNamespace(openURL_=lambda url: opened.append(url) or True)
+    appkit = SimpleNamespace(
+        NSURL=SimpleNamespace(URLWithString_=lambda value: value),
+        NSWorkspace=SimpleNamespace(sharedWorkspace=lambda: workspace),
+    )
+    monkeypatch.setattr(macos_api, '_frameworks', lambda: (appkit, None))
+    assert macos_api.open_privacy_settings('accessibility')
+    assert macos_api.open_privacy_settings('bluetooth')
+    assert opened == [
+        'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
+        'x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth',
+    ]
+
+
 def test_macos_placeholder_is_treated_as_empty(monkeypatch) -> None:
     _fake_accessibility(monkeypatch, value="Message Codex")
     sender = macos_ax.MacOSCodexSender(CodexSettings())

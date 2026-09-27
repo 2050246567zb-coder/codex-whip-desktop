@@ -165,6 +165,42 @@ def test_ready_home_shows_question_when_codex_loses_focus(app):
     assert ui.title.cget('text') == ''
 
 
+def test_macos_permission_guide_opens_settings_once_and_closes_after_grant(app, monkeypatch):
+    from codex_whip import macos_api
+
+    trusted = [False]
+    opened = []
+    prompts = []
+    monkeypatch.setattr(macos_api, 'accessibility_trusted',
+                        lambda *, prompt=False: prompts.append(prompt) or trusted[0])
+    monkeypatch.setattr(macos_api, 'bluetooth_authorization', lambda: 'allowed')
+    monkeypatch.setattr(macos_api, 'open_privacy_settings',
+                        lambda permission: opened.append(permission) or True)
+    app.check_macos_permissions()
+    assert opened == ['accessibility']
+    assert prompts == [False, True]
+    assert app._permission_guide is not None
+    app.check_macos_permissions()
+    assert opened == ['accessibility']
+    trusted[0] = True
+    app.check_macos_permissions()
+    assert app._permission_guide is None
+    assert app._permission_after is not None
+
+
+def test_macos_permission_guide_uses_bluetooth_pane_when_denied(app, monkeypatch):
+    from codex_whip import macos_api
+
+    opened = []
+    monkeypatch.setattr(macos_api, 'accessibility_trusted', lambda **_: True)
+    monkeypatch.setattr(macos_api, 'bluetooth_authorization', lambda: 'denied')
+    monkeypatch.setattr(macos_api, 'open_privacy_settings',
+                        lambda permission: opened.append(permission) or True)
+    app.check_macos_permissions()
+    assert opened == ['bluetooth']
+    assert app._permission_guide_kind == 'bluetooth'
+
+
 def test_power_setting_round_trip_and_disconnect_status(app):
     from codex_whip.models import DeviceMessage
     app._ensure_settings()

@@ -50,6 +50,36 @@ def accessibility_trusted(*, prompt: bool = False) -> bool:
     return bool(services.AXIsProcessTrusted())
 
 
+def bluetooth_authorization() -> str:
+    """Return this app's CoreBluetooth privacy status without starting a scan."""
+    if sys.platform != "darwin":
+        raise MacOSAPIError("Bluetooth privacy status is only available on macOS")
+    try:
+        from CoreBluetooth import CBManager
+    except ImportError as exc:
+        raise MacOSAPIError("Mac 版缺少 CoreBluetooth 运行时") from exc
+    return {
+        0: "not_determined",
+        1: "restricted",
+        2: "denied",
+        3: "allowed",
+    }.get(int(CBManager.authorization()), "unknown")
+
+
+def open_privacy_settings(permission: str) -> bool:
+    """Open the matching pane without changing the permission itself."""
+    panes = {
+        "accessibility": "Privacy_Accessibility",
+        "bluetooth": "Privacy_Bluetooth",
+    }
+    if permission not in panes:
+        raise ValueError(f"Unknown macOS privacy permission: {permission}")
+    appkit, _services = _frameworks()
+    url = appkit.NSURL.URLWithString_(
+        f"x-apple.systempreferences:com.apple.preference.security?{panes[permission]}")
+    return bool(appkit.NSWorkspace.sharedWorkspace().openURL_(url))
+
+
 def ax_copy(element: Any, attribute: str) -> Any | None:
     _appkit, services = _frameworks()
     result = services.AXUIElementCopyAttributeValue(element, attribute, None)

@@ -72,6 +72,8 @@ def test_macos_overlay_only_available_when_codex_is_frontmost(monkeypatch):
     monkeypatch.setattr('codex_whip.macos_api.frontmost_pid', lambda: 123)
     assert effect._target_available()
     assert effect.target_active()
+    del effect._settings_open
+    assert effect.target_active()
     effect._settings_open = True
     assert not effect.target_active()
 

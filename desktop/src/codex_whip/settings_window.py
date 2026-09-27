@@ -1029,6 +1029,10 @@ class DetectorSettingsWindow:
             self._message_side, bg="#FCEBEB", bd=0, relief="flat",
             highlightthickness=0, padx=0, pady=0, cursor="hand2",
         )
+        trash_glyph = style.icon_image("trash3").resize(
+            (33, 33), Image.Resampling.LANCZOS)
+        self._message_trash_photo = ImageTk.PhotoImage(trash_glyph, master=self._message_trash)
+        self._message_trash.configure(image=self._message_trash_photo, width=57, height=57)
         self._message_list = tk.Frame(self._message_canvas, bg=self.CARD)
         self._message_canvas_window = self._message_canvas.create_window(
             (0, 0), window=self._message_list, anchor="nw"
@@ -1103,16 +1107,6 @@ class DetectorSettingsWindow:
     def _resize_message_shell(self, event):
         # The editable column occupies 80%, left-aligned; the delete target uses the right rail.
         self._message_side.configure(width=max(88, round(float(event.width) * .20)))
-        extent = max(32, min(64, round(38 * float(event.width) / 740)))
-        self.message_order_button.set_icon_extent(extent)
-        self.message_add_button.set_icon_extent(extent)
-        trash_size = round(extent * 1.5)
-        glyph_size = round(trash_size * .58)
-        glyph = style.icon_image("trash3").resize(
-            (glyph_size, glyph_size), Image.Resampling.LANCZOS)
-        self._message_trash_photo = ImageTk.PhotoImage(glyph, master=self._message_trash)
-        self._message_trash.configure(image=self._message_trash_photo,
-                                      width=trash_size, height=trash_size)
 
     def _update_message_scrollbar(self, _event: tk.Event | None = None) -> None:
         # One page scrollbar: nested scrollbars clip the final action column

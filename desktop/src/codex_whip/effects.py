@@ -1558,6 +1558,7 @@ class CodexWhipEffects:
         self._root = root
         self._log = log
         self._target_hwnd: int | None = None
+        self._settings_open = False
         self._animation_started_at = 0.0
         self._impact_fired = False
         self._animation_after: str | None = None
@@ -2919,7 +2920,7 @@ class CodexWhipEffects:
 
     def target_active(self) -> bool:
         """Whether Codex is foreground and its overlay can be shown."""
-        return not self._settings_open and self._target_available()
+        return not getattr(self, "_settings_open", False) and self._target_available()
 
     def _sync_tick(self) -> None:
         now = time.perf_counter()

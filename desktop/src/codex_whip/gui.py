@@ -709,6 +709,11 @@ class CodexWhipWindow:
         self._scare_hotkey: GlobalHotkey | None = None
         self._hang_watchdog = UiHangWatchdog(user_data_dir() / "hang-diagnostics.log")
         self._hang_heartbeat_after: str | None = None
+        self._permission_after: str | None = None
+        self._permission_guide: tk.Toplevel | None = None
+        self._permission_guide_kind: str | None = None
+        self._permission_dismissed: set[str] = set()
+        self._permission_opened: set[str] = set()
 
         self.arm_value = tk.BooleanVar(value=False)
         self.ble_value = tk.StringVar(value="连接中")
@@ -752,6 +757,97 @@ class CodexWhipWindow:
         # Public in-process hook for Codex/development automation. No product
         # control links to the developer page.
         self.root.bind('<<OpenDeveloperSettings>>', lambda _event: self.open_developer_settings())
+
+    def _open_permission_settings(self, permission: str) -> None:
+        from . import macos_api
+
+        try:
+            if permission == "accessibility" and permission not in self._permission_opened:
+                # Register this exact app with TCC. macOS only shows its native
+                # prompt once; subsequent checks use the silent status API.
+                macos_api.accessibility_trusted(prompt=True)
+            if not macos_api.open_privacy_settings(permission):
+                self._append_log("无法自动打开权限设置，请从系统设置 > 隐私与安全性中手动打开")
+            self._permission_opened.add(permission)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Permission settings unavailable: %s", exc)
+
+    def _show_permission_guide(self, permission: str) -> None:
+        if permission in self._permission_dismissed:
+            return
+        if self._permission_guide is not None and self._permission_guide.winfo_exists():
+            if self._permission_guide_kind == permission:
+                return
+            self._permission_guide.destroy()
+        from .settings_style import ActionButton, BG, CARD, FONT, TEXT
+
+        guide = tk.Toplevel(self.root)
+        guide.title("Codex Whip 权限引导")
+        guide.geometry("530x290")
+        guide.minsize(500, 270)
+        guide.configure(bg=BG)
+        guide.protocol("WM_DELETE_WINDOW", lambda: self._dismiss_permission_guide(permission))
+        body = tk.Frame(guide, bg=CARD, padx=28, pady=25)
+        body.pack(fill="both", expand=True, padx=18, pady=18)
+        title = "开启设备控制和数据访问" if permission == "accessibility" else "开启蓝牙访问"
+        steps = (
+            "1. 在系统设置 > 隐私与安全性 > 设备控制和数据访问中找到 CodexWhip（旧版系统称辅助功能）。\n"
+            "2. 如果已有旧版条目却无法授权，移除旧条目，再添加 /Applications/CodexWhip.app。\n"
+            "3. 打开开关，返回软件；若仍未生效，请重启软件。"
+            if permission == "accessibility" else
+            "1. 在系统设置 > 隐私与安全性 > 蓝牙中找到 CodexWhip。\n"
+            "2. 打开开关并返回软件。若系统限制无法开启，请联系设备管理员。"
+        )
+        tk.Label(body, text=title, bg=CARD, fg=TEXT,
+                 font=(FONT, 16, "bold"), anchor="w").pack(fill="x")
+        tk.Label(body, text="系统尚未授权鞭子软件使用所需的设备控制或数据访问功能。",
+                 bg=CARD, fg=TEXT, font=(FONT, 10), anchor="w").pack(fill="x", pady=(12, 10))
+        tk.Label(body, text=steps, bg=CARD, fg=TEXT, font=(FONT, 10),
+                 anchor="nw", justify="left", wraplength=455).pack(fill="x")
+        actions = tk.Frame(body, bg=CARD)
+        actions.pack(side="bottom", anchor="e")
+        ActionButton(actions, "稍后", lambda: self._dismiss_permission_guide(permission)).pack(side="right", padx=(8, 0))
+        ActionButton(actions, "打开系统设置", lambda: self._open_permission_settings(permission),
+                     primary=True).pack(side="right")
+        self._permission_guide = guide
+        self._permission_guide_kind = permission
+
+    def _dismiss_permission_guide(self, permission: str) -> None:
+        self._permission_dismissed.add(permission)
+        if self._permission_guide is not None and self._permission_guide.winfo_exists():
+            self._permission_guide.destroy()
+        self._permission_guide = None
+        self._permission_guide_kind = None
+
+    def check_macos_permissions(self) -> None:
+        if self._permission_after is not None:
+            self.root.after_cancel(self._permission_after)
+            self._permission_after = None
+        if self.closing or sys.platform != "darwin":
+            return
+        from . import macos_api
+
+        try:
+            if not macos_api.accessibility_trusted(prompt=False):
+                missing = "accessibility"
+            elif macos_api.bluetooth_authorization() in {"denied", "restricted"}:
+                missing = "bluetooth"
+            else:
+                missing = None
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Permission status unavailable: %s", exc)
+            missing = None
+        if missing is None:
+            if self._permission_guide is not None and self._permission_guide.winfo_exists():
+                self._permission_guide.destroy()
+            self._permission_guide = None
+            self._permission_guide_kind = None
+            self._permission_after = self.root.after(5000, self.check_macos_permissions)
+            return
+        self._show_permission_guide(missing)
+        if missing not in self._permission_opened:
+            self._open_permission_settings(missing)
+        self._permission_after = self.root.after(1500, self.check_macos_permissions)
 
     def _restore_send_state(self) -> None:
         if self.ui.stage != "ready" or not self.ui.preferences.send_enabled:
@@ -1899,6 +1995,12 @@ class CodexWhipWindow:
 
     def close(self) -> None:
         self.closing = True
+        if self._permission_after is not None:
+            self.root.after_cancel(self._permission_after)
+            self._permission_after = None
+        if self._permission_guide is not None and self._permission_guide.winfo_exists():
+            self._permission_guide.destroy()
+            self._permission_guide = None
         if self._hang_heartbeat_after is not None:
             try:
                 self.root.after_cancel(self._hang_heartbeat_after)
@@ -1970,6 +2072,8 @@ def main() -> int:
         logger.error("UI callback failed", exc_info=(exc_type, exc_value, traceback))
     root.report_callback_exception = report_callback_exception
     window = CodexWhipWindow(root, settings, config_path)
+    if sys.platform == "darwin":
+        root.after(1200, window.check_macos_permissions)
     if factory_calibration.imported:
         window.emit(
             "log",
