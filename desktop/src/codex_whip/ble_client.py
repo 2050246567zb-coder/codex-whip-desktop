@@ -7,7 +7,11 @@ import sys
 from collections.abc import Awaitable, Callable
 
 from bleak import BleakClient, BleakScanner
-from bleak.exc import BleakError
+from bleak.exc import (
+    BleakBluetoothNotAvailableError,
+    BleakBluetoothNotAvailableReason,
+    BleakError,
+)
 
 from .ble_preference import BleDevicePreferenceStore, choose_device
 from .models import AudioChunk, AudioEnd, AudioStart, DeviceMessage, ProtocolMessage
@@ -17,6 +21,19 @@ from .settings import BleSettings
 NUS_RX_CHARACTERISTIC = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_TX_CHARACTERISTIC = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 BATTERY_POLL_SECONDS = 1.0
+
+
+def connection_error_state(exc: Exception) -> str:
+    if isinstance(exc, BleakBluetoothNotAvailableError):
+        if exc.reason == BleakBluetoothNotAvailableReason.POWERED_OFF:
+            return "bluetooth_off"
+        if exc.reason in {
+            BleakBluetoothNotAvailableReason.DENIED_BY_USER,
+            BleakBluetoothNotAvailableReason.DENIED_BY_SYSTEM,
+            BleakBluetoothNotAvailableReason.DENIED_BY_UNKNOWN,
+        }:
+            return "bluetooth_denied"
+    return "error"
 
 
 def host_profile_command(platform: str) -> str:
@@ -60,15 +77,22 @@ class BleWhipClient:
         self._command_queue = command_queue
         self._device_handler = device_handler
         self._device_preference = device_preference
+        self._last_state = ""
 
     def _set_state(self, state: str) -> None:
+        if state == self._last_state:
+            return
+        self._last_state = state
         if self._state_handler is not None:
             self._state_handler(state)
 
     async def run(self, handler: MessageHandler, stop: asyncio.Event) -> None:
         while not stop.is_set():
             try:
-                self._set_state("scanning")
+                # Keep a clear radio/permission diagnosis visible while
+                # retrying; scanning succeeds automatically once it recovers.
+                if self._last_state not in {"bluetooth_off", "bluetooth_denied"}:
+                    self._set_state("scanning")
                 self._log(f"[BLE] scanning for {self._settings.device_name!r}...")
                 device = await self._scan_preferred_device()
                 if device is None:
@@ -77,8 +101,17 @@ class BleWhipClient:
                 else:
                     await self._run_connection(device, handler, stop)
             except (BleakError, OSError, asyncio.TimeoutError) as exc:
-                self._set_state("error")
-                self._log(f"[BLE] connection error: {exc}")
+                state = connection_error_state(exc)
+                repeated_unavailable = (
+                    state == self._last_state
+                    and state in {"bluetooth_off", "bluetooth_denied"}
+                )
+                self._set_state(state)
+                if not repeated_unavailable:
+                    logging.getLogger(__name__).warning(
+                        "BLE connection failed: %s (%s)", state, type(exc).__name__
+                    )
+                    self._log(f"[BLE] connection error: {exc}")
 
             if not stop.is_set():
                 await self._wait_or_stop(self._settings.reconnect_seconds, stop)

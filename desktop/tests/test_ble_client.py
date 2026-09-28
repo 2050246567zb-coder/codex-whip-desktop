@@ -2,11 +2,60 @@ import asyncio
 import struct
 from types import SimpleNamespace
 import pytest
+from bleak.exc import (
+    BleakBluetoothNotAvailableError,
+    BleakBluetoothNotAvailableReason,
+    BleakError,
+)
 
 from codex_whip.ble_preference import BleDevicePreferenceStore, choose_device
 from codex_whip.ble_client import drain_message_queue
 from codex_whip.models import DeviceMessage
 from codex_whip.protocol import crc16_ccitt
+
+
+@pytest.mark.parametrize('reason,expected', [
+    (BleakBluetoothNotAvailableReason.POWERED_OFF, 'bluetooth_off'),
+    (BleakBluetoothNotAvailableReason.DENIED_BY_USER, 'bluetooth_denied'),
+    (BleakBluetoothNotAvailableReason.DENIED_BY_SYSTEM, 'bluetooth_denied'),
+    (BleakBluetoothNotAvailableReason.NO_BLUETOOTH, 'error'),
+])
+def test_bluetooth_unavailable_has_specific_status(reason, expected):
+    from codex_whip.ble_client import connection_error_state
+    assert connection_error_state(BleakBluetoothNotAvailableError('unavailable', reason)) == expected
+    assert connection_error_state(BleakError('other failure')) == 'error'
+
+
+def test_radio_off_status_stays_visible_until_scanning_recovers(monkeypatch):
+    from codex_whip import ble_client
+    from codex_whip.settings import BleSettings
+
+    async def exercise():
+        stop = asyncio.Event()
+        states = []
+        attempts = 0
+
+        async def scan():
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise BleakBluetoothNotAvailableError(
+                    'radio off', BleakBluetoothNotAvailableReason.POWERED_OFF
+                )
+            stop.set()
+            return None
+
+        client = ble_client.BleWhipClient(
+            BleSettings(reconnect_seconds=0.001),
+            log_handler=lambda _line: None,
+            state_handler=states.append,
+        )
+        monkeypatch.setattr(client, '_scan_preferred_device', scan)
+        await client.run(lambda _message: None, stop)
+        assert attempts == 3
+        assert states == ['scanning', 'bluetooth_off', 'not_found']
+
+    asyncio.run(exercise())
 
 
 @pytest.mark.parametrize('platform,expected', [

@@ -1280,14 +1280,20 @@ class Interface:
         if (not connected and self.stage not in {"tour"}
                 and self._voice_state not in {"recording", "recognizing"}):
             mode = 'connecting'
-            title = 'Connecting'
-        if self.stage == 'ready' and not (connected and self._pending and self._voice_state not in {'recording','recognizing'}):
+            connection_status = a.ble_value.get()
+            title = (connection_status if connection_status in {
+                '请打开 Mac 蓝牙', '请授权蓝牙访问'
+            } else 'Connecting')
+        if (self.stage == 'ready' and title not in {'请打开 Mac 蓝牙', '请授权蓝牙访问'}
+                and not (connected and self._pending and self._voice_state not in {'recording','recognizing'})):
             subtitle = ''
         effects = getattr(a, 'effects', None)
         codex_foreground = (self.stage != 'ready' or effects is None
                             or bool(effects.target_active()))
         home_mode = mode if codex_foreground else 'away'
-        home_title = title if codex_foreground else '切回 Codex 继续'
+        home_title = (title if codex_foreground or title in {
+            '请打开 Mac 蓝牙', '请授权蓝牙访问'
+        } else '切回 Codex 继续')
         home_subtitle = subtitle if codex_foreground else ''
         key = (self.stage, self._tour_index, self._mount_inline_state,
                home_title, home_subtitle, step, primary, progress, enabled,

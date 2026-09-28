@@ -203,6 +203,15 @@ def test_macos_permission_guide_uses_bluetooth_pane_when_denied(app, monkeypatch
     assert app._permission_guide_kind == 'bluetooth'
 
 
+def test_home_shows_bluetooth_power_problem_instead_of_generic_loader(app):
+    app.ui.stage = 'ready'
+    app.emit('ble', 'bluetooth_off')
+    app._drain_events()
+    app.ui._refresh()
+    assert app.ble_value.get() == '请打开 Mac 蓝牙'
+    assert app.ui.title.cget('text') == '请打开 Mac 蓝牙'
+
+
 def test_power_setting_round_trip_and_disconnect_status(app):
     from codex_whip.models import DeviceMessage
     app._ensure_settings()

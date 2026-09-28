@@ -1,4 +1,8 @@
-# Codex Whip 产品版 2.2.73 for macOS
+# Codex Whip 产品版 2.2.74 for macOS
+
+## 2.2.74 蓝牙连接诊断
+
+系统蓝牙关闭或拒绝应用访问时，主页明确提示原因；蓝牙恢复后继续自动重连。连接失败原因也记录到本地运行日志，便于排查。
 
 macOS 与 Windows 共用动作识别、校准、设置、界面动画、鞭绳物理、伤口、消息和
 语音状态机；窗口控制使用 macOS Accessibility/AppKit/Quartz，BLE 使用

@@ -1544,6 +1544,8 @@ class CodexWhipWindow:
                         "connected": "已连接",
                         "not_found": "未发现设备",
                         "disconnected": "连接已断开",
+                        "bluetooth_off": "请打开 Mac 蓝牙",
+                        "bluetooth_denied": "请授权蓝牙访问",
                         "error": "连接错误",
                     }
                     self.ble_value.set(labels.get(str(payload), str(payload)))
