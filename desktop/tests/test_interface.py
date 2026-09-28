@@ -83,7 +83,7 @@ def test_send_switch_label_and_confirmation_only_explain_behavior(app, monkeypat
     app.toggle_arm()
     assert reminder[0][0] == "发送提醒"
     assert "预设文字" in reminder[0][1]
-    assert "只发送语音识别出的内容" in reminder[0][1]
+    assert "识别文字会追加到 Codex 已有草稿并一起发送" in reminder[0][1]
     assert not app.armed.is_set()
 
 

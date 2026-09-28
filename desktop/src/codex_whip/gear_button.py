@@ -70,4 +70,6 @@ class GearButton(tk.Label if sys.platform == 'darwin' else tk.Button):
         if self._timer:
             self.after_cancel(self._timer)
             self._timer = None
+        self.configure(image="")
+        self._photo = None
         super().destroy()

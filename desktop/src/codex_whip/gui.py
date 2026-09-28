@@ -494,8 +494,12 @@ class GuiEventProcessor:
         else:
             try:
                 sender = self._sender()
-                operation = sender.submit_existing if native_draft else sender.send
-                result = await asyncio.to_thread(operation, message) if native_draft else await asyncio.to_thread(operation, prompt, message)
+                if native_draft:
+                    result = await asyncio.to_thread(sender.submit_existing, message)
+                else:
+                    operation = (getattr(sender, "send_voice", sender.send)
+                                 if voice_prompt is not None else sender.send)
+                    result = await asyncio.to_thread(operation, prompt, message)
             except Exception as exc:
                 self._emit("send_error", str(exc))
                 return
@@ -1373,7 +1377,7 @@ class CodexWhipWindow:
         if not messagebox.askyesno(
             "发送提醒",
             "每次有效抽打会尝试向当前 Codex 对话发送预设文字。\n"
-            "开启语音输入后，只发送语音识别出的内容。\n\n是否开启发送？",
+            "开启语音输入后，识别文字会追加到 Codex 已有草稿并一起发送。\n\n是否开启发送？",
         ):
             self.ui.preferences.send_enabled = False
             self.ui._persist()
@@ -1779,7 +1783,7 @@ class CodexWhipWindow:
                         self.codex_value.set("已连接")
                         self._append_log(f"已武装：Codex PID {detail['pid']}")
                         if detail.get("composer_empty") is False:
-                            self._append_log("Codex 有未发送草稿；请先清空，挥鞭不会覆盖它")
+                            self._append_log("Codex 有未发送草稿；识别文字将追加，普通消息不会覆盖它")
                     else:
                         self.armed.clear()
                         self.arm_value.set(False)

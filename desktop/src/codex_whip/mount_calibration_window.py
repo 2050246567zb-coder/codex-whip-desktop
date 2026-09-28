@@ -158,5 +158,7 @@ class MountCalibrationWindow:
         self._closed = True
         if notify:
             self._send("cancel", self.token)
+        self.preview.delete("all")
+        self._illustration = None
         self.window.destroy()
         self._dismissed()

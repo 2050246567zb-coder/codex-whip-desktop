@@ -1666,4 +1666,7 @@ class DetectorSettingsWindow:
             self._send_command("RAW,2" if self._motion_engine and self._motion_engine.trained else "RAW,1")
         elif self._stage in {"positive", "negative"}:
             self._send_command("LEARN,STOP")
+        if hasattr(self, "_message_trash"):
+            self._message_trash.configure(image="")
+            self._message_trash_photo = None
         self.window.destroy()

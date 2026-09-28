@@ -142,4 +142,6 @@ class TickSlider(tk.Canvas):
             self.after_cancel(self._animation)
             self._animation = None
         self.variable.trace_remove('write', self._trace)
+        self.delete('all')
+        self._image = None
         super().destroy()

@@ -96,6 +96,63 @@ def test_macos_sender_can_arm_without_overwriting_existing_draft(monkeypatch) ->
         sender.send("新消息", None)
 
 
+def test_macos_recognized_text_appends_and_sends_existing_draft(monkeypatch) -> None:
+    attributes, composer, _window = _fake_accessibility(
+        monkeypatch, value="原有十个字  ")
+    events = []
+    ax_copy = macos_api.ax_copy
+    delayed_reads = [0]
+    def delayed_value(element, attribute):
+        if (element is composer and attribute == "value"
+                and attributes[composer]["value"] == "原有十个字  识别的五个字"
+                and delayed_reads[0] < 2):
+            delayed_reads[0] += 1
+            return "原有十个字  "
+        return ax_copy(element, attribute)
+    monkeypatch.setattr(macos_api, "ax_copy", delayed_value)
+    monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
+    monkeypatch.setattr(macos_api, "frontmost_pid", lambda: 321)
+    monkeypatch.setattr(macos_api, "ax_set", lambda *_args: True)
+    monkeypatch.setattr(macos_api, "post_command_end", lambda: events.append("end"))
+    monkeypatch.setattr(
+        macos_api, "post_unicode_text",
+        lambda text: (events.append("type"), attributes[composer].update(
+            value=attributes[composer]["value"] + text)),
+    )
+    monkeypatch.setattr(macos_api, "post_return", lambda: events.append("send"))
+    monkeypatch.setattr(macos_ax.time, "sleep", lambda _seconds: None)
+    sender = macos_ax.MacOSCodexSender(CodexSettings())
+    monkeypatch.setattr(sender, "_send_button", lambda _window: None)
+
+    result = sender.send_voice("识别的五个字", None)
+
+    assert result.sent
+    assert delayed_reads == [2]
+    assert attributes[composer]["value"] == "原有十个字  识别的五个字"
+    assert events == ["end", "type", "send"]
+
+
+def test_macos_voice_does_not_submit_if_append_position_is_wrong(monkeypatch) -> None:
+    attributes, composer, _window = _fake_accessibility(monkeypatch, value="已有草稿")
+    events = []
+    monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
+    monkeypatch.setattr(macos_api, "frontmost_pid", lambda: 321)
+    monkeypatch.setattr(macos_api, "ax_set", lambda *_args: True)
+    monkeypatch.setattr(macos_api, "post_command_end", lambda: events.append("end"))
+    monkeypatch.setattr(
+        macos_api, "post_unicode_text",
+        lambda text: attributes[composer].update(value=text + attributes[composer]["value"]),
+    )
+    monkeypatch.setattr(macos_api, "post_return", lambda: events.append("send"))
+    monkeypatch.setattr(macos_ax.time, "sleep", lambda _seconds: None)
+    sender = macos_ax.MacOSCodexSender(CodexSettings())
+    monkeypatch.setattr(sender, "_send_button", lambda _window: None)
+
+    with pytest.raises(macos_ax.CodexTargetError, match="未能验证"):
+        sender.send_voice("新语音", None)
+    assert events == ["end"]
+
+
 def test_macos_sender_refuses_when_value_cannot_be_read(monkeypatch) -> None:
     _fake_accessibility(monkeypatch, value=None)  # type: ignore[arg-type]
     sender = macos_ax.MacOSCodexSender(CodexSettings())

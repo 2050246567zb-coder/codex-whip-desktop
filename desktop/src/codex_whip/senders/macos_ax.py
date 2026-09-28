@@ -82,7 +82,9 @@ class MacOSCodexSender:
         help_text = str(macos_api.ax_copy(element, services.kAXHelpAttribute) or "")
         name = " ".join(value for value in (title, description, help_text) if value)
         raw_value = macos_api.ax_copy(element, services.kAXValueAttribute)
-        value = None if raw_value is None else str(raw_value).strip()
+        # Keep the exact draft, including trailing spaces or newlines, so a
+        # recognized phrase can be appended without changing existing text.
+        value = None if raw_value is None else str(raw_value)
         placeholder_attribute = getattr(
             services,
             "kAXPlaceholderValueAttribute",
@@ -127,7 +129,7 @@ class MacOSCodexSender:
             return None
         placeholders = (candidate.placeholder, candidate.name.strip())
         if value and any(
-            placeholder and value.casefold() == placeholder.casefold()
+            placeholder and value.strip().casefold() == placeholder.casefold()
             for placeholder in placeholders
         ):
             return ""
@@ -274,15 +276,23 @@ class MacOSCodexSender:
         return SendResult(True, "Codex 听写草稿已发送")
 
     def send(self, prompt: str, event: WhipEvent) -> SendResult:
+        return self._send_text(prompt, event, append_to_draft=False)
+
+    def send_voice(self, prompt: str, event: WhipEvent) -> SendResult:
+        """Append recognized speech to a Codex draft, then submit both."""
+        return self._send_text(prompt, event, append_to_draft=True)
+
+    def _send_text(self, prompt: str, event: WhipEvent, *, append_to_draft: bool) -> SendResult:
         del event
+        if not prompt:
+            raise CodexTargetError("没有可发送的文字")
         window = self._single_window()
         composer = self._composer(window)
         existing = self._normalized_value(composer)
-        if self._settings.refuse_when_composer_has_text:
-            if existing is None:
-                raise CodexTargetError("无法确认 Codex 输入框是否为空")
-            if existing:
-                raise CodexTargetError("Codex 输入框已有未发送草稿")
+        if existing is None and (append_to_draft or self._settings.refuse_when_composer_has_text):
+            raise CodexTargetError("无法确认 Codex 输入框是否为空")
+        if existing and not append_to_draft and self._settings.refuse_when_composer_has_text:
+            raise CodexTargetError("Codex 输入框已有未发送草稿")
         _appkit, services = macos_api._frameworks()
         if not macos_api.activate_application(window.pid):
             raise CodexTargetError("macOS 拒绝激活 Codex 窗口")
@@ -292,12 +302,25 @@ class MacOSCodexSender:
         time.sleep(0.08)
         if macos_api.frontmost_pid() != window.pid:
             raise CodexTargetError("输入前 Codex 已失去前台焦点")
+        if append_to_draft and existing:
+            macos_api.post_command_end()
+            time.sleep(0.04)
+            current = macos_api.ax_copy(composer.element, services.kAXValueAttribute)
+            if current is None or str(current) != existing:
+                raise CodexTargetError("Codex 草稿在输入前发生变化，已取消发送")
         macos_api.post_unicode_text(prompt)
-        time.sleep(0.06)
-        if macos_api.frontmost_pid() != window.pid:
-            raise CodexTargetError("提交前 Codex 已失去前台焦点")
-        inserted = macos_api.ax_copy(composer.element, services.kAXValueAttribute)
-        if inserted is None or str(inserted) != prompt:
+        expected = (existing or "") + prompt if append_to_draft else prompt
+        # Electron may publish its updated Accessibility value a few frames
+        # after receiving keyboard events. Wait briefly before judging it.
+        for attempt in range(8):
+            if macos_api.frontmost_pid() != window.pid:
+                raise CodexTargetError("提交前 Codex 已失去前台焦点")
+            inserted = macos_api.ax_copy(composer.element, services.kAXValueAttribute)
+            if inserted is not None and str(inserted) == expected:
+                break
+            if attempt < 7:
+                time.sleep(0.05)
+        else:
             raise CodexTargetError("Codex 输入内容未能验证，已拒绝提交")
         button = self._send_button(window)
         if button is not None:

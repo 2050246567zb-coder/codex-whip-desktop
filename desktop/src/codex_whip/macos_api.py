@@ -301,6 +301,15 @@ def post_unicode_text(text: str) -> None:
         services.CGEventPost(services.kCGHIDEventTap, up)
 
 
+def post_command_end() -> None:
+    """Move the focused macOS text caret to the end of its document."""
+    _appkit, services = _frameworks()
+    for pressed in (True, False):
+        event = services.CGEventCreateKeyboardEvent(None, 125, pressed)
+        services.CGEventSetFlags(event, services.kCGEventFlagMaskCommand)
+        services.CGEventPost(services.kCGHIDEventTap, event)
+
+
 def post_return() -> None:
     _appkit, services = _frameworks()
     for pressed in (True, False):

@@ -167,3 +167,9 @@ class BatteryIndicator(tk.Canvas):
                 tooltip.destroy()
             except tk.TclError:
                 pass
+
+    def destroy(self):
+        self._hide_tooltip()
+        self.delete("all")
+        self._glyph = None
+        super().destroy()

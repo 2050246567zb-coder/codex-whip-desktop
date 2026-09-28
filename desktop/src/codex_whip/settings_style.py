@@ -145,6 +145,14 @@ class ActionButton(_ActionBase):
                 bg=self.master.cget('bg'),fg='#FFFFFF' if self._fill == BLUE else MUTED)
             self._disabled_surface.place(x=0,y=0,relwidth=1,relheight=1)
 
+    def destroy(self):
+        # PIL's Tk photo destructor must run on the UI thread.
+        super().configure(image="")
+        if self._disabled_surface is not None:
+            self._disabled_surface.configure(image="")
+        self._images.clear()
+        super().destroy()
+
 
 class RoundedCard(tk.Frame):
     """Native frame with antialiased corners; children remain real Tk widgets."""
@@ -165,6 +173,12 @@ class RoundedCard(tk.Frame):
             corner = tk.Label(self, image=photo, bd=0, highlightthickness=0)
             corner.place(relx=x, rely=y, anchor=anchor, bordermode="outside")
             self._corners.append((corner, photo))
+
+    def destroy(self):
+        for corner, _photo in self._corners:
+            corner.configure(image="")
+        self._corners.clear()
+        super().destroy()
 
 
 def _switch_photos(parent):
@@ -259,6 +273,8 @@ class _MacSwitch(tk.Frame):
 
     def destroy(self):
         self._variable.trace_remove("write", self._trace)
+        self._track.configure(image="")
+        self._photos.clear()
         super().destroy()
 
 

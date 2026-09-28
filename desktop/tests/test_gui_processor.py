@@ -311,6 +311,9 @@ def test_pending_voice_text_has_priority_and_clears_only_after_send(tmp_path) ->
 
     class Sender:
         def send(self, prompt, _event):
+            raise AssertionError("recognized speech must use the draft-aware path")
+
+        def send_voice(self, prompt, _event):
             assert prompt == "完成语音指定的关键任务"
             return SendResult(True, "已发送")
 
