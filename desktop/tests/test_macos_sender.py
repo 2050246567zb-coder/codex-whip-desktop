@@ -87,12 +87,13 @@ def test_macos_placeholder_is_treated_as_empty(monkeypatch) -> None:
     assert ready["composer_empty"] is True
 
 
-def test_macos_sender_refuses_existing_draft(monkeypatch) -> None:
+def test_macos_sender_can_arm_without_overwriting_existing_draft(monkeypatch) -> None:
     _fake_accessibility(monkeypatch, value="未发送草稿")
     sender = macos_ax.MacOSCodexSender(CodexSettings())
 
+    assert sender.check_ready()["composer_empty"] is False
     with pytest.raises(macos_ax.CodexTargetError, match="草稿"):
-        sender.check_ready()
+        sender.send("新消息", None)
 
 
 def test_macos_sender_refuses_when_value_cannot_be_read(monkeypatch) -> None:

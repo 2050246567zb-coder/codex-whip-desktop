@@ -13,17 +13,18 @@ import sys
 import math
 import time
 import tkinter as tk
+from tkinter import font as tkfont
 import uuid
 from types import SimpleNamespace
 from tkinter import messagebox
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 from .interface_state import InterfacePreferences
 from .mount_profile import load_mounting_profile
 from .paths import user_data_dir
 from . import __version__
-from .effects import CodexWhipEffects, WhipPose
+from .effects import CartoonWhipPhysics, CodexWhipEffects, WhipPose
 from .whip_drawing import WhipDrawing, SupersampledWhipDrawing
 from .gear_button import GearButton
 from .battery_indicator import BatteryIndicator
@@ -54,6 +55,8 @@ def label(parent, text="", *, size=10, color=TEXT, bold=False, **kwargs):
 
 
 def button(parent, text, command, *, primary=False, **kwargs):
+    if sys.platform == "darwin":
+        return RoundedOutlineButton(parent, text, command, **kwargs)
     value = tk.Button(parent, text=text, command=command,
                       bg=BLUE if primary else SOFT, fg="white" if primary else TEXT,
                       activebackground="#343438" if primary else LINE,
@@ -65,6 +68,90 @@ def button(parent, text, command, *, primary=False, **kwargs):
                       highlightcolor=BLUE, font=(FONT, 10), **kwargs)
     # Native active state gives immediate pressed feedback; no animation lockout.
     return value
+
+
+class RoundedOutlineButton(tk.Label):
+    """A keyboard-operable, black-outline button for macOS onboarding."""
+
+    def __init__(self, parent, text, command, **kwargs):
+        self._command = command
+        self._state = "normal"
+        self._ready = False
+        self._photo = None
+        self._paint_key = None
+        super().__init__(parent, text=text, bg=parent.cget("bg"), fg=TEXT,
+                         font=(FONT, 10), compound="center", bd=0, padx=0,
+                         pady=0, highlightthickness=0, cursor="hand2",
+                         takefocus=True, **kwargs)
+        self._ready = True
+        self._paint()
+        self.bind("<Enter>", lambda _e: self._paint(hover=True))
+        self.bind("<Leave>", lambda _e: self._paint())
+        self.bind("<ButtonPress-1>", lambda _e: self._paint(pressed=True))
+        self.bind("<ButtonRelease-1>", self._release)
+        self.bind("<Return>", lambda _e: self.invoke())
+        self.bind("<space>", lambda _e: self.invoke())
+
+    def _release(self, event):
+        self._paint(hover=True)
+        if 0 <= event.x < self.winfo_width() and 0 <= event.y < self.winfo_height():
+            self.focus_set()
+            self.invoke()
+
+    def invoke(self):
+        if self._state == "normal" and self._command is not None:
+            return self._command()
+        return None
+
+    def cget(self, key):
+        return self._state if key == "state" else super().cget(key)
+
+    def configure(self, cnf=None, **kwargs):
+        if isinstance(cnf, dict):
+            kwargs = {**cnf, **kwargs}
+            cnf = None
+        state = kwargs.pop("state", None)
+        if state is not None:
+            self._state = str(state)
+        result = super().configure(cnf, **kwargs)
+        if self._ready and (kwargs or state is not None):
+            self._paint()
+        return result
+
+    config = configure
+
+    def _paint(self, *, hover=False, pressed=False):
+        text = str(super().cget("text"))
+        font = tkfont.Font(root=self, font=super().cget("font"))
+        width = max(44, font.measure(text) + 32)
+        height = max(38, font.metrics("linespace") + 16)
+        disabled = self._state != "normal"
+        fill = "#FFFFFF" if disabled or not (hover or pressed) else (
+            "#DADDE4" if pressed else "#EBECF0")
+        key = (width, height, fill, disabled, text, self.master.cget("bg"))
+        if key == self._paint_key:
+            return
+        self._paint_key = key
+        surface = Image.new("RGBA", (width * 3, height * 3))
+        ImageDraw.Draw(surface).rounded_rectangle(
+            (2, 2, width * 3 - 3, height * 3 - 3), radius=36,
+            fill=fill, outline="#1D1D1F", width=4)
+        self._photo = ImageTk.PhotoImage(
+            surface.resize((width, height), Image.Resampling.LANCZOS), master=self)
+        super().configure(image=self._photo,
+                          fg=MUTED if disabled else "#1D1D1F",
+                          cursor="arrow" if disabled else "hand2")
+
+    def destroy(self):
+        # Tk photos must be released on the UI thread, before a worker thread
+        # can collect an old onboarding window and call ImageTk.__del__ there.
+        photo, self._photo = self._photo, None
+        try:
+            super().configure(image="")
+        except tk.TclError:
+            pass
+        super().destroy()
+        del photo
 
 
 class Hero(tk.Canvas):
@@ -99,6 +186,8 @@ class Hero(tk.Canvas):
         self._preview_key = None
         self._demo_direction = None
         self._demo_at = time.monotonic()
+        self._demo_physics = None
+        self._demo_physics_at = self._demo_at
         self.clock_enabled = False
         self._clock_hover = False
         self._clock_started = -100.
@@ -263,6 +352,8 @@ class Hero(tk.Canvas):
         if direction != self._demo_direction:
             self._demo_direction = direction
             self._demo_at = time.monotonic()
+            self._demo_physics = None
+            self._demo_physics_at = self._demo_at
             self._preview_key = None
             self._wake()
 
@@ -329,18 +420,25 @@ class Hero(tk.Canvas):
         if self.direct_pose:
             live, scale = pose, 1.0
         if self._demo_direction in {'up', 'right'}:
-            phase = (time.monotonic() - self._demo_at) % 2.4 / 2.4
-            amount = (1 - math.cos(math.tau * phase)) / 2
-            angle = (-.20 if self._demo_direction == 'up' else .20) * amount
-            shift_x = (w * .15 * amount) if self._demo_direction == 'right' else 0.
-            shift_y = (-h * .15 * amount) if self._demo_direction == 'up' else 0.
-            pivot = live.handle_start
-            def turn(point):
-                x, y = point[0] - pivot[0], point[1] - pivot[1]
-                return (pivot[0] + x*math.cos(angle) - y*math.sin(angle) + shift_x,
-                        pivot[1] + x*math.sin(angle) + y*math.cos(angle) + shift_y)
-            live = WhipPose(turn(live.handle_start), turn(live.handle_end),
-                            tuple(turn(point) for point in live.cord))
+            now = time.monotonic()
+            if self._demo_physics is None:
+                self._demo_physics = CartoonWhipPhysics(pose.handle_start)
+                self._demo_physics.adopt_pose(pose)
+                self._demo_physics_at = now
+            phase = (now - self._demo_at) % 2.8 / 2.8
+            amount = 0. if self.reduce_motion else (1 - math.cos(math.tau * phase)) / 2
+            dx = 130. * amount if self._demo_direction == 'right' else 0.
+            dy = -130. * amount if self._demo_direction == 'up' else 0.
+            aim = (24. if self._demo_direction == 'up' else -24.) * amount
+            demo_pose = self._demo_physics.step(
+                (pose.handle_start[0] + dx, pose.handle_start[1] + dy),
+                min(.08, max(0., now - self._demo_physics_at)),
+                aim_offset_degrees=aim,
+            )
+            self._demo_physics_at = now
+            demo_screen = (lambda point: point) if self.direct_pose else screen
+            live = WhipPose(demo_screen(demo_pose.handle_start), demo_screen(demo_pose.handle_end),
+                            tuple(demo_screen(point) for point in demo_pose.cord))
         self._update_tilt()
         target = project_pose(clock_pose(w,h,len(pose.cord)),w,h,self._tilt) if self._clock_hover else live
         if self.mode == 'connecting':
@@ -450,6 +548,15 @@ class Hero(tk.Canvas):
             except tk.TclError:
                 pass
             self._timer = None
+        # Release Tk photos while still on the UI thread. Keeping the final
+        # raster in a destroyed Hero can let worker-thread GC finalize it.
+        try:
+            self.delete("all")
+        except tk.TclError:
+            pass
+        self._photo = None
+        if hasattr(self._whip_drawing, "_photo"):
+            self._whip_drawing._photo = None
 
 
 class Interface:
@@ -1083,6 +1190,7 @@ class Interface:
         title, subtitle, step, primary, progress = "", "", "", "", ""
         mode = "whip"
         enabled = True
+        tour_deadline = None
         if self.stage == "connect":
             step, title = "01  /  03 · 连接", "先连接你的手柄"
             subtitle = "给手柄通电，并打开电脑蓝牙。\n连接成功后，我们一起确认握持方向。"
@@ -1097,7 +1205,11 @@ class Interface:
                 mode = "whip"
             elif mode == "pending":
                 mode, title, subtitle = "whip", "识别后的文字", "beat it, then send"
-                progress = self.TOUR[self._tour_index][2]
+                now = time.monotonic()
+                self._tour_started += max(0, int((now - self._tour_started) // 10)) * 10
+                tour_deadline = self._tour_started + 10
+                remaining = max(1, math.ceil(tour_deadline - now))
+                progress = f"倒计时 {remaining:02d} 秒 · {self.TOUR[self._tour_index][2]}"
             if self.TOUR[self._tour_index][0] == "clock":
                 mode = "whip"
                 self.hero.clock_enabled = True
@@ -1190,7 +1302,9 @@ class Interface:
                 a.arm_check.configure(state="normal")
             self.title.configure(text=home_title)
             self.subtitle.configure(text=home_subtitle)
-            self.subtitle.set_countdown(self._pending_until if home_subtitle == 'beat it, then send' else None)
+            self.subtitle.set_countdown(
+                (tour_deadline or self._pending_until)
+                if home_subtitle == 'beat it, then send' else None)
             self.step_label.configure(text=step)
             self.hero.clock_enabled = (
                 self.stage == "tour" and self.TOUR[self._tour_index][0] == "clock"

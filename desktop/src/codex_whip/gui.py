@@ -1778,6 +1778,8 @@ class CodexWhipWindow:
                         self.mode_value.set("实际发送已武装")
                         self.codex_value.set("已连接")
                         self._append_log(f"已武装：Codex PID {detail['pid']}")
+                        if detail.get("composer_empty") is False:
+                            self._append_log("Codex 有未发送草稿；请先清空，挥鞭不会覆盖它")
                     else:
                         self.armed.clear()
                         self.arm_value.set(False)

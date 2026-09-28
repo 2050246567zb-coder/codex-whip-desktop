@@ -170,8 +170,8 @@ class MacOSCodexSender:
         if self._settings.refuse_when_composer_has_text:
             if existing is None:
                 raise CodexTargetError("无法确认 Codex 输入框是否为空")
-            if existing:
-                raise CodexTargetError("Codex 输入框已有未发送草稿")
+        # A draft is safe to leave untouched while enabling the send switch.
+        # send() still refuses to replace or append to that draft.
         return {
             "title": window.title,
             "pid": window.pid,

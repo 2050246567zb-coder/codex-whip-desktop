@@ -70,6 +70,25 @@ def main(argv=None) -> int:
             settle_and_capture("02-away", .35)
             fake_effects.target_active.return_value = True
             settle_and_capture("02-return-to-codex", .35)
+            app.ui.stage = "tour"
+            app.ui._tour_index = 5
+            app.ui._tour_started = time.monotonic()
+            app.ui._render_key = None
+            settle_and_capture("02d-tour-countdown")
+            app.ui._tour_index = len(app.ui.TOUR) - 1
+            app.ui._render_key = None
+            settle_and_capture("02e-tour-final")
+            app.ui.stage = "calibrate"
+            app.ui._mount_token = "synthetic"
+            app.ui._mount_inline_state = "up_ready"
+            app.ui._render_key = None
+            settle_and_capture("02f-calibrate-up")
+            app.ui._mount_inline_state = "right_ready"
+            app.ui._render_key = None
+            settle_and_capture("02g-calibrate-right")
+            app.ui.stage = "ready"
+            app.ui._mount_token = ""
+            app.ui._render_key = None
             app.ui.open_preferences("calibration")
             app.ui.settings.geometry("1060x820+100+40")
             settle_and_capture("02a-hardware-tap-settings", .3, app.ui.settings)

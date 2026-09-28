@@ -1,4 +1,6 @@
 import time
+import math
+import sys
 from types import SimpleNamespace
 import tkinter as tk
 from unittest.mock import Mock
@@ -6,7 +8,7 @@ import pytest
 from PIL import Image
 
 from codex_whip.gui import CodexWhipWindow
-from codex_whip.interface import asset_path, sleep_dot_count
+from codex_whip.interface import RoundedOutlineButton, asset_path, sleep_dot_count
 from codex_whip.mount_profile import MountingProfile, save_mounting_profile
 from codex_whip.sensor_pose import SensorPose
 from codex_whip.settings import Settings
@@ -445,6 +447,60 @@ def test_first_use_tour_waits_for_arrows_and_calibration_demos_up_first(app):
     refresh(ui)
     assert ui.hero._demo_direction == "up"
     assert ui.primary.cget("text") == "我准备好了"
+
+
+def test_tour_pending_countdown_repeats_and_explains_expiry(app):
+    ui = app.ui
+    ui.stage = "tour"
+    ui._tour_index = 5
+    ui._tour_started = time.monotonic() - 21
+    refresh(ui)
+    assert ui.subtitle.cget("text") == "beat it, then send"
+    assert ui.subtitle._deadline > time.monotonic()
+    assert ui.progress.cget("text").startswith("倒计时 09 秒")
+    assert "超时会消失" in ui.progress.cget("text")
+    ui.next_tour()
+    refresh(ui)
+    assert ui.subtitle._deadline is None
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS onboarding buttons")
+def test_onboarding_buttons_have_round_black_outline_and_text(app):
+    ui = app.ui
+    ui.stage = "tour"
+    ui._tour_index = len(ui.TOUR) - 1
+    refresh(ui)
+    assert all(isinstance(control, RoundedOutlineButton) for control in
+               (ui.primary, ui.tour_previous, ui.tour_next, ui.skip_setup_button))
+    assert ui.primary.cget("text") == "开始方向校准"
+    assert ui.primary.cget("fg") == "#1D1D1F"
+    assert ui.primary._photo.width() > 100
+    ui.stage = "calibrate"
+    ui._mount_token = "test"
+    ui._mount_inline_state = "up_ready"
+    app.ble_connected = True
+    refresh(ui)
+    assert ui.primary.cget("text") == "我准备好了"
+    assert ui.primary.cget("fg") == "#1D1D1F"
+
+
+@pytest.mark.parametrize("direction,axis,sign", [("up", 1, -1), ("right", 0, 1)])
+def test_direction_demo_uses_rope_physics(app, direction, axis, sign):
+    from codex_whip.effects import CodexWhipEffects
+
+    hero = app.ui.hero
+    hero.set_demo(direction)
+    hero._demo_at -= .7
+    for _ in range(24):
+        hero._demo_physics_at -= 1 / 60
+        hero._draw_live_whip()
+    physics = hero._demo_physics
+    assert physics is not None
+    assert (physics.position[axis] - CodexWhipEffects.IDLE.handle_start[axis]) * sign > 15
+    current = physics.pose()
+    original = CodexWhipEffects.IDLE
+    assert abs(math.dist(current.handle_end, current.cord[-1]) -
+               math.dist(original.handle_end, original.cord[-1])) > 5
 
 
 def test_optional_onboarding_choices_match_settings_switches(app):

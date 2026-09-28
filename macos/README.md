@@ -1,4 +1,4 @@
-# Codex Whip 产品版 2.2.71 for macOS
+# Codex Whip 产品版 2.2.72 for macOS
 
 macOS 与 Windows 共用动作识别、校准、设置、界面动画、鞭绳物理、伤口、消息和
 语音状态机；窗口控制使用 macOS Accessibility/AppKit/Quartz，BLE 使用
@@ -37,6 +37,12 @@ bash macos/verify-macos.sh
 GitHub Actions 可验证 Apple Silicon 构建、单元测试和合成 UI 冒烟；真实蓝牙、
 BLE、当前 Codex AX 元素、屏幕叠层和语音识别仍须在目标 Mac 按
 `MACOS_ACCEPTANCE.md` 实测。
+
+## 2.2.72 引导和发送修复
+
+Codex 输入框保留草稿时可开启发送开关；实际发送仍会保护现有草稿，清空后才能提交新文字。
+功能演示第六步展示循环的 10 秒倒计时、文字消逝效果和底部说明。
+引导及校准按钮改为圆角黑边、黑色文字；两个方向的校准演示使用鞭绳物理模拟。
 
 ## 2.2.71 前台应用适配
 

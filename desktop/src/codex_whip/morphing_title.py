@@ -132,4 +132,10 @@ class MorphingTitle(tk.Label):
         if self._timer:
             self.after_cancel(self._timer)
             self._timer = None
+        photo, self._photo = getattr(self, "_photo", None), None
+        try:
+            super().configure(image="")
+        except tk.TclError:
+            pass
         super().destroy()
+        del photo
