@@ -18,7 +18,6 @@ from codex_whip.voice import (
     WhisperCppTranscriber,
     decode_ima_adpcm_chunk,
     load_voice_settings,
-    save_voice_settings,
     sanitize_voice_transcript,
     to_simplified_chinese,
 )
@@ -30,56 +29,8 @@ def test_legacy_voice_settings_are_discarded(tmp_path):
     restored = load_voice_settings(path)
     assert restored.input_mode == "transcription"
     assert restored.recording_gain == 2
-    assert VoiceSettings(input_mode="virtual_microphone").validated().input_mode == "virtual_microphone"
     with pytest.raises(ValueError, match="输入方式"):
-        VoiceSettings(input_mode="unknown").validated()
-
-
-def test_virtual_microphone_mode_survives_restart(tmp_path):
-    path = tmp_path / "voice.json"
-    save_voice_settings(path, VoiceSettings(enabled=False, input_mode="virtual_microphone"))
-    restored = load_voice_settings(path)
-    assert not restored.enabled
-    assert restored.input_mode == "virtual_microphone"
-
-
-def test_handle_audio_reaches_native_dictation_without_cloud_transcription(tmp_path):
-    from unittest.mock import Mock
-
-    class Microphone:
-        def __init__(self):
-            self.blocks = []
-            self.finished = False
-
-        def write(self, block):
-            self.blocks.append(block)
-
-        def finish(self):
-            self.finished = True
-
-        def abort(self):
-            raise AssertionError("successful recording must not abort")
-
-    store = VoiceSettingsStore(tmp_path / "voice.json")
-    store.update(VoiceSettings(enabled=False, input_mode="virtual_microphone"))
-    microphone = Microphone()
-    transcriber = Mock()
-    emitted = []
-    module = VoiceModule(store, lambda kind, payload: emitted.append((kind, payload)),
-                         transcriber, virtual_microphone=microphone)
-
-    async def record():
-        await module.handle_audio(AudioStart(4, 16000, "IMA_ADPCM4"))
-        for sequence in range(25):
-            await module.handle_audio(AudioChunk(4, sequence, 320, 0, 0, bytes(160)))
-        await module.handle_audio(AudioEnd(4, 8000, "SILENCE"))
-
-    asyncio.run(record())
-    assert len(microphone.blocks) == 25
-    assert microphone.finished
-    transcriber.transcribe.assert_not_called()
-    assert any(kind == "voice_state" and payload["state"] == "dictation_ready"
-               for kind, payload in emitted)
+        VoiceSettings(input_mode="virtual_microphone").validated()
 
 
 def _frame(timestamp: int, dynamic: float = 0.0, gyro: float = 0.0) -> RawMotionFrame:

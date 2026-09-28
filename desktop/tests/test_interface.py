@@ -87,53 +87,6 @@ def test_send_switch_label_and_confirmation_only_explain_behavior(app, monkeypat
     assert not app.armed.is_set()
 
 
-@pytest.mark.skipif(sys.platform != 'darwin', reason='Mac-only native dictation control')
-def test_native_dictation_and_voice_recognition_switches_are_exclusive(app, monkeypatch):
-    from dataclasses import replace
-    from codex_whip.interface_state import InterfacePreferences
-
-    monkeypatch.setattr(app, 'prepare_voice_model', lambda: None)
-    app._ensure_settings()
-    assert app.voice_store.settings.enabled
-    assert app.set_native_dictation_enabled(True)
-    assert app.ui.preferences.native_dictation_enabled
-    assert not app.voice_store.settings.enabled
-    assert app.voice_store.settings.input_mode == 'virtual_microphone'
-    assert not app.settings_window.voice_enabled.get()
-    assert InterfacePreferences.load(app.ui.path, already_calibrated=True).native_dictation_enabled
-    assert app.apply_voice_settings(replace(app.voice_store.settings, enabled=True))
-    assert app.voice_store.settings.enabled
-    assert app.voice_store.settings.input_mode == 'transcription'
-    assert not app.ui.preferences.native_dictation_enabled
-    assert not app.ui.native_dictation.get()
-
-
-@pytest.mark.skipif(sys.platform != 'darwin', reason='Mac-only native dictation control')
-def test_native_double_tap_starts_handle_recording_after_codex_dictation(app, monkeypatch):
-    starts = []
-    commands = []
-    assert app.set_native_dictation_enabled(True)
-    monkeypatch.setattr(app, '_begin_native_dictation',
-                        lambda settings: starts.append(settings.input_mode) or True)
-    monkeypatch.setattr(app, 'send_device_command',
-                        lambda command: commands.append(command) or True)
-
-    app.emit('native_dictation_toggle', 1000)
-    app._drain_events()
-    assert starts == ['virtual_microphone']
-    assert not any(command.startswith('VOICE,START,') for command in commands)
-
-    class Job:
-        def request_stop(self, *, abort):
-            pass
-
-    job = Job()
-    app._dictation_job = job
-    app._dictation_generation = 7
-    app.emit('native_dictation_started', {'job': job, 'generation': 7, 'device': 'BlackHole 2ch'})
-    app._drain_events()
-    assert any(command.startswith('VOICE,START,') for command in commands)
-
 def test_hover_clock_is_local_interruptible_and_yields_to_recording(app):
     app.ui.hero.set_mode('whip')
     app.ui.hero._clock_started -= 1

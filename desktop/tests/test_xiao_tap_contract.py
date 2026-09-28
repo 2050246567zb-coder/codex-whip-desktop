@@ -42,6 +42,7 @@ def test_small_ble_mtu_uses_transport_fragmentation_instead_of_aborting() -> Non
     assert 'kVoiceStreamingMtu = 64' in sketch
     assert 'connection->requestMtuExchange(247)' in sketch
     assert 'connection->getConnectionInterval() <= activeHost.maxInterval' in sketch
+    assert 'return activeHost.system != HostSystem::Windows ||' not in sketch
     assert 'sendLine("VOICE,ERROR,LINK_SPEED")' in sketch
     assert 'VOICE,END," + String(voiceSession) + ",0,LINK_MTU' not in sketch
     assert 'Bluefruit.configPrphBandwidth(BANDWIDTH_MAX)' in sketch

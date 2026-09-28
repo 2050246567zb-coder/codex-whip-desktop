@@ -757,19 +757,6 @@ class Interface:
                                     font=(FONT, 10), cursor="hand2", takefocus=True)
         a.arm_check.pack(side="left")
         label(send_row, "发送开关", size=10).pack(side="left", padx=(12, 0))
-        if sys.platform == "darwin":
-            self.native_dictation = tk.BooleanVar(
-                master=self.root, value=self.preferences.native_dictation_enabled
-            )
-            style.Switch(
-                send_row, text="", variable=self.native_dictation,
-                command=lambda: a.set_native_dictation_enabled(self.native_dictation.get()),
-                bg=CARD, activebackground=CARD, fg=TEXT, selectcolor=CARD,
-                font=(FONT, 10), cursor="hand2", takefocus=True,
-            ).pack(side="left", padx=(28, 0))
-            label(send_row, "原生听写", size=10).pack(side="left", padx=(12, 0))
-            label(send_row, "（开启后将使用codex原生听写功能代替语音识别功能。）",
-                  size=8, color=MUTED).pack(side="left", padx=(6, 0))
 
         speech_disclosure = self._speech_panel = Disclosure(self.host, "下一鞭的语音文字", bg=BG)
         speech = style.RoundedCard(speech_disclosure.body, padx=20, pady=16)

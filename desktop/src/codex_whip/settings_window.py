@@ -802,7 +802,7 @@ class DetectorSettingsWindow:
         if self._voice_store is None or self._apply_voice_settings is None:
             return False
         current = self._voice_store.settings
-        updated = replace(current,
+        updated = replace(current, input_mode='transcription',
                           recording_gain=self._percent_to_gain(self.voice_sensitivity_value.get()))
         if not self._apply_voice_settings(updated):
             value = self._gain_to_percent(current.recording_gain)

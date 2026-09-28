@@ -13,16 +13,11 @@ def test_preferences_only_save_interface_file(tmp_path):
     preferences.save(path)
     assert InterfacePreferences.load(path, already_calibrated=False) == preferences
     assert sensor.read_text() == "original sensor profile"
-    assert set(json.loads(path.read_text())) == {
-        "setup_complete", "reduce_motion", "send_enabled", "native_dictation_enabled"
-    }
+    assert set(json.loads(path.read_text())) == {"setup_complete", "reduce_motion", "send_enabled"}
     assert preferences.send_enabled is True
     preferences.send_enabled = False
     preferences.save(path)
     assert InterfacePreferences.load(path, already_calibrated=True).send_enabled is False
-    preferences.native_dictation_enabled = True
-    preferences.save(path)
-    assert InterfacePreferences.load(path, already_calibrated=True).native_dictation_enabled
 
 
 def test_first_use_and_corrupt_preferences_are_safe(tmp_path):
@@ -33,7 +28,6 @@ def test_first_use_and_corrupt_preferences_are_safe(tmp_path):
     path.write_text('{"setup_complete":"false"}')
     assert not InterfacePreferences.load(path, already_calibrated=True).setup_complete
     assert InterfacePreferences.load(path, already_calibrated=True).send_enabled is True
-    assert InterfacePreferences.load(path, already_calibrated=True).native_dictation_enabled is False
 
 
 def test_meter_is_real_pcm_rms_and_invalid_packets_are_silent():
