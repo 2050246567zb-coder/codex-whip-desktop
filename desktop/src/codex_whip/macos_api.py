@@ -96,19 +96,23 @@ def ax_set(element: Any, attribute: str, value: Any) -> bool:
     )
 
 
-def ax_append_text(element: Any, existing: str, text: str) -> bool:
-    """Append through text accessibility actions without using the clipboard.
-
-    Selection offsets use UTF-16 code units on macOS. Prefer replacing an
-    zero-length selection so an existing rich-text draft is preserved.
-    """
+def ax_select_text_end(element: Any, existing: str) -> bool:
+    """Place a macOS accessibility text caret after UTF-16 draft content."""
     _appkit, services = _frameworks()
     offset = len(existing.encode("utf-16-le")) // 2
     end = services.AXValueCreate(
         services.kAXValueCFRangeType, services.CFRange(offset, 0)
     )
-    if (end is not None
-            and ax_set(element, services.kAXSelectedTextRangeAttribute, end)
+    return end is not None and ax_set(element, services.kAXSelectedTextRangeAttribute, end)
+
+
+def ax_append_text(element: Any, existing: str, text: str) -> bool:
+    """Append through text accessibility actions without using the clipboard.
+
+    Prefer replacing a zero-length selection so rich-text drafts survive.
+    """
+    _appkit, services = _frameworks()
+    if (ax_select_text_end(element, existing)
             and ax_set(element, services.kAXSelectedTextAttribute, text)):
         return True
     # Some editors expose AXValue but not selected-text replacement. Recheck

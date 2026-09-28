@@ -15,7 +15,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox
-from typing import Any
+from typing import Any, Callable
 
 from . import __version__
 from .app import sample_event
@@ -48,6 +48,7 @@ from .motion_v3 import MotionEngine
 from .paths import user_data_dir
 from .senders import create_live_sender
 from .senders.base import SendResult
+from .senders.macos_ax import CodexTargetError
 from .settings import Settings, load_settings
 from .settings_window import DetectorSettingsWindow
 from .battery import parse_battery_fields
@@ -239,6 +240,7 @@ class NativeDictationJob:
         session = None
         audio_started = False
         try:
+            self.virtual_microphone.detect()
             session = self.sender.start_dictation()
             if self._stop.is_set():
                 return
@@ -309,6 +311,7 @@ class GuiEventProcessor:
         message_store: MessageProfileStore | None = None,
         voice_module: VoiceModule | None = None,
         mounting_path: Path | None = None,
+        native_dictation_enabled: Callable[[], bool] | None = None,
     ) -> None:
         self._gate = EventGate(settings.events.minimum_interval_seconds)
         self._prompts = PromptSelector(message_store or settings.messages)
@@ -326,6 +329,8 @@ class GuiEventProcessor:
         self._mount_progress_at = 0.0
         self._last_sensor_batch_at = 0.0
         self._voice = voice_module
+        self._native_dictation_enabled = native_dictation_enabled or (lambda: False)
+        self._last_native_tap_ms = -1000
 
     def select_sensor_device(self, identity: str) -> None:
         path = (self._mounting_path.parent if self._mounting_path else user_data_dir()) / "sensor-bias-profiles.json"
@@ -413,7 +418,13 @@ class GuiEventProcessor:
                     except ValueError:
                         self._emit('log', '忽略格式错误的硬件双敲事件')
                     else:
-                        self._voice.handle_hardware_double_tap(timestamp_ms)
+                        if self._native_dictation_enabled():
+                            delta = (timestamp_ms - self._last_native_tap_ms) & 0xFFFFFFFF
+                            if delta > 450:
+                                self._last_native_tap_ms = timestamp_ms
+                                self._emit("native_dictation_toggle", timestamp_ms)
+                        else:
+                            self._voice.handle_hardware_double_tap(timestamp_ms)
                 self._emit("device", message)
                 return
             if message.kind == 'POWER' and len(message.fields) >= 2:
@@ -462,7 +473,10 @@ class GuiEventProcessor:
 
         voice_prompt = self._voice.pending_text if self._voice is not None else None
         native_draft = bool(self._voice is not None and self._voice.native_draft_pending)
-        voice_only = bool(self._voice is not None and self._voice.store.settings.enabled)
+        voice_only = bool(
+            (self._voice is not None and self._voice.store.settings.enabled)
+            or self._native_dictation_enabled()
+        )
         prompt = voice_prompt or ("Codex 原生听写" if native_draft else
                                   "" if voice_only else self._prompts.choose(message))
         self._emit(
@@ -485,7 +499,7 @@ class GuiEventProcessor:
         )
 
         if voice_only and not voice_prompt and not native_draft:
-            result = SendResult(sent=False, detail="语音输入已开启，等待识别后的文字")
+            result = SendResult(sent=False, detail="语音输入已开启，等待听写或识别后的文字")
         elif not self._armed.is_set():
             result = SendResult(
                 sent=False,
@@ -501,6 +515,16 @@ class GuiEventProcessor:
                                  if voice_prompt is not None else sender.send)
                     result = await asyncio.to_thread(operation, prompt, message)
             except Exception as exc:
+                if (native_draft and isinstance(exc, CodexTargetError)
+                        and "听写尚未生成可发送文字" in str(exc)):
+                    self._emit("send_result", SendResult(
+                        sent=False, detail="Codex 仍在生成听写文字，请稍后再挥鞭"
+                    ))
+                    return
+                logging.getLogger(__name__).warning(
+                    "Codex send failed: %s",
+                    str(exc) if isinstance(exc, CodexTargetError) else type(exc).__name__,
+                )
                 self._emit("send_error", str(exc))
                 return
         if result.sent and voice_prompt is not None and self._voice is not None:
@@ -731,6 +755,22 @@ class CodexWhipWindow:
         )
 
         self._build_window()
+        if sys.platform == "darwin":
+            native_enabled = self.ui.preferences.native_dictation_enabled
+            voice = self.voice_store.settings
+            mode = "virtual_microphone" if native_enabled else "transcription"
+            if voice.input_mode != mode or (native_enabled and voice.enabled):
+                try:
+                    self.voice_store.update(replace(voice, enabled=voice.enabled and not native_enabled,
+                                                    input_mode=mode))
+                    self.voice_module.update_settings()
+                except (OSError, ValueError) as exc:
+                    self.ui.preferences.native_dictation_enabled = False
+                    self.ui.native_dictation.set(False)
+                    self.ui._persist()
+                    self.emit("log", f"恢复原生听写设置失败：{exc}")
+            if self.ui.preferences.native_dictation_enabled:
+                self.voice_status_value.set("双敲使用手柄录音，Codex 原生听写")
         self._restore_send_state()
         if load_mounting_profile(self.mounting_path) is None:
             self.sensor_calibrate_button.configure(text="首次方向校准")
@@ -896,6 +936,9 @@ class CodexWhipWindow:
             self.message_store,
             self.voice_module,
             mounting_path=self.mounting_path,
+            native_dictation_enabled=lambda: (
+                sys.platform == "darwin" and self.ui.preferences.native_dictation_enabled
+            ),
         )
         self.worker_loop = loop
         self.worker_stop = stop
@@ -1108,7 +1151,8 @@ class CodexWhipWindow:
         return queued
 
     def apply_voice_settings(self, settings: VoiceSettings) -> bool:
-        settings = replace(settings, input_mode="transcription")
+        if settings.enabled:
+            settings = replace(settings, input_mode="transcription")
         previous = self.voice_store.settings
         try:
             self.voice_store.update(settings)
@@ -1116,6 +1160,17 @@ class CodexWhipWindow:
         except (OSError, ValueError) as exc:
             messagebox.showerror("无法保存语音设置", str(exc))
             return False
+        if (sys.platform == "darwin" and settings.enabled
+                and self.ui.preferences.native_dictation_enabled):
+            self.ui.preferences.native_dictation_enabled = False
+            if not self.ui._persist():
+                self.ui.preferences.native_dictation_enabled = True
+                self.voice_store.update(previous)
+                self.voice_module.update_settings()
+                return False
+            self.ui.native_dictation.set(False)
+            self._stop_native_dictation(abort=True)
+            self.voice_module.clear_native_draft()
         if settings.enabled and not previous.enabled:
             previous_send = self.ui.preferences.send_enabled
             self.ui.preferences.send_enabled = True
@@ -1137,13 +1192,57 @@ class CodexWhipWindow:
                 self.send_device_command(
                     f"TAPCFG,{self._hardware_tap_minimum(settings):.2f}"
                 )
-            self.send_device_command("VOICE,1" if settings.enabled else "VOICE,0")
+            self.send_device_command(
+                "VOICE,1" if settings.enabled or (
+                    sys.platform == "darwin" and self.ui.preferences.native_dictation_enabled
+                )
+                else "VOICE,0"
+            )
         if settings.enabled:
             self.voice_status_value.set("正在准备语音识别")
             self.prepare_voice_model()
+        elif sys.platform == "darwin" and self.ui.preferences.native_dictation_enabled:
+            self.voice_status_value.set("双敲使用手柄录音，Codex 原生听写")
         else:
             self.voice_status_value.set("已关闭（可在设置中启用）")
         self.emit("log", "语音双敲模块已开启" if settings.enabled else "语音双敲模块已关闭")
+        return True
+
+    def set_native_dictation_enabled(self, enabled: bool) -> bool:
+        if sys.platform != "darwin":
+            return False
+        enabled = bool(enabled)
+        previous = self.ui.preferences.native_dictation_enabled
+        if enabled == previous:
+            return True
+        previous_voice = self.voice_store.settings
+        target_mode = "virtual_microphone" if enabled else "transcription"
+        if previous_voice.enabled or previous_voice.input_mode != target_mode:
+            if not self.apply_voice_settings(replace(previous_voice, enabled=False, input_mode=target_mode)):
+                self.ui.native_dictation.set(previous)
+                return False
+            if self.settings_window is not None:
+                self.settings_window.refresh_voice_settings(self.voice_store.settings)
+        self.ui.preferences.native_dictation_enabled = enabled
+        if not self.ui._persist():
+            self.ui.preferences.native_dictation_enabled = previous
+            self.ui.native_dictation.set(previous)
+            if previous_voice.enabled or previous_voice.input_mode != target_mode:
+                self.apply_voice_settings(previous_voice)
+            return False
+        if enabled:
+            self.voice_module.clear_pending()
+            self.voice_module.clear_native_draft()
+            self.voice_status_value.set("双敲使用手柄录音，Codex 原生听写")
+        else:
+            self._stop_native_dictation(abort=True)
+            self.voice_module.clear_native_draft()
+            self.voice_status_value.set("已关闭（可在设置中启用）")
+        if self.ble_connected and self.firmware_supports_voice:
+            self.send_device_command(
+                "VOICE,1" if enabled or self.voice_store.settings.enabled else "VOICE,0"
+            )
+        self.emit("log", "Codex 原生听写已开启" if enabled else "Codex 原生听写已关闭")
         return True
 
     @staticmethod
@@ -1593,11 +1692,14 @@ class CodexWhipWindow:
                                         else "姿态角度跟随已开启；板端按转动、角位移和收腕识别抽打"
                                     )
                             if self.firmware_supports_voice:
-                                voice_enabled = self.voice_store.settings.enabled
+                                voice_enabled = self.voice_store.settings.enabled or (
+                                    sys.platform == "darwin"
+                                    and self.ui.preferences.native_dictation_enabled
+                                )
                                 self.send_device_command(
                                     "VOICE,1" if voice_enabled else "VOICE,0"
                                 )
-                                if voice_enabled and self.voice_store.settings.input_mode == "transcription":
+                                if self.voice_store.settings.enabled and self.voice_store.settings.input_mode == "transcription":
                                     self.prepare_voice_model()
                         else:
                             self._append_log(
@@ -1787,6 +1889,7 @@ class CodexWhipWindow:
                         if detail.get("composer_empty") is False:
                             self._append_log("Codex 有未发送草稿；识别文字将追加，普通消息不会覆盖它")
                     else:
+                        logging.getLogger(__name__).warning("Codex arming failed: %s", detail)
                         self.armed.clear()
                         self.arm_value.set(False)
                         self.mode_value.set("安全监听")
@@ -1848,6 +1951,18 @@ class CodexWhipWindow:
                             f"VOICE,START,{voice.silence_ms},{voice.max_recording_ms}"
                         ):
                             self.voice_status_value.set("正在启动录音")
+                elif kind == "native_dictation_toggle":
+                    if not self.ui.preferences.native_dictation_enabled:
+                        continue
+                    if self._dictation_job is not None:
+                        self.voice_status_value.set("手柄录音中，请等待静音后自动结束")
+                    else:
+                        self.voice_module.clear_native_draft()
+                        try:
+                            self._begin_native_dictation(self.voice_store.settings)
+                        except Exception as exc:
+                            self.voice_status_value.set("无法启动 Codex 原生听写")
+                            self._append_log(f"原生听写启动失败：{exc}")
                 elif kind == "native_dictation_started":
                     job = payload.get("job")
                     generation = int(payload.get("generation", -1))
@@ -1887,11 +2002,17 @@ class CodexWhipWindow:
                     self._dictation_job = None
                     self._dictation_phase = ""
                     self._dictation_generation += 1
-                    self.voice_status_value.set("原生听写启动失败")
-                    self._append_log(f"原生听写：{payload.get('detail', '未知错误')}")
+                    detail = str(payload.get("detail", "未知错误"))
+                    if "未找到虚拟麦克风设备" in detail:
+                        self.voice_status_value.set("需要安装 BlackHole 2ch，并在 Codex 中选为麦克风")
+                    else:
+                        self.voice_status_value.set("原生听写启动失败")
+                    self._append_log(f"原生听写：{detail}")
                 elif kind == "native_dictation_stopped":
                     detail = payload.get("detail")
                     if detail:
+                        self.voice_module.clear_native_draft()
+                        self.voice_status_value.set("Codex 听写未结束，请在 Codex 中手动停止")
                         self._append_log(f"Codex 原生听写结束失败：{detail}")
                 elif kind == "voice_state":
                     state = str(payload.get("state", ""))

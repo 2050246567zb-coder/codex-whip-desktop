@@ -233,24 +233,50 @@ class MacOSCodexSender:
     def start_dictation(self) -> MacDictationSession:
         window = self._single_window()
         composer = self._composer(window)
+        _appkit, services = macos_api._frameworks()
         existing = self._normalized_value(composer)
         if existing is None:
             raise CodexTargetError("无法确认 Codex 输入框是否为空")
-        if existing:
-            raise CodexTargetError("Codex 输入框已有未发送草稿")
         button = self._dictation_button(window)
         if not macos_api.activate_application(window.pid):
             raise CodexTargetError("macOS 拒绝激活 Codex 窗口")
         time.sleep(0.12)
+        if not macos_api.ax_set(composer.element, services.kAXFocusedAttribute, True):
+            raise CodexTargetError("无法聚焦 Codex 输入框")
+        if existing and not macos_api.ax_select_text_end(composer.element, existing):
+            raise CodexTargetError("无法将 Codex 草稿光标移到末尾")
         self._press(button, "无法启动 Codex 听写")
         return MacDictationSession(window.pid, button)
 
     def stop_dictation(self, session: MacDictationSession) -> None:
-        if macos_api.window_for_pid(session.pid) is None:
+        window = macos_api.window_for_pid(session.pid)
+        if window is None:
             raise CodexTargetError("Codex 听写窗口已经关闭")
-        # Reuse the exact AX element that opened dictation; never press an
-        # unrelated generic Stop button.
-        self._press(session.element, "无法安全停止 Codex 听写")
+        _appkit, services = macos_api._frameworks()
+        buttons = []
+        for element in macos_api.ax_descendants(window.element):
+            if str(macos_api.ax_copy(element, services.kAXRoleAttribute) or "") != "AXButton":
+                continue
+            name = " ".join(
+                str(macos_api.ax_copy(element, attribute) or "")
+                for attribute in (services.kAXTitleAttribute, services.kAXDescriptionAttribute,
+                                  services.kAXHelpAttribute)
+            ).strip().casefold()
+            frame = self._frame(element)
+            if frame is None or frame[1] < window.top + window.height * 0.52:
+                continue
+            if name in {"停止听写", "停止语音输入", "停止录音", "stop dictation",
+                        "stop recording", "stop voice input"}:
+                buttons.append(element)
+        if len(buttons) == 1:
+            self._press(buttons[0], "无法停止 Codex 听写")
+            return
+        # Some Codex versions keep the same toggle element while listening.
+        # Reuse it only when it remains in the current window tree.
+        if not buttons and session.element in macos_api.ax_descendants(window.element):
+            self._press(session.element, "无法停止 Codex 听写")
+            return
+        raise CodexTargetError(f"无法唯一识别 Codex 停止听写按钮（找到 {len(buttons)} 个）")
 
     def submit_existing(self, event: WhipEvent) -> SendResult:
         del event

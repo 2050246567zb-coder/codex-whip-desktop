@@ -121,7 +121,7 @@ class VoiceSettings:
 
     def validated(self) -> "VoiceSettings":
         from .cloud_speech import PRESETS
-        if self.input_mode != "transcription":
+        if self.input_mode not in ("transcription", "virtual_microphone"):
             raise ValueError("未知语音输入方式")
         if self.speech_provider not in PRESETS:
             raise ValueError('未知语音识别服务')
@@ -177,7 +177,8 @@ def load_voice_settings(path: Path) -> VoiceSettings:
         }
         # Older profiles keep their cloud-first behavior until the user changes
         # the new precise-recognition switch. Keep thresholds and gain intact.
-        values["input_mode"] = "transcription"
+        if values.get("input_mode") not in ("transcription", "virtual_microphone"):
+            values["input_mode"] = "transcription"
         values["speech_provider"] = "doubao-v2"
         return VoiceSettings(**values).validated()
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
@@ -1361,7 +1362,7 @@ class VoiceModule:
                 await asyncio.to_thread(self.virtual_microphone.finish)
                 self.clear_pending()
                 record['result'] = 'dictation_ready'
-                record['recognition']['final_engine'] = 'system_dictation'
+                record['recognition']['final_engine'] = 'codex_native_dictation'
                 await self._save_recognition_record(record, processing_started, recording_started_at)
                 self.emit("voice_state", {"state": "dictation_ready", "session": message.session})
                 return

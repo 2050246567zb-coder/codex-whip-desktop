@@ -99,6 +99,10 @@ def test_native_dictation_start_and_stop_never_run_on_ui_thread() -> None:
             calls.append(("stop", threading.get_ident()))
 
     class Microphone:
+        def detect(self):
+            calls.append(("detect", threading.get_ident()))
+            return SimpleNamespace(name="Test Cable")
+
         def start(self, _gain):
             calls.append(("microphone", threading.get_ident()))
             return SimpleNamespace(name="Test Cable")
@@ -122,9 +126,54 @@ def test_native_dictation_start_and_stop_never_run_on_ui_thread() -> None:
     worker_threads = {thread_id for _name, thread_id in calls}
     assert len(worker_threads) == 1
     assert ui_thread not in worker_threads
-    assert [name for name, _thread_id in calls] == ["start", "microphone", "stop"]
+    assert [name for name, _thread_id in calls] == ["detect", "start", "microphone", "stop"]
     assert emitted[0][0] == "native_dictation_started"
     assert emitted[-1][0] == "native_dictation_stopped"
+
+
+def test_missing_virtual_microphone_never_opens_codex_dictation() -> None:
+    from codex_whip.virtual_microphone import VirtualMicrophoneError
+
+    class Sender:
+        def start_dictation(self):
+            raise AssertionError("Codex dictation should remain closed")
+
+    class Microphone:
+        def detect(self):
+            raise VirtualMicrophoneError("未找到虚拟麦克风设备（需要 BlackHole 2ch）")
+
+    events = []
+    finished = threading.Event()
+
+    def emit(kind, payload):
+        events.append((kind, payload))
+        if kind == "native_dictation_stopped":
+            finished.set()
+
+    job = NativeDictationJob(Sender(), Microphone(), 2.0, 1, emit)
+    job.start()
+    assert finished.wait(1)
+    assert events[0][0] == "native_dictation_failed"
+    assert "BlackHole" in events[0][1]["detail"]
+
+
+def test_native_mode_routes_hardware_double_tap_to_handle_audio_session() -> None:
+    from codex_whip.models import DeviceMessage
+    emitted = []
+    handled = []
+    voice = SimpleNamespace(handle_hardware_double_tap=lambda value: handled.append(value))
+    processor = GuiEventProcessor(
+        Settings(), threading.Event(), lambda kind, payload: emitted.append((kind, payload)),
+        voice_module=voice, native_dictation_enabled=lambda: True,
+    )
+
+    async def exercise():
+        for stamp in (1000, 1010, 1020, 1600):
+            await processor.handle(DeviceMessage('TAP2', (str(stamp), '84'), ''))
+
+    asyncio.run(exercise())
+    assert [payload for kind, payload in emitted if kind == 'native_dictation_toggle'] == [1000, 1600]
+    assert handled == []
 
 
 def test_gui_processor_reports_device_messages() -> None:
@@ -364,6 +413,30 @@ def test_native_dictation_draft_is_submitted_without_inserting_prompt(tmp_path) 
     assert voice.native_draft_pending is False
     payload = next(payload for kind, payload in emitted if kind == "whip")
     assert payload["native_dictation"] is True
+
+
+def test_native_dictation_waits_for_codex_text_without_disabling_send(tmp_path) -> None:
+    from codex_whip.senders.macos_ax import CodexTargetError
+
+    emitted = []
+    voice = VoiceModule(VoiceSettingsStore(tmp_path / "voice.json"), lambda *event: None)
+    voice.mark_native_draft_ready()
+    armed = threading.Event()
+    armed.set()
+    processor = GuiEventProcessor(Settings(), armed, lambda *event: emitted.append(event),
+                                  voice_module=voice)
+
+    class Sender:
+        def submit_existing(self, _event):
+            raise CodexTargetError("Codex 听写尚未生成可发送文字")
+
+    processor._live_sender = Sender()
+    asyncio.run(processor.handle(WhipEvent(45, 900, 3.0, 120)))
+    assert voice.native_draft_pending
+    assert armed.is_set()
+    assert not any(kind == "send_error" for kind, _ in emitted)
+    assert any(kind == "send_result" and "稍后" in result.detail
+               for kind, result in emitted)
 
 
 def _voice_motion_frames(*, second_tap: bool) -> tuple[RawMotionFrame, ...]:

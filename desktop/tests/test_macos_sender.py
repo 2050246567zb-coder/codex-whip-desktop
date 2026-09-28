@@ -233,6 +233,7 @@ def test_macos_dictation_stops_the_exact_button_that_started_it(monkeypatch) -> 
     monkeypatch.setattr(macos_api, "ax_descendants", lambda _root: [composer, button])
     monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
     monkeypatch.setattr(macos_api, "window_for_pid", lambda _pid: window)
+    monkeypatch.setattr(macos_api, "ax_set", lambda *_args: True)
     pressed = []
     _appkit, quartz = macos_api._frameworks()
     quartz.AXUIElementPerformAction = lambda element, action: pressed.append((element, action)) or 0
@@ -242,6 +243,55 @@ def test_macos_dictation_stops_the_exact_button_that_started_it(monkeypatch) -> 
     sender.stop_dictation(session)
 
     assert pressed == [(button, "press"), (button, "press")]
+
+
+def test_macos_dictation_preserves_existing_draft_and_moves_caret(monkeypatch) -> None:
+    attributes, composer, _window = _fake_accessibility(monkeypatch, value="已有草稿")
+    button = object()
+    attributes[button] = {
+        "role": "AXButton", "position": (980.0, 760.0), "size": (36.0, 36.0),
+        "title": "", "description": "Dictate", "help": "",
+    }
+    monkeypatch.setattr(macos_api, "ax_descendants", lambda _root: [composer, button])
+    monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
+    monkeypatch.setattr(macos_api, "ax_set", lambda *_args: True)
+    selected = []
+    monkeypatch.setattr(macos_api, "ax_select_text_end",
+                        lambda _element, value: selected.append(value) or True)
+    _appkit, quartz = macos_api._frameworks()
+    quartz.AXUIElementPerformAction = lambda *_args: 0
+    sender = macos_ax.MacOSCodexSender(CodexSettings())
+
+    sender.start_dictation()
+
+    assert selected == ["已有草稿"]
+    assert attributes[composer]["value"] == "已有草稿"
+
+
+def test_macos_dictation_uses_new_stop_button_when_codex_replaces_toggle(monkeypatch) -> None:
+    attributes, composer, window = _fake_accessibility(monkeypatch, value="")
+    start_button, stop_button = object(), object()
+    for button, description in ((start_button, "Dictate"),
+                                (stop_button, "Stop dictation")):
+        attributes[button] = {
+            "role": "AXButton", "position": (980.0, 760.0), "size": (36.0, 36.0),
+            "title": "", "description": description, "help": "",
+        }
+    current = [composer, start_button]
+    monkeypatch.setattr(macos_api, "ax_descendants", lambda _root: current)
+    monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
+    monkeypatch.setattr(macos_api, "window_for_pid", lambda _pid: window)
+    monkeypatch.setattr(macos_api, "ax_set", lambda *_args: True)
+    pressed = []
+    _appkit, services = macos_api._frameworks()
+    services.AXUIElementPerformAction = lambda element, action: pressed.append(element) or 0
+    sender = macos_ax.MacOSCodexSender(CodexSettings())
+
+    session = sender.start_dictation()
+    current[:] = [composer, stop_button]
+    sender.stop_dictation(session)
+
+    assert pressed == [start_button, stop_button]
 
 
 @pytest.mark.skipif(macos_api.sys.platform != "darwin", reason="requires macOS frameworks")

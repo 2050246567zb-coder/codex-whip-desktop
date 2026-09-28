@@ -14,7 +14,7 @@
 
 namespace {
 
-constexpr char kFirmwareVersion[] = "0.8.3";
+constexpr char kFirmwareVersion[] = "0.8.4";
 constexpr char kDeviceName[] = "CodexWhip";
 constexpr uint32_t kSampleRateHz = 416;
 constexpr uint32_t kSamplePeriodUs = 1000000UL / kSampleRateHz;
@@ -455,11 +455,10 @@ void startVoiceRecording(uint16_t silenceMs, uint16_t maximumRecordingMs) {
   BLEConnection* connection = Bluefruit.Connection(Bluefruit.connHandle());
   const auto voiceLinkReady = [connection]() {
     if (!connection || connection->getMtu() < kVoiceStreamingMtu) return false;
-    // A 128-byte MTU still needs two notifications per 300-sample frame.
-    // Windows' initial 30 ms interval cannot drain those frames in real time;
-    // wait for the HOST,WINDOWS request to settle at 15 ms or faster.
-    return activeHost.system != HostSystem::Windows ||
-           connection->getConnectionInterval() <= activeHost.maxInterval;
+    // A slow connection cannot drain 16 kHz audio in real time. macOS may
+    // retain the 135 ms sleep interval after the handle wakes; wait for the
+    // requested active interval before starting PDM on every host.
+    return connection->getConnectionInterval() <= activeHost.maxInterval;
   };
   if (connection && !voiceLinkReady()) {
     // MTU and interval updates are asynchronous and can still be pending when
