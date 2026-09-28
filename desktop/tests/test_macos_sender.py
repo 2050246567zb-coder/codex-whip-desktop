@@ -113,12 +113,12 @@ def test_macos_recognized_text_appends_and_sends_existing_draft(monkeypatch) -> 
     monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
     monkeypatch.setattr(macos_api, "frontmost_pid", lambda: 321)
     monkeypatch.setattr(macos_api, "ax_set", lambda *_args: True)
-    monkeypatch.setattr(macos_api, "post_command_end", lambda: events.append("end"))
     monkeypatch.setattr(
-        macos_api, "post_unicode_text",
-        lambda text: (events.append("type"), attributes[composer].update(
-            value=attributes[composer]["value"] + text)),
+        macos_api, "ax_append_text",
+        lambda _element, _existing, text: (events.append("append"), attributes[composer].update(
+            value=attributes[composer]["value"] + text), True)[-1],
     )
+    monkeypatch.setattr(macos_api, "post_unicode_text", lambda _text: pytest.fail("keyboard injection used"))
     monkeypatch.setattr(macos_api, "post_return", lambda: events.append("send"))
     monkeypatch.setattr(macos_ax.time, "sleep", lambda _seconds: None)
     sender = macos_ax.MacOSCodexSender(CodexSettings())
@@ -129,7 +129,7 @@ def test_macos_recognized_text_appends_and_sends_existing_draft(monkeypatch) -> 
     assert result.sent
     assert delayed_reads == [2]
     assert attributes[composer]["value"] == "原有十个字  识别的五个字"
-    assert events == ["end", "type", "send"]
+    assert events == ["append", "send"]
 
 
 def test_macos_voice_does_not_submit_if_append_position_is_wrong(monkeypatch) -> None:
@@ -138,10 +138,10 @@ def test_macos_voice_does_not_submit_if_append_position_is_wrong(monkeypatch) ->
     monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
     monkeypatch.setattr(macos_api, "frontmost_pid", lambda: 321)
     monkeypatch.setattr(macos_api, "ax_set", lambda *_args: True)
-    monkeypatch.setattr(macos_api, "post_command_end", lambda: events.append("end"))
     monkeypatch.setattr(
-        macos_api, "post_unicode_text",
-        lambda text: attributes[composer].update(value=text + attributes[composer]["value"]),
+        macos_api, "ax_append_text",
+        lambda _element, _existing, text: (attributes[composer].update(
+            value=text + attributes[composer]["value"]), True)[-1],
     )
     monkeypatch.setattr(macos_api, "post_return", lambda: events.append("send"))
     monkeypatch.setattr(macos_ax.time, "sleep", lambda _seconds: None)
@@ -150,7 +150,62 @@ def test_macos_voice_does_not_submit_if_append_position_is_wrong(monkeypatch) ->
 
     with pytest.raises(macos_ax.CodexTargetError, match="未能验证"):
         sender.send_voice("新语音", None)
-    assert events == ["end"]
+    assert events == []
+
+
+def test_ax_append_text_selects_utf16_end_without_touching_clipboard(monkeypatch):
+    element = object()
+    values = {"value": "草稿😀"}
+    selections = []
+    services = SimpleNamespace(
+        kAXValueCFRangeType=4,
+        CFRange=lambda start, length: (start, length),
+        AXValueCreate=lambda _kind, value: value,
+        kAXSelectedTextRangeAttribute="selection",
+        kAXSelectedTextAttribute="selected_text",
+        kAXValueAttribute="value",
+    )
+    monkeypatch.setattr(macos_api, "_frameworks", lambda: (None, services))
+    monkeypatch.setattr(macos_api, "ax_copy", lambda _element, attr: values.get(attr))
+
+    def set_attribute(_element, attr, value):
+        if attr == "selection":
+            selections.append(value)
+        elif attr == "selected_text":
+            values["value"] += value
+        else:
+            pytest.fail("replaced the entire draft")
+        return True
+
+    monkeypatch.setattr(macos_api, "ax_set", set_attribute)
+    assert macos_api.ax_append_text(element, "草稿😀", "新语音")
+    assert selections == [(4, 0)]
+    assert values["value"] == "草稿😀新语音"
+
+
+def test_ax_append_falls_back_to_verified_full_value(monkeypatch):
+    element = object()
+    values = {"value": "已有草稿"}
+    services = SimpleNamespace(
+        kAXValueCFRangeType=4,
+        CFRange=lambda start, length: (start, length),
+        AXValueCreate=lambda _kind, value: value,
+        kAXSelectedTextRangeAttribute="selection",
+        kAXSelectedTextAttribute="selected_text",
+        kAXValueAttribute="value",
+    )
+    monkeypatch.setattr(macos_api, "_frameworks", lambda: (None, services))
+    monkeypatch.setattr(macos_api, "ax_copy", lambda _element, attr: values.get(attr))
+
+    def set_attribute(_element, attr, value):
+        if attr == "selection":
+            return False
+        values[attr] = value
+        return True
+
+    monkeypatch.setattr(macos_api, "ax_set", set_attribute)
+    assert macos_api.ax_append_text(element, "已有草稿", "新语音")
+    assert values["value"] == "已有草稿新语音"
 
 
 def test_macos_sender_refuses_when_value_cannot_be_read(monkeypatch) -> None:

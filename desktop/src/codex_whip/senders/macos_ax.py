@@ -173,7 +173,8 @@ class MacOSCodexSender:
             if existing is None:
                 raise CodexTargetError("无法确认 Codex 输入框是否为空")
         # A draft is safe to leave untouched while enabling the send switch.
-        # send() still refuses to replace or append to that draft.
+        # Recognized speech may later append to it; ordinary prompts still
+        # refuse to replace it.
         return {
             "title": window.title,
             "pid": window.pid,
@@ -302,16 +303,18 @@ class MacOSCodexSender:
         time.sleep(0.08)
         if macos_api.frontmost_pid() != window.pid:
             raise CodexTargetError("输入前 Codex 已失去前台焦点")
+        expected = (existing or "") + prompt if append_to_draft else prompt
         if append_to_draft and existing:
-            macos_api.post_command_end()
-            time.sleep(0.04)
             current = macos_api.ax_copy(composer.element, services.kAXValueAttribute)
             if current is None or str(current) != existing:
                 raise CodexTargetError("Codex 草稿在输入前发生变化，已取消发送")
-        macos_api.post_unicode_text(prompt)
-        expected = (existing or "") + prompt if append_to_draft else prompt
+            inserted = macos_api.ax_append_text(composer.element, existing, prompt)
+        else:
+            inserted = macos_api.ax_set(composer.element, services.kAXValueAttribute, expected)
+        if not inserted:
+            raise CodexTargetError("Codex 输入框拒绝无障碍文字输入，已取消发送")
         # Electron may publish its updated Accessibility value a few frames
-        # after receiving keyboard events. Wait briefly before judging it.
+        # after an accessibility edit. Wait briefly before judging it.
         for attempt in range(8):
             if macos_api.frontmost_pid() != window.pid:
                 raise CodexTargetError("提交前 Codex 已失去前台焦点")
