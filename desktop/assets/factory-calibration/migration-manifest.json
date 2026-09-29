@@ -10,23 +10,38 @@
     },
     {
       "path": "double-tap-profile-v2.json",
-      "size": 27859,
-      "sha256": "6e824373bb60220de1077bc5e9fb2cb310972b80eccb5169a900d9789f21f1cc"
+      "size": 27807,
+      "sha256": "8e3dc365bb1b1e068c65cf60f1347eef8bb6911505962013ce63af442347a28d"
     },
     {
       "path": "mounting-profile.json",
-      "size": 215,
-      "sha256": "84dd4e4407a8b4a1a85e0fc1db3342fc762d1d6fe9d12cf197aa0b6cfe79ab42"
+      "size": 214,
+      "sha256": "7c02f3611e4a5850a6f9aada26f16f04638b06de770800ec4033aaba339b6ed5"
     },
     {
       "path": "voice-settings.json",
-      "size": 445,
-      "sha256": "7eb617a9548f064b3401a8483533f3da410784a725b16bb2cc8d02508e386217"
+      "size": 514,
+      "sha256": "a6a64736ab5d4306efedf0d6e226d38abdefa6b91ee1c291ff231b7c9c05bbe2"
     },
     {
       "path": "whip-sensitivity.json",
-      "size": 503,
-      "sha256": "0cb1093447e3677336378b53a9b16d5e8aba56a96e80be33624b13decdfe0083"
+      "size": 504,
+      "sha256": "9079cfd3dd954f792dc59bfb4049fd99e421157d0b1eb58fa54c8533b9099904"
+    },
+    {
+      "path": "visual-settings.json",
+      "size": 221,
+      "sha256": "572e0198964fe9401ec28ef4f7dfc94dff3bf46afcd03b358ec44b846a746c04"
+    },
+    {
+      "path": "power-settings.json",
+      "size": 22,
+      "sha256": "aa014142a0168313a765dd1211c4c605eb3f15107ab0e1a27ec472170a5fbeca"
+    },
+    {
+      "path": "message-profile.json",
+      "size": 138,
+      "sha256": "5646d5afe4c6f05cc45e39feeb2807672f23a696866609e583c4bc4299293125"
     }
   ]
 }

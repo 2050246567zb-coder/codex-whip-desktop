@@ -32,9 +32,10 @@ from .calibration import (
 from .effects import CodexWhipEffects
 from .gate import EventGate
 from .hotkeys import GlobalHotkey, HotkeyRegistrationError, parse_hotkey
-from .messages import MessageProfileStore, PromptSelector
+from .messages import MessageProfileStore, PromptSelector, load_message_profile
 from .migration import (bundled_factory_calibration_dir, import_bundled_profile_once,
-                        import_factory_calibration_once)
+                        import_factory_calibration_once, restore_factory_defaults as restore_factory_files,
+                        FACTORY_DEFAULT_FILES)
 from .models import (
     AudioChunk,
     AudioEnd,
@@ -64,9 +65,11 @@ from .voice import (
     VoiceSettings,
     VoiceSettingsStore,
     WhisperCppTranscriber,
+    load_double_tap_profile,
+    load_voice_settings,
 )
-from .visual_settings import VisualSettings, VisualSettingsStore
-from .interface_state import audio_display_level
+from .visual_settings import VisualSettings, VisualSettingsStore, load_visual_settings
+from .interface_state import audio_display_level, initialize_fresh_preferences
 from .virtual_microphone import VirtualMicrophoneBridge, VirtualMicrophoneError
 
 
@@ -1064,6 +1067,55 @@ class CodexWhipWindow:
             self.worker_loop.call_soon_threadsafe(self.processor.set_mounting_profile, profile)
         self.sensor_calibrate_button.configure(text="开始校准")
         self.last_event_value.set("方向已恢复默认；请将手柄对准屏幕静止三秒完成归中。")
+
+    def restore_factory_defaults(self) -> None:
+        """Apply the public Mac defaults without touching identity or history."""
+        parent = self.ui.settings if self.ui.settings.winfo_viewable() else self.root
+        if self.ui.stage == 'calibrate' or (self.processor is not None
+                and self.processor._mount_session is not None):
+            messagebox.showinfo("正在校准", "请先完成或取消当前方向校准。", parent=parent)
+            return
+        if not messagebox.askyesno(
+            "恢复默认设置",
+            "将挥鞭、双敲、方向、语音、发送、省电、音效、伤口频率和预设文字恢复为 Mac 默认值？\n"
+            "原设置会在本机备份；蓝牙设备、窗口位置、引导状态、录音、日志和传感器偏置不会改变。",
+            parent=parent,
+        ):
+            return
+        result = restore_factory_files()
+        if result.errors or set(result.restored) != FACTORY_DEFAULT_FILES:
+            messagebox.showerror("无法恢复默认", "出厂设置文件不完整或校验失败：" +
+                                 "；".join(result.errors), parent=parent)
+            return
+        self.detector_profile = load_profile(self.detector_profile_path)
+        voice = load_voice_settings(self.voice_store.path)
+        visual = load_visual_settings(self.visual_store.path)
+        messages = load_message_profile(self.message_store.path, self.settings.messages)
+        mounting = load_mounting_profile(self.mounting_path)
+        tap = load_double_tap_profile(self.voice_module.double_tap_profile_path)
+        if mounting is None or tap is None:
+            messagebox.showerror("无法恢复默认", "方向或双敲模板无效。", parent=parent)
+            return
+        self.voice_module.double_tap_profile = tap
+        self.message_store.update(messages)
+        self._queue_detector_profile()
+        self.apply_voice_settings(voice)
+        self.apply_visual_settings(visual)
+        self.apply_power_settings(PowerSettings(self.power_store.path).enabled)
+        self.ui.preferences.send_enabled = True
+        self.ui._persist()  # Keeps setup_complete and reduce_motion as they were.
+        self._restore_send_state()
+        if self.worker_loop is not None and self.processor is not None:
+            self.worker_loop.call_soon_threadsafe(self.processor.set_mounting_profile, mounting)
+        self.sensor_calibrate_button.configure(text="开始校准")
+        self.ui.power_enabled.set(self.power_store.enabled)
+        self.ui.wounds_enabled.set(visual.wounds_enabled)
+        self.ui.sound_enabled.set(visual.sound_enabled)
+        if self.settings_window is not None:
+            self.settings_window.refresh_factory_defaults(
+                self.detector_profile, voice, visual, messages, self.power_store.enabled
+            )
+        self.last_event_value.set("Mac 默认设置已恢复。")
 
     def open_mount_calibration(self) -> None:
         if self.worker_loop is None or self.processor is None:
@@ -2078,6 +2130,7 @@ def main() -> int:
     if "--ui-smoke" in sys.argv:
         from .ui_smoke import main as smoke_main
         return smoke_main(sys.argv[sys.argv.index("--ui-smoke") + 1:])
+    initialize_fresh_preferences(user_data_dir())
     factory_calibration = import_factory_calibration_once()
     log_path = user_data_dir() / "runtime.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)

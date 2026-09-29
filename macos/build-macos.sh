@@ -73,6 +73,7 @@ cd "$DESKTOP_DIR"
   --windowed \
   --name CodexWhip \
   --osx-bundle-identifier com.codexwhip.desktop \
+  --icon "$DESKTOP_DIR/assets/icon/codex-whip.icns" \
   --add-data "assets:assets" \
   --collect-submodules AppKit \
   --collect-submodules Quartz \

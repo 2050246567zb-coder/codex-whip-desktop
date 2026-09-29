@@ -5,7 +5,9 @@ import json
 import os
 import shutil
 import sys
+import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from .paths import user_data_dir
@@ -13,6 +15,16 @@ from .paths import user_data_dir
 
 MIGRATION_MANIFEST = "migration-manifest.json"
 FACTORY_CALIBRATION_DIRECTORY = "factory-calibration"
+FACTORY_DEFAULT_FILES = frozenset({
+    "detector-profile.json",
+    "double-tap-profile-v2.json",
+    "mounting-profile.json",
+    "voice-settings.json",
+    "whip-sensitivity.json",
+    "visual-settings.json",
+    "power-settings.json",
+    "message-profile.json",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +32,13 @@ class MigrationResult:
     source: Path | None
     imported: tuple[str, ...]
     preserved: tuple[str, ...]
+    errors: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FactoryRestoreResult:
+    restored: tuple[str, ...]
+    backup: Path | None
     errors: tuple[str, ...]
 
 
@@ -83,6 +102,8 @@ def _sha256(path: Path) -> str:
 def import_migration_data(
     source: Path,
     destination: Path | None = None,
+    *,
+    allowed_paths: frozenset[str] | None = None,
 ) -> MigrationResult:
     target_root = destination or user_data_dir()
     imported: list[str] = []
@@ -103,6 +124,9 @@ def import_migration_data(
         relative = str(entry.get("path", "")).replace("\\", "/").strip("/")
         if not relative or ".." in Path(relative).parts:
             errors.append(f"拒绝不安全的迁移路径：{relative!r}")
+            continue
+        if allowed_paths is not None and relative not in allowed_paths:
+            errors.append(f"拒绝非出厂设置文件：{relative!r}")
             continue
         source_file = source / Path(relative)
         target_file = target_root / Path(relative)
@@ -150,4 +174,67 @@ def import_factory_calibration_once() -> MigrationResult:
     source = bundled_factory_calibration_dir()
     if source is None:
         return MigrationResult(None, (), (), ())
-    return import_migration_data(source)
+    return import_migration_data(source, allowed_paths=FACTORY_DEFAULT_FILES)
+
+
+def restore_factory_defaults(
+    destination: Path | None = None, *, source: Path | None = None,
+) -> FactoryRestoreResult:
+    """Back up and replace only verified product settings; roll back on failure."""
+
+    source = source or bundled_factory_calibration_dir()
+    if source is None:
+        return FactoryRestoreResult((), None, ("安装包中没有可用的默认设置。",))
+    target_root = destination or user_data_dir()
+    try:
+        manifest = json.loads((source / MIGRATION_MANIFEST).read_text(encoding="utf-8"))
+        entries = manifest["files"]
+        if (manifest.get("schema_version") != 1
+                or not isinstance(entries, list)
+                or {entry["path"] for entry in entries} != FACTORY_DEFAULT_FILES):
+            raise ValueError("出厂设置清单不完整")
+        payloads: dict[str, bytes] = {}
+        for entry in entries:
+            name = entry["path"]
+            data = (source / name).read_bytes()
+            if (len(data) != int(entry["size"])
+                    or hashlib.sha256(data).hexdigest() != entry["sha256"]):
+                raise ValueError(f"出厂设置文件校验失败：{name}")
+            payloads[name] = data
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        return FactoryRestoreResult((), None, (str(exc),))
+
+    backup = (target_root / "factory-backups"
+              / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}")
+    originals: dict[str, bytes | None] = {}
+    changed: list[str] = []
+    try:
+        backup.mkdir(parents=True, exist_ok=False)
+        for name in sorted(payloads):
+            path = target_root / name
+            old = path.read_bytes() if path.exists() else None
+            originals[name] = old
+            if old is not None:
+                (backup / name).write_bytes(old)
+        for name, data in sorted(payloads.items()):
+            path = target_root / name
+            temporary = path.with_suffix(path.suffix + ".restoring")
+            temporary.write_bytes(data)
+            temporary.replace(path)
+            changed.append(name)
+    except OSError as exc:
+        for name in reversed(changed):
+            path = target_root / name
+            previous = originals[name]
+            try:
+                if previous is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    rollback = path.with_suffix(path.suffix + ".rollback")
+                    rollback.write_bytes(previous)
+                    rollback.replace(path)
+            except OSError:
+                pass  # The backup remains available for manual recovery.
+        return FactoryRestoreResult((), backup if backup.exists() else None,
+                                    (str(exc),))
+    return FactoryRestoreResult(tuple(changed), backup, ())

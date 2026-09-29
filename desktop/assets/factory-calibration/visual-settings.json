@@ -1,0 +1,10 @@
+{
+  "schema_version": 3,
+  "strikes_per_wound": 2,
+  "wounds_enabled": true,
+  "sound_enabled": true,
+  "scare_enabled": false,
+  "scare_hotkey": "ctrl+alt+shift+x",
+  "scare_blackout_ms": 2000,
+  "scare_eyes_ms": 3000
+}

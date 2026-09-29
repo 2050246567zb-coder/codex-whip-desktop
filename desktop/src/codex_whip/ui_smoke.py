@@ -22,13 +22,26 @@ def main(argv=None) -> int:
     from .effects import CodexWhipEffects
     from .sensor_pose import SensorPose
     from .settings import Settings
+    from .migration import FACTORY_DEFAULT_FILES, import_factory_calibration_once
+    from .interface_state import initialize_fresh_preferences, InterfacePreferences
     from PIL import ImageGrab
 
     report = {"synthetic": True, "native_overlay_tested": False,
               "screenshots": [], "capture_errors": [], "callback_errors": [],
-              "high_rate_event_buffer_drained": False}
+              "high_rate_event_buffer_drained": False, "factory_defaults_loaded": False}
     with tempfile.TemporaryDirectory(prefix="codex-whip-ui-") as data, ExitStack() as stack:
         stack.enter_context(patch.dict(os.environ, {"CODEX_WHIP_DATA_DIR": data}))
+        initialize_fresh_preferences(Path(data))
+        factory = import_factory_calibration_once()
+        report["factory_defaults_loaded"] = (
+            set(factory.imported) == FACTORY_DEFAULT_FILES and not factory.errors
+        )
+        if not report["factory_defaults_loaded"]:
+            raise RuntimeError("Packaged factory defaults are missing or invalid")
+        if InterfacePreferences.load(
+            Path(data) / "interface-preferences.json", already_calibrated=True
+        ).setup_complete:
+            raise RuntimeError("New-user tour was incorrectly marked complete")
         fake_effects = Mock()
         fake_effects.preview_frame.return_value = (CodexWhipEffects.IDLE, (0., 0.))
         fake_effects.target_active.return_value = True

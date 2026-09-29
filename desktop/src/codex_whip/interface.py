@@ -791,8 +791,10 @@ class Interface:
                          font=(FONT, 10)).pack(anchor="w", pady=(12,0))
 
         self._calibration_action_card = style.RoundedCard(self.host, padx=24, pady=24)
-        button(self._calibration_action_card, "恢复默认", a.restore_factory_direction,
+        button(self._calibration_action_card, "恢复默认", a.restore_factory_defaults,
                primary=True).pack(side='left')
+        button(self._calibration_action_card, "恢复方向", a.restore_factory_direction,
+               primary=True).pack(side='left', padx=(8, 0))
         button(self._calibration_action_card, "引导教程", self.restart_setup,
                primary=True).pack(side='left', padx=(8, 0))
         a.sensor_calibrate_button = button(

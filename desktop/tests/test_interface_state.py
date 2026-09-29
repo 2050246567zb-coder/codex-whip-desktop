@@ -1,5 +1,7 @@
 import json
-from codex_whip.interface_state import InterfacePreferences, audio_display_level
+from codex_whip.interface_state import (
+    InterfacePreferences, audio_display_level, initialize_fresh_preferences,
+)
 from codex_whip.models import AudioChunk
 
 
@@ -28,6 +30,16 @@ def test_first_use_and_corrupt_preferences_are_safe(tmp_path):
     path.write_text('{"setup_complete":"false"}')
     assert not InterfacePreferences.load(path, already_calibrated=True).setup_complete
     assert InterfacePreferences.load(path, already_calibrated=True).send_enabled is True
+
+
+def test_fresh_defaults_keep_tour_pending_and_preserve_existing_profile(tmp_path):
+    assert initialize_fresh_preferences(tmp_path)
+    path = tmp_path / "interface-preferences.json"
+    assert InterfacePreferences.load(path, already_calibrated=True).setup_complete is False
+    assert InterfacePreferences.load(path, already_calibrated=True).send_enabled is True
+    path.write_text('{"setup_complete": true, "send_enabled": false}')
+    assert not initialize_fresh_preferences(tmp_path)
+    assert InterfacePreferences.load(path, already_calibrated=True).send_enabled is False
 
 
 def test_meter_is_real_pcm_rms_and_invalid_packets_are_silent():

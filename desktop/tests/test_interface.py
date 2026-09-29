@@ -103,6 +103,48 @@ def test_send_failure_keeps_switch_and_recognized_text_ready(app):
     assert app.voice_module.pending_text == "保留的识别文字"
 
 
+def test_restore_mac_defaults_updates_live_settings_without_erasing_personal_data(
+    app, monkeypatch, tmp_path,
+):
+    from codex_whip.calibration import load_profile
+    from codex_whip.messages import MessageProfile
+    from codex_whip.interface_state import InterfacePreferences
+
+    monkeypatch.setattr("codex_whip.gui.messagebox.askyesno", lambda *a, **kw: True)
+    monkeypatch.setattr(app, "prepare_voice_model", lambda: None)
+    app.ui.stage = "ready"
+    app.ui.preferences.setup_complete = True
+    app.ui.preferences.send_enabled = False
+    assert app.ui._persist()
+    app.message_store.update(MessageProfile("sequential", ("个人文字",)))
+    (tmp_path / "ble-device-preference.json").write_text('{"device": "private"}')
+    (tmp_path / "recognition-history.jsonl").write_text("private history\n")
+    (tmp_path / "sensor-bias.json").write_text('{"bias": "private"}')
+    app.ui.open_preferences()
+
+    app.restore_factory_defaults()
+
+    assert app.detector_profile == load_profile(app.detector_profile_path)
+    assert app.detector_profile.start_gyro_dps == 166.6667
+    assert app.voice_store.settings.recording_gain == 3.64718853
+    assert app.voice_store.settings.silence_ms == 2200
+    assert app.voice_module.double_tap_profile.trained
+    assert app.power_store.enabled is True
+    assert app.visual_store.settings.strikes_per_wound == 2
+    assert app.visual_store.settings.sound_enabled is True
+    assert app.message_store.profile.messages == (
+        "继续当前任务，先完成一个可验证的关键节点。",
+    )
+    assert app.settings_window._message_values == list(app.message_store.profile.messages)
+    assert app.settings_window.visual_strikes_per_wound.get() == "2"
+    assert app.settings_window.power_enabled.get() is True
+    assert InterfacePreferences.load(app.ui.path, already_calibrated=False).setup_complete
+    assert app.ui.preferences.send_enabled is True
+    assert (tmp_path / "ble-device-preference.json").read_text() == '{"device": "private"}'
+    assert (tmp_path / "recognition-history.jsonl").read_text() == "private history\n"
+    assert (tmp_path / "sensor-bias.json").read_text() == '{"bias": "private"}'
+
+
 def test_hover_clock_is_local_interruptible_and_yields_to_recording(app):
     app.ui.hero.set_mode('whip')
     app.ui.hero._clock_started -= 1

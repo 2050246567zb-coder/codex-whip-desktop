@@ -35,6 +35,15 @@ class InterfacePreferences:
         temporary.replace(path)
 
 
+def initialize_fresh_preferences(data_dir: Path) -> bool:
+    """Keep a first install in the tour even when factory direction is preloaded."""
+
+    if data_dir.exists() and any(data_dir.iterdir()):
+        return False
+    InterfacePreferences().save(data_dir / "interface-preferences.json")
+    return True
+
+
 def audio_display_level(chunk: AudioChunk) -> float:
     """Read-only RMS meter, independently decoded from the recorded ADPCM chunk."""
     try:

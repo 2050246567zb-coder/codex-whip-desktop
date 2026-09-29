@@ -1604,8 +1604,30 @@ class DetectorSettingsWindow:
                 self.tolerance_scale.set(self._sensitivity.percent)
 
     def restore_defaults(self) -> None:
-        self._populate(DetectorProfile())
+        from .migration import bundled_factory_calibration_dir
+        from .calibration import load_profile
+        source = bundled_factory_calibration_dir()
+        self._populate(load_profile(source / "detector-profile.json") if source else DetectorProfile())
         self.apply_status.set("已载入默认值，尚未保存")
+
+    def refresh_factory_defaults(
+        self, profile: DetectorProfile, voice: VoiceSettings,
+        visual: VisualSettings, messages: MessageProfile, power_enabled: bool,
+    ) -> None:
+        self._populate(profile)
+        self._sensitivity = WhipSensitivity(profile)
+        self.tolerance_scale.set(self._sensitivity.percent)
+        self.refresh_voice_settings(voice)
+        self.power_enabled.set(power_enabled)
+        self._message_values = list(messages.messages)
+        self.message_order.set(messages.order)
+        self._render_message_cards()
+        self.visual_frequency_value.set(visual.strikes_per_wound)
+        self.visual_strikes_per_wound.set(str(visual.strikes_per_wound))
+        self.visual_frequency_label.set(
+            f"伤口出现频率：每抽打{visual.strikes_per_wound}次出现一次"
+        )
+        self.apply_status.set("已恢复 Mac 默认值")
 
     def _commit_tolerance(self, _event=None):
         if self._stage in {"positive", "negative"}:
