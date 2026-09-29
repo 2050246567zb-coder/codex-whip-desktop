@@ -260,6 +260,7 @@ def test_macos_paste_restores_clipboard_unless_user_changes_it(monkeypatch):
             return self.items
         def writeObjects_(self, items):
             self.items = self.items + items
+            self.count += 1
             return True
         def clearContents(self):
             self.items = []
@@ -278,6 +279,37 @@ def test_macos_paste_restores_clipboard_unless_user_changes_it(monkeypatch):
         board.clearContents()
         board.writeObjects_([Item()])  # Another application copied something.
     assert board.items[0].values == {}
+
+
+@pytest.mark.parametrize("shortcut,key", [
+    (macos_api.post_command_paste, 9),
+    (macos_api.post_command_end, 125),
+])
+def test_macos_command_shortcut_releases_modifier(monkeypatch, shortcut, key):
+    events = []
+    def create(_source, virtual_key, down):
+        return {"key": virtual_key, "down": down, "flags": 0}
+    def set_flags(event, flags):
+        event["flags"] = flags
+    def post(_tap, event):
+        events.append((event["key"], event["down"], event["flags"]))
+    services = SimpleNamespace(
+        CGEventCreateKeyboardEvent=create,
+        CGEventSetFlags=set_flags,
+        CGEventPost=post,
+        kCGEventFlagMaskCommand=0x100,
+        kCGHIDEventTap=1,
+    )
+    monkeypatch.setattr(macos_api, "_frameworks", lambda: (None, services))
+
+    shortcut()
+
+    assert events == [
+        (55, True, 0x100),
+        (key, True, 0x100),
+        (key, False, 0x100),
+        (55, False, 0),
+    ]
 
 
 def test_macos_left_click_posts_mouse_down_and_up(monkeypatch):

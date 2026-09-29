@@ -326,22 +326,31 @@ def post_unicode_text(text: str) -> None:
         services.CGEventPost(services.kCGHIDEventTap, up)
 
 
+def _post_command_shortcut(virtual_key: int) -> None:
+    """Post a complete Command chord, including the modifier's key-up event."""
+    _appkit, services = _frameworks()
+    command_down = services.CGEventCreateKeyboardEvent(None, 55, True)
+    services.CGEventSetFlags(command_down, services.kCGEventFlagMaskCommand)
+    services.CGEventPost(services.kCGHIDEventTap, command_down)
+    try:
+        for pressed in (True, False):
+            event = services.CGEventCreateKeyboardEvent(None, virtual_key, pressed)
+            services.CGEventSetFlags(event, services.kCGEventFlagMaskCommand)
+            services.CGEventPost(services.kCGHIDEventTap, event)
+    finally:
+        command_up = services.CGEventCreateKeyboardEvent(None, 55, False)
+        services.CGEventSetFlags(command_up, 0)
+        services.CGEventPost(services.kCGHIDEventTap, command_up)
+
+
 def post_command_end() -> None:
     """Move the focused macOS text caret to the end of its document."""
-    _appkit, services = _frameworks()
-    for pressed in (True, False):
-        event = services.CGEventCreateKeyboardEvent(None, 125, pressed)
-        services.CGEventSetFlags(event, services.kCGEventFlagMaskCommand)
-        services.CGEventPost(services.kCGHIDEventTap, event)
+    _post_command_shortcut(125)
 
 
 def post_command_paste() -> None:
     """Paste into the focused editor through its normal keyboard handler."""
-    _appkit, services = _frameworks()
-    for pressed in (True, False):
-        event = services.CGEventCreateKeyboardEvent(None, 9, pressed)
-        services.CGEventSetFlags(event, services.kCGEventFlagMaskCommand)
-        services.CGEventPost(services.kCGHIDEventTap, event)
+    _post_command_shortcut(9)
 
 
 def post_left_click(x: float, y: float) -> None:
@@ -384,6 +393,7 @@ def temporary_clipboard_text(text: str):
     try:
         if not pasteboard.writeObjects_([replacement]):
             raise MacOSAPIError("无法将识别文字写入临时剪贴板")
+        owned_count = pasteboard.changeCount()
         yield
     finally:
         if pasteboard.changeCount() == owned_count:
