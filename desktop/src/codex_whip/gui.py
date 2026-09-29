@@ -506,11 +506,14 @@ class GuiEventProcessor:
                 )
                 self._emit("send_error", str(exc))
                 return
-        if result.sent and voice_prompt is not None and self._voice is not None:
+        if (result.sent or result.text_may_be_inserted) and voice_prompt is not None and self._voice is not None:
             self._voice.mark_sent(prompt)
         if result.sent and native_draft and self._voice is not None:
             self._voice.clear_native_draft()
-        self._emit("send_result", result)
+        if not result.sent and result.text_may_be_inserted:
+            self._emit("send_error", result.detail)
+        else:
+            self._emit("send_result", result)
 
     def calibrate_sensor_neutral(self) -> None:
         """Calibrate the latest hand-held orientation on the worker thread."""
@@ -677,6 +680,7 @@ class CodexWhipWindow:
         self.command_queue: asyncio.Queue[str] | None = None
         self.closing = False
         self.ble_connected = False
+        self._last_battery_power_log: tuple[bool, bool] | None = None
         self.firmware_supports_settings = False
         self.firmware_supports_raw = False
         self.firmware_supports_voice = False
@@ -879,6 +883,15 @@ class CodexWhipWindow:
             logging.getLogger(__name__).info("Voice event: %s", kind)
             if kind == "voice_error":
                 logging.getLogger(__name__).warning("Voice error: %s", str(payload)[:240])
+        elif kind == "whip":
+            logging.getLogger(__name__).info(
+                "Whip event: sequence=%s voice_prompt=%s",
+                payload.get("sequence"), bool(payload.get("voice_prompt")),
+            )
+        elif kind == "send_result":
+            logging.getLogger(__name__).info("Codex send result: sent=%s", payload.sent)
+        elif kind == "send_error":
+            logging.getLogger(__name__).warning("Codex send event failed")
         self.events.put((kind, payload))
 
     def _hang_heartbeat(self) -> None:
@@ -1634,9 +1647,17 @@ class CodexWhipWindow:
                         except ValueError as exc:
                             self._append_log(f'设备电量数据无效：{exc}')
                         else:
+                            power_state = (battery.charging, battery.external_power)
+                            if power_state != self._last_battery_power_log:
+                                logging.getLogger(__name__).info(
+                                    "Battery status: percent=%d charging=%d external_power=%d",
+                                    battery.percent, battery.charging, battery.external_power,
+                                )
+                                self._last_battery_power_log = power_state
                             self.ui.observe('battery', {
                                 'percent': battery.percent,
                                 'charging': battery.charging,
+                                'external_power': battery.external_power,
                             })
                     elif message.kind == 'TAPCFG' and len(message.fields) >= 2:
                         if message.fields[0] == 'OK':
@@ -1752,11 +1773,7 @@ class CodexWhipWindow:
                     self._append_log(str(payload.detail))
                 elif kind == "send_error":
                     self._append_log(f"发送被拒绝：{payload}")
-                    self.armed.clear()
-                    self.arm_value.set(False)
-                    self.mode_value.set("发送已暂停")
-                    self.ui.preferences.send_enabled = False
-                    self.ui._persist()
+                    self._append_log("发送开关保持开启；请核对 Codex 草稿后再试")
                 elif kind == "worker_started":
                     self._append_log("监听服务已启动")
                 elif kind == "worker_stopped":

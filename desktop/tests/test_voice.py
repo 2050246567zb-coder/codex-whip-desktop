@@ -1,5 +1,7 @@
 import asyncio
 import hashlib
+import json
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -31,6 +33,17 @@ def test_legacy_voice_settings_are_discarded(tmp_path):
     assert restored.recording_gain == 2
     with pytest.raises(ValueError, match="输入方式"):
         VoiceSettings(input_mode="virtual_microphone").validated()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Mac-only default migration")
+def test_mac_legacy_silence_default_migrates_once(tmp_path):
+    path = tmp_path / "voice.json"
+    path.write_text(json.dumps({"schema_version": 2, "silence_ms": 1200}))
+    assert load_voice_settings(path).silence_ms == 2200
+
+    explicit = VoiceSettings(silence_ms=1200)
+    VoiceSettingsStore(path).update(explicit)
+    assert load_voice_settings(path).silence_ms == 1200
 
 
 def _frame(timestamp: int, dynamic: float = 0.0, gyro: float = 0.0) -> RawMotionFrame:

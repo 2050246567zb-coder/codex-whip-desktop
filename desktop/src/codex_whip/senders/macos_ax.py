@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import time
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -204,6 +205,15 @@ class MacOSCodexSender:
                 matches.append(element)
         return matches[0] if len(matches) == 1 else None
 
+    def _submit_composer(self, window: macos_api.MacWindow) -> str:
+        """Submit once with Return addressed directly to the Codex process."""
+        if macos_api.frontmost_pid() != window.pid:
+            raise CodexTargetError("提交前 Codex 已失去前台焦点")
+        macos_api.post_return_to_pid(window.pid)
+        method = "targeted-return"
+        logging.getLogger(__name__).info("Codex submit event posted via %s", method)
+        return method
+
     def _dictation_button(self, window: macos_api.MacWindow) -> Any:
         _appkit, services = macos_api._frameworks()
         accepted = {"听写", "dictate", "dictation", "voice input", "语音输入"}
@@ -303,33 +313,44 @@ class MacOSCodexSender:
         time.sleep(0.08)
         if macos_api.frontmost_pid() != window.pid:
             raise CodexTargetError("输入前 Codex 已失去前台焦点")
-        expected = (existing or "") + prompt if append_to_draft else prompt
+        # AXFocused can report success while Codex still routes keyboard input
+        # to a transient copy/paste menu. A physical left click establishes
+        # editor focus before moving the caret or pasting.
+        macos_api.post_left_click(
+            composer.left + composer.width / 2,
+            composer.top + composer.height / 2,
+        )
+        time.sleep(0.12)
+        if macos_api.frontmost_pid() != window.pid:
+            raise CodexTargetError("点击输入框后 Codex 已失去前台焦点")
         if append_to_draft and existing:
+            macos_api.post_command_end()
+            time.sleep(0.04)
             current = macos_api.ax_copy(composer.element, services.kAXValueAttribute)
             if current is None or str(current) != existing:
                 raise CodexTargetError("Codex 草稿在输入前发生变化，已取消发送")
-            inserted = macos_api.ax_append_text(composer.element, existing, prompt)
-        else:
-            inserted = macos_api.ax_set(composer.element, services.kAXValueAttribute, expected)
-        if not inserted:
-            raise CodexTargetError("Codex 输入框拒绝无障碍文字输入，已取消发送")
-        # Electron may publish its updated Accessibility value a few frames
-        # after an accessibility edit. Wait briefly before judging it.
-        for attempt in range(8):
-            if macos_api.frontmost_pid() != window.pid:
-                raise CodexTargetError("提交前 Codex 已失去前台焦点")
-            inserted = macos_api.ax_copy(composer.element, services.kAXValueAttribute)
-            if inserted is not None and str(inserted) == expected:
-                break
-            if attempt < 7:
-                time.sleep(0.05)
-        else:
-            raise CodexTargetError("Codex 输入内容未能验证，已拒绝提交")
-        button = self._send_button(window)
-        if button is not None:
-            error = services.AXUIElementPerformAction(button, services.kAXPressAction)
-            if int(error) != int(services.kAXErrorSuccess):
-                macos_api.post_return()
-        else:
-            macos_api.post_return()
-        return SendResult(True, "消息已提交到 macOS Codex 窗口")
+        input_attempted = False
+        try:
+            with macos_api.temporary_clipboard_text(prompt):
+                input_attempted = True
+                macos_api.post_command_paste()
+                time.sleep(1.0)
+                if macos_api.frontmost_pid() != window.pid:
+                    raise CodexTargetError("粘贴后 Codex 已失去前台焦点")
+                self._submit_composer(window)
+                time.sleep(0.08)
+        except Exception as exc:
+            if input_attempted:
+                logging.getLogger(__name__).warning(
+                    "Codex submit stopped after input: %s: %s",
+                    type(exc).__name__, str(exc)[:180],
+                )
+                return SendResult(
+                    False,
+                    f"文字可能已进入 Codex，但未能确认发送：{exc}；请核对输入框并手动发送",
+                    text_may_be_inserted=True,
+                )
+            if isinstance(exc, macos_api.MacOSAPIError):
+                raise CodexTargetError(str(exc)) from exc
+            raise
+        return SendResult(True, "已向 Codex 定向发送回车，请确认消息已发出", text_may_be_inserted=True)

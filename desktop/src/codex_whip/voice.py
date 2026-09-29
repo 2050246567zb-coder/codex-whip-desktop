@@ -113,7 +113,7 @@ class VoiceSettings:
     pre_still_ms: int = 220
     settle_ms: int = 60
     max_pulse_ms: int = 120
-    silence_ms: int = 1200
+    silence_ms: int = 2200 if sys.platform == "darwin" else 1200
     max_recording_ms: int = 15000
     tap_force_calibrated: bool = False
     tap_light_g: float = 0.0
@@ -179,6 +179,12 @@ def load_voice_settings(path: Path) -> VoiceSettings:
         # the new precise-recognition switch. Keep thresholds and gain intact.
         values["input_mode"] = "transcription"
         values["speech_provider"] = "doubao-v2"
+        # Earlier Mac builds saved 1200 ms as the default, which cuts off
+        # natural pauses. Migrate that default once; a later explicit choice
+        # of 1200 ms remains valid.
+        if (sys.platform == "darwin" and values.get("silence_ms") == 1200
+                and not data.get("mac_silence_migrated")):
+            values["silence_ms"] = 2200
         return VoiceSettings(**values).validated()
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return fallback
@@ -190,7 +196,9 @@ def save_voice_settings(path: Path, settings: VoiceSettings) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(
         json.dumps(
-            {"schema_version": VOICE_SETTINGS_SCHEMA, **asdict(value)},
+            {"schema_version": VOICE_SETTINGS_SCHEMA,
+             "mac_silence_migrated": sys.platform == "darwin",
+             **asdict(value)},
             ensure_ascii=False,
             indent=2,
         )

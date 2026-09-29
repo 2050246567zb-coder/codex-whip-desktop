@@ -15,7 +15,7 @@ from codex_whip.gui import (
 )
 from codex_whip.models import DeviceMessage, RawMotionBatch, RawMotionFrame, WhipEvent
 from codex_whip.senders.base import SendResult
-from codex_whip.settings import Settings
+from codex_whip.settings import EventSettings, Settings
 from codex_whip.voice import VoiceModule, VoiceSettingsStore
 from codex_whip.visual_settings import VisualSettings, VisualSettingsStore
 
@@ -323,6 +323,40 @@ def test_pending_voice_text_has_priority_and_clears_only_after_send(tmp_path) ->
     whip_payload = next(payload for kind, payload in emitted if kind == "whip")
     assert whip_payload["voice_prompt"] is True
     assert voice.pending_text is None
+
+
+def test_unconfirmed_paste_does_not_repeat_on_another_whip(tmp_path) -> None:
+    emitted: list[tuple[str, object]] = []
+    voice = VoiceModule(
+        VoiceSettingsStore(tmp_path / "voice.json"),
+        lambda kind, payload: emitted.append((kind, payload)),
+    )
+    voice.set_pending("同一句识别文字")
+    armed = threading.Event()
+    armed.set()
+    processor = GuiEventProcessor(
+        Settings(events=EventSettings(minimum_interval_seconds=0)),
+        armed,
+        lambda kind, payload: emitted.append((kind, payload)),
+        voice_module=voice,
+    )
+    calls = []
+
+    class Sender:
+        def send(self, *_args):
+            raise AssertionError("recognized speech must not use a preset prompt")
+
+        def send_voice(self, prompt, _event):
+            calls.append(prompt)
+            return SendResult(False, "文字已粘贴，需手动确认发送", text_may_be_inserted=True)
+
+    processor._live_sender = Sender()
+    asyncio.run(processor.handle(WhipEvent(61, 900, 3.0, 120)))
+    asyncio.run(processor.handle(WhipEvent(62, 900, 3.0, 120)))
+
+    assert calls == ["同一句识别文字"]
+    assert voice.pending_text is None
+    assert any(kind == "send_error" for kind, _payload in emitted)
 
 
 def test_voice_input_never_sends_a_preset_without_recognized_text(tmp_path) -> None:

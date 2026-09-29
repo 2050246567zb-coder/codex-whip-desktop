@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -100,57 +101,221 @@ def test_macos_recognized_text_appends_and_sends_existing_draft(monkeypatch) -> 
     attributes, composer, _window = _fake_accessibility(
         monkeypatch, value="原有十个字  ")
     events = []
-    ax_copy = macos_api.ax_copy
-    delayed_reads = [0]
-    def delayed_value(element, attribute):
-        if (element is composer and attribute == "value"
-                and attributes[composer]["value"] == "原有十个字  识别的五个字"
-                and delayed_reads[0] < 2):
-            delayed_reads[0] += 1
-            return "原有十个字  "
-        return ax_copy(element, attribute)
-    monkeypatch.setattr(macos_api, "ax_copy", delayed_value)
     monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
     monkeypatch.setattr(macos_api, "frontmost_pid", lambda: 321)
     monkeypatch.setattr(macos_api, "ax_set", lambda *_args: True)
-    monkeypatch.setattr(
-        macos_api, "ax_append_text",
-        lambda _element, _existing, text: (events.append("append"), attributes[composer].update(
-            value=attributes[composer]["value"] + text), True)[-1],
-    )
-    monkeypatch.setattr(macos_api, "post_unicode_text", lambda _text: pytest.fail("keyboard injection used"))
-    monkeypatch.setattr(macos_api, "post_return", lambda: events.append("send"))
+    monkeypatch.setattr(macos_api, "post_command_end", lambda: events.append("end"))
+    @contextmanager
+    def clipboard(_text):
+        yield
+    monkeypatch.setattr(macos_api, "temporary_clipboard_text", clipboard)
+    monkeypatch.setattr(macos_api, "post_command_paste", lambda: (
+        events.append("paste"), attributes[composer].update(
+            value=attributes[composer]["value"] + "识别的五个字")))
+    monkeypatch.setattr(macos_api, "post_left_click", lambda x, y: events.append((x, y)))
+    monkeypatch.setattr(macos_api, "post_return", lambda: pytest.fail("Return used"))
+    monkeypatch.setattr(macos_api, "post_return_to_pid", lambda pid: events.append(("targeted-return", pid)))
     monkeypatch.setattr(macos_ax.time, "sleep", lambda _seconds: None)
     sender = macos_ax.MacOSCodexSender(CodexSettings())
-    monkeypatch.setattr(sender, "_send_button", lambda _window: None)
 
     result = sender.send_voice("识别的五个字", None)
 
     assert result.sent
-    assert delayed_reads == [2]
     assert attributes[composer]["value"] == "原有十个字  识别的五个字"
-    assert events == ["append", "send"]
+    assert events == [(600, 765), "end", "paste", ("targeted-return", 321)]
 
 
-def test_macos_voice_does_not_submit_if_append_position_is_wrong(monkeypatch) -> None:
+def test_macos_voice_pastes_without_post_input_ax_verification(monkeypatch) -> None:
     attributes, composer, _window = _fake_accessibility(monkeypatch, value="已有草稿")
     events = []
     monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
     monkeypatch.setattr(macos_api, "frontmost_pid", lambda: 321)
     monkeypatch.setattr(macos_api, "ax_set", lambda *_args: True)
-    monkeypatch.setattr(
-        macos_api, "ax_append_text",
-        lambda _element, _existing, text: (attributes[composer].update(
-            value=text + attributes[composer]["value"]), True)[-1],
-    )
-    monkeypatch.setattr(macos_api, "post_return", lambda: events.append("send"))
+    monkeypatch.setattr(macos_api, "post_command_end", lambda: None)
+    @contextmanager
+    def clipboard(_text):
+        yield
+    monkeypatch.setattr(macos_api, "temporary_clipboard_text", clipboard)
+    monkeypatch.setattr(macos_api, "post_command_paste", lambda: attributes[composer].update(
+        value="新语音" + attributes[composer]["value"]))
+    monkeypatch.setattr(macos_api, "post_left_click", lambda *_point: events.append("click"))
+    monkeypatch.setattr(macos_api, "post_return_to_pid", lambda _pid: events.append("targeted-return"))
     monkeypatch.setattr(macos_ax.time, "sleep", lambda _seconds: None)
     sender = macos_ax.MacOSCodexSender(CodexSettings())
-    monkeypatch.setattr(sender, "_send_button", lambda _window: None)
 
-    with pytest.raises(macos_ax.CodexTargetError, match="未能验证"):
-        sender.send_voice("新语音", None)
-    assert events == []
+    result = sender.send_voice("新语音", None)
+    assert result.sent
+    assert result.text_may_be_inserted
+    assert events == ["click", "targeted-return"]
+
+
+def test_macos_voice_pastes_even_when_accessibility_value_is_stale(monkeypatch) -> None:
+    attributes, composer, _window = _fake_accessibility(monkeypatch, value="已有草稿")
+    events = []
+    stale_value = macos_api.ax_copy
+    monkeypatch.setattr(macos_api, "ax_copy", lambda element, attribute: (
+        "已有草稿" if element is composer and attribute == "value"
+        else stale_value(element, attribute)))
+    monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
+    monkeypatch.setattr(macos_api, "frontmost_pid", lambda: 321)
+    monkeypatch.setattr(macos_api, "ax_set", lambda *_args: True)
+    monkeypatch.setattr(macos_api, "post_command_end", lambda: None)
+    @contextmanager
+    def clipboard(_text):
+        yield
+    monkeypatch.setattr(macos_api, "temporary_clipboard_text", clipboard)
+    monkeypatch.setattr(macos_api, "post_command_paste", lambda: attributes[composer].update(
+        value="已有草稿识别文字"))
+    monkeypatch.setattr(macos_api, "post_left_click", lambda *_point: events.append("click"))
+    monkeypatch.setattr(macos_api, "post_return_to_pid", lambda _pid: events.append("targeted-return"))
+    monkeypatch.setattr(macos_ax.time, "sleep", lambda _seconds: None)
+    sender = macos_ax.MacOSCodexSender(CodexSettings())
+
+    result = sender.send_voice("识别文字", None)
+
+    assert result.sent
+    assert result.text_may_be_inserted
+    assert events == ["click", "targeted-return"]
+
+
+def test_macos_targets_return_for_normal_message(monkeypatch) -> None:
+    attributes, composer, window = _fake_accessibility(monkeypatch, value="Message Codex")
+    button = object()
+    attributes[button] = {
+        "role": "AXButton", "position": (980.0, 760.0), "size": (36.0, 36.0),
+        "title": "Send", "description": "", "help": "",
+    }
+    monkeypatch.setattr(macos_api, "ax_descendants", lambda _root: [composer, button])
+    monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
+    monkeypatch.setattr(macos_api, "frontmost_pid", lambda: 321)
+    monkeypatch.setattr(macos_api, "ax_set", lambda *_args: True)
+    events = []
+    @contextmanager
+    def clipboard(_text):
+        yield
+    monkeypatch.setattr(macos_api, "temporary_clipboard_text", clipboard)
+    monkeypatch.setattr(macos_api, "post_command_paste", lambda: events.append("paste"))
+    monkeypatch.setattr(macos_api, "post_left_click", lambda x, y: events.append((x, y)))
+    monkeypatch.setattr(macos_api, "post_return_to_pid", lambda pid: events.append(("targeted-return", pid)))
+    monkeypatch.setattr(macos_ax.time, "sleep", lambda _seconds: None)
+    sender = macos_ax.MacOSCodexSender(CodexSettings())
+
+    result = sender.send("普通消息", None)
+
+    assert result.sent
+    assert events == [(600, 765), "paste", ("targeted-return", 321)]
+    assert "定向发送回车" in result.detail
+
+
+def test_macos_targets_return_after_physical_composer_focus_when_send_button_is_missing(monkeypatch) -> None:
+    _fake_accessibility(monkeypatch, value="Message Codex")
+    monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
+    monkeypatch.setattr(macos_api, "frontmost_pid", lambda: 321)
+    monkeypatch.setattr(macos_api, "ax_set", lambda *_args: True)
+    events = []
+    @contextmanager
+    def clipboard(_text):
+        yield
+    monkeypatch.setattr(macos_api, "temporary_clipboard_text", clipboard)
+    monkeypatch.setattr(macos_api, "post_left_click", lambda *_point: events.append("focus-click"))
+    monkeypatch.setattr(macos_api, "post_command_paste", lambda: events.append("paste"))
+    monkeypatch.setattr(macos_api, "post_return_to_pid", lambda _pid: events.append("targeted-return"))
+    monkeypatch.setattr(macos_ax.time, "sleep", lambda _seconds: None)
+    sender = macos_ax.MacOSCodexSender(CodexSettings())
+
+    result = sender.send_voice("识别文字", None)
+
+    assert result.sent
+    assert events == ["focus-click", "paste", "targeted-return"]
+
+
+def test_macos_paste_restores_clipboard_unless_user_changes_it(monkeypatch):
+    class Item:
+        def __init__(self):
+            self.values = {}
+        @classmethod
+        def alloc(cls):
+            return cls()
+        def init(self):
+            return self
+        def types(self):
+            return list(self.values)
+        def dataForType_(self, kind):
+            return self.values[kind]
+        def setData_forType_(self, data, kind):
+            self.values[kind] = data
+            return True
+        def setString_forType_(self, value, kind):
+            self.values[kind] = value
+            return True
+
+    original = Item()
+    original.values = {"public.utf8-plain-text": b"draft", "public.rtf": b"rich"}
+    class Board:
+        count = 1
+        items = [original]
+        def changeCount(self):
+            return self.count
+        def pasteboardItems(self):
+            return self.items
+        def writeObjects_(self, items):
+            self.items = self.items + items
+            return True
+        def clearContents(self):
+            self.items = []
+            self.count += 1
+            return self.count
+
+    board = Board()
+    appkit = SimpleNamespace(NSPasteboard=SimpleNamespace(generalPasteboard=lambda: board),
+                             NSPasteboardItem=Item, NSPasteboardTypeString="public.utf8-plain-text")
+    monkeypatch.setattr(macos_api, "_frameworks", lambda: (appkit, None))
+    with macos_api.temporary_clipboard_text("新语音"):
+        assert board.items[0].values == {"public.utf8-plain-text": "新语音"}
+    assert board.items[0].values == original.values
+
+    with macos_api.temporary_clipboard_text("新语音"):
+        board.clearContents()
+        board.writeObjects_([Item()])  # Another application copied something.
+    assert board.items[0].values == {}
+
+
+def test_macos_left_click_posts_mouse_down_and_up(monkeypatch):
+    events = []
+    services = SimpleNamespace(
+        CGPoint=lambda x, y: (x, y),
+        CGEventCreateMouseEvent=lambda _source, kind, point, button: (kind, point, button),
+        CGEventPost=lambda _tap, event: events.append(event),
+        kCGEventLeftMouseDown=1,
+        kCGEventLeftMouseUp=2,
+        kCGMouseButtonLeft=0,
+        kCGHIDEventTap=3,
+    )
+    monkeypatch.setattr(macos_api, "_frameworks", lambda: (None, services))
+
+    macos_api.post_left_click(998, 778)
+
+    assert events == [(1, (998.0, 778.0), 0), (2, (998.0, 778.0), 0)]
+
+
+def test_macos_return_is_posted_to_codex_pid(monkeypatch):
+    events = []
+    application = object()
+    services = SimpleNamespace(
+        AXUIElementCreateApplication=lambda pid: events.append(("application", pid)) or application,
+        AXUIElementPostKeyboardEvent=lambda target, char, key, down: (
+            events.append((target, char, key, down)) or 0),
+        kAXErrorSuccess=0,
+    )
+    monkeypatch.setattr(macos_api, "_frameworks", lambda: (None, services))
+
+    macos_api.post_return_to_pid(321)
+
+    assert events == [
+        ("application", 321),
+        (application, 13, 36, True),
+        (application, 13, 36, False),
+    ]
 
 
 def test_ax_append_text_selects_utf16_end_without_touching_clipboard(monkeypatch):

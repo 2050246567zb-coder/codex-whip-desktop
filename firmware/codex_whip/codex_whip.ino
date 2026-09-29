@@ -11,10 +11,11 @@
 #include "host_profile.h"
 #include "ble_transport.h"
 #include "voice_packet.h"
+#include "voice_activity.h"
 
 namespace {
 
-constexpr char kFirmwareVersion[] = "0.8.4";
+constexpr char kFirmwareVersion[] = "0.8.6";
 constexpr char kDeviceName[] = "CodexWhip";
 constexpr uint32_t kSampleRateHz = 416;
 constexpr uint32_t kSamplePeriodUs = 1000000UL / kSampleRateHz;
@@ -38,9 +39,7 @@ constexpr size_t kVoicePdmBufferSamples = 640;
 // Keep 800 ms of PCM so a short Windows BLE notification stall does not force
 // an otherwise healthy recording to abort.
 constexpr size_t kVoiceRingSamples = 12800;
-constexpr uint32_t kVoiceNoiseIgnoreMs = 140;
-constexpr uint32_t kVoiceNoiseCalibrationMs = 340;
-constexpr uint32_t kVoiceNoSpeechTimeoutMs = 4000;
+constexpr uint32_t kVoiceNoSpeechTimeoutMs = 6000;
 constexpr uint8_t kChargeStatusPin = 23;  // P0.17, active-low BQ25100 ~CHG.
 constexpr uint32_t kBatteryReportPeriodMs = 30000;
 constexpr uint32_t kChargeDebounceMs = 80;
@@ -144,9 +143,7 @@ uint32_t voiceLastAckAtMs = 0;
 uint32_t voiceTotalSamples = 0;
 size_t voicePcmSamples = kVoiceFallbackPcmSamples;
 uint32_t voiceStartedAtMs = 0;
-uint32_t voiceLastSpeechAtMs = 0;
-uint16_t voiceNoiseLevel = 0;
-bool voiceSpeechDetected = false;
+VoiceActivityGate voiceActivity;
 uint8_t voiceAdpcmStepIndex = 0;
 uint16_t voiceSilenceMs = 1200;
 uint16_t voiceMaximumRecordingMs = 15000;
@@ -161,6 +158,9 @@ uint32_t nextBatteryReportAt = 0;
 bool chargingState = false;
 bool chargingCandidate = false;
 uint32_t chargingCandidateSince = 0;
+bool externalPowerState = false;
+bool externalPowerCandidate = false;
+uint32_t externalPowerCandidateSince = 0;
 bool hardwareTapReady = false;
 uint8_t hardwareTapThresholdCode = 2;
 uint32_t nextHardwareTapPollAt = 0;
@@ -276,22 +276,39 @@ uint8_t batteryPercent(uint16_t millivolts) {
 
 void reportBattery() {
   const uint8_t percent = batteryPercent(readBatteryMillivolts());
-  sendLine("BATTERY," + String(percent) + "," + String(chargingState ? 1 : 0));
+  sendLine("BATTERY," + String(percent) + "," + String(chargingState ? 1 : 0) +
+           "," + String(externalPowerState ? 1 : 0));
   nextBatteryReportAt = millis() + kBatteryReportPeriodMs;
+}
+
+bool usbPowerPresent() {
+  // VBUS detection is independent of USB enumeration: a computer, power bank,
+  // or wall charger all register even when ~CHG is high at the charge limit.
+  return (NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
 }
 
 void pollChargeStatus() {
   const uint32_t now = millis();
   const bool rawCharging = digitalRead(kChargeStatusPin) == LOW;
+  const bool rawPower = usbPowerPresent();
   if (rawCharging != chargingCandidate) {
     chargingCandidate = rawCharging;
     chargingCandidateSince = now;
-    return;
   }
+  if (rawPower != externalPowerCandidate) {
+    externalPowerCandidate = rawPower;
+    externalPowerCandidateSince = now;
+  }
+  bool changed = false;
   if (rawCharging != chargingState && now - chargingCandidateSince >= kChargeDebounceMs) {
     chargingState = rawCharging;
-    if (Bluefruit.connected() && !voiceRecording) reportBattery();
+    changed = true;
   }
+  if (rawPower != externalPowerState && now - externalPowerCandidateSince >= kChargeDebounceMs) {
+    externalPowerState = rawPower;
+    changed = true;
+  }
+  if (changed && Bluefruit.connected() && !voiceRecording) reportBattery();
 }
 
 int16_t readInt16LE(const uint8_t* bytes) {
@@ -440,9 +457,7 @@ void startVoiceRecording(uint16_t silenceMs, uint16_t maximumRecordingMs) {
   voiceTotalSamples = 0;
   voiceStartedAtMs = millis();
   voiceLastAckAtMs = voiceStartedAtMs;
-  voiceLastSpeechAtMs = voiceStartedAtMs;
-  voiceNoiseLevel = UINT16_MAX;
-  voiceSpeechDetected = false;
+  voiceActivity.reset(voiceSilenceMs);
   voiceAdpcmStepIndex = 0;
   voiceRingRead = 0;
   voiceRingWrite = 0;
@@ -548,25 +563,9 @@ void processVoiceAudio() {
     absoluteSum += static_cast<uint32_t>(value < 0 ? -value : value);
   }
   const uint16_t level = static_cast<uint16_t>(absoluteSum / sampleCount);
-  const uint32_t elapsed = now - voiceStartedAtMs;
-  if (elapsed <= kVoiceNoiseIgnoreMs) {
-    // The nRF PDM filter has a large startup transient. Do not let that set
-    // the room-noise baseline or it will suppress the following utterance.
-  } else if (elapsed <= kVoiceNoiseCalibrationMs) {
-    voiceNoiseLevel = min(voiceNoiseLevel, level);
-  } else {
-    const uint16_t baseline =
-        voiceNoiseLevel == UINT16_MAX ? static_cast<uint16_t>(100)
-                                      : voiceNoiseLevel;
-    const uint16_t speechThreshold =
-        max(static_cast<uint16_t>(180),
-            static_cast<uint16_t>(min(12000UL,
-                static_cast<uint32_t>(baseline) * 2UL)));
-    if (level >= speechThreshold) {
-      voiceSpeechDetected = true;
-      voiceLastSpeechAtMs = now;
-    }
-  }
+  const uint32_t audioElapsedMs =
+      static_cast<uint32_t>((voiceTotalSamples + sampleCount) / 16);
+  voiceActivity.observe(level, audioElapsedMs);
 
   ImaAdpcmBlock block;
   const size_t encodedBytes =
@@ -592,12 +591,13 @@ void processVoiceAudio() {
   ++voiceChunkSequence;
   voiceTotalSamples += sampleCount;
 
-  if (voiceSpeechDetected && now - voiceLastSpeechAtMs >= voiceSilenceMs) {
+  if (voiceActivity.silenceExpired(audioElapsedMs)) {
     stopVoiceRecording("SILENCE");
-  } else if (!voiceSpeechDetected && elapsed >= kVoiceNoSpeechTimeoutMs) {
+  } else if (!voiceActivity.speechDetected() &&
+             audioElapsedMs >= kVoiceNoSpeechTimeoutMs) {
     stopVoiceRecording("NO_SPEECH");
-  } else if (elapsed >= voiceMaximumRecordingMs) {
-    stopVoiceRecording(voiceSpeechDetected ? "TIMEOUT" : "NO_SPEECH");
+  } else if (audioElapsedMs >= voiceMaximumRecordingMs) {
+    stopVoiceRecording(voiceActivity.speechDetected() ? "TIMEOUT" : "NO_SPEECH");
   }
 }
 
@@ -1359,6 +1359,9 @@ void setup() {
   chargingState = digitalRead(kChargeStatusPin) == LOW;
   chargingCandidate = chargingState;
   chargingCandidateSince = millis();
+  externalPowerState = usbPowerPresent();
+  externalPowerCandidate = externalPowerState;
+  externalPowerCandidateSince = millis();
 
   // Explicitly retain the maximum ranges and 416 Hz rate used by the detector.
   imu.settings.accelRange = 16;

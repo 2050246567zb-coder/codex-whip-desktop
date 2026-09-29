@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -333,11 +335,86 @@ def post_command_end() -> None:
         services.CGEventPost(services.kCGHIDEventTap, event)
 
 
+def post_command_paste() -> None:
+    """Paste into the focused editor through its normal keyboard handler."""
+    _appkit, services = _frameworks()
+    for pressed in (True, False):
+        event = services.CGEventCreateKeyboardEvent(None, 9, pressed)
+        services.CGEventSetFlags(event, services.kCGEventFlagMaskCommand)
+        services.CGEventPost(services.kCGHIDEventTap, event)
+
+
+def post_left_click(x: float, y: float) -> None:
+    """Deliver a real left mouse click at an accessibility screen point."""
+    _appkit, services = _frameworks()
+    point = services.CGPoint(float(x), float(y))
+    for event_type in (services.kCGEventLeftMouseDown, services.kCGEventLeftMouseUp):
+        event = services.CGEventCreateMouseEvent(
+            None, event_type, point, services.kCGMouseButtonLeft,
+        )
+        services.CGEventPost(services.kCGHIDEventTap, event)
+
+
+@contextmanager
+def temporary_clipboard_text(text: str):
+    """Paste plain text while preserving all available clipboard item types.
+
+    Never restore over a clipboard change made by another app during the send.
+    The snapshot is completed before replacing anything; a delayed/unavailable
+    representation therefore leaves the user's clipboard untouched.
+    """
+    appkit, _services = _frameworks()
+    pasteboard = appkit.NSPasteboard.generalPasteboard()
+    original_count = pasteboard.changeCount()
+    saved_items = []
+    for old_item in pasteboard.pasteboardItems() or ():
+        saved = appkit.NSPasteboardItem.alloc().init()
+        for item_type in old_item.types():
+            data = old_item.dataForType_(item_type)
+            if data is None or not saved.setData_forType_(bytes(data), item_type):
+                raise MacOSAPIError("无法完整保存当前剪贴板，已取消粘贴")
+        saved_items.append(saved)
+    if pasteboard.changeCount() != original_count:
+        raise MacOSAPIError("剪贴板在准备粘贴时发生变化，已取消发送")
+    replacement = appkit.NSPasteboardItem.alloc().init()
+    if not replacement.setString_forType_(text, appkit.NSPasteboardTypeString):
+        raise MacOSAPIError("无法准备识别文字的临时剪贴板")
+    pasteboard.clearContents()
+    owned_count = pasteboard.changeCount()
+    try:
+        if not pasteboard.writeObjects_([replacement]):
+            raise MacOSAPIError("无法将识别文字写入临时剪贴板")
+        yield
+    finally:
+        if pasteboard.changeCount() == owned_count:
+            try:
+                pasteboard.clearContents()
+                restored = not saved_items or pasteboard.writeObjects_(saved_items)
+                if not restored:
+                    logging.getLogger(__name__).warning("Could not restore clipboard after Codex paste")
+            except Exception:
+                logging.getLogger(__name__).warning("Could not restore clipboard after Codex paste")
+
+
 def post_return() -> None:
     _appkit, services = _frameworks()
     for pressed in (True, False):
         event = services.CGEventCreateKeyboardEvent(None, 36, pressed)
         services.CGEventPost(services.kCGHIDEventTap, event)
+
+
+def post_return_to_pid(pid: int) -> None:
+    """Send one Return keypress directly to the target AX application."""
+    _appkit, services = _frameworks()
+    application = services.AXUIElementCreateApplication(int(pid))
+    for pressed in (True, False):
+        error = services.AXUIElementPostKeyboardEvent(
+            application, 13, 36, pressed,
+        )
+        if int(error) != int(services.kAXErrorSuccess):
+            raise MacOSAPIError(
+                f"无法向 Codex 发送定向回车（AX 错误 {int(error)}）"
+            )
 
 
 def escape_pressed() -> bool:

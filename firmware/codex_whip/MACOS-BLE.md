@@ -1,4 +1,8 @@
-# 0.8.4：macOS / Windows 蓝牙与语音流控
+# 0.8.6：macOS / Windows 蓝牙、语音流控与供电状态
+
+0.8.6 将录音静音判断改为连续语音帧确认，并按音频采样时长计时；可容忍自然停顿，同时避免单个噪声尖峰延长录音。无语音超时延至 6 秒。0.8.5 的充电和 USB 外部供电上报保持不变。
+
+0.8.5 在 `BATTERY` 报文中新增第三个值，表示 USB VBUS 是否有外部供电。`~CHG` 继续表示电池是否正处于充电阶段；充满后 `~CHG` 可能变高，但接着电脑、充电器或移动电源时 VBUS 仍会报告为有电。新版桌面端可读取新报文，也兼容旧固件的两个值报文。
 
 0.8.4 在开始 PDM 录音前，也要求 Mac 蓝牙连接恢复到请求的 15–30 ms 活跃间隔；此前 Mac 在 135 ms 省电连接下仍可开始录音，继而因主机 ACK 延迟出现 `HOST_STALLED` 或 `BUFFER_OVERFLOW`。协商未及时完成时返回 `LINK_SPEED`，不再丢掉正在录的音频。
 
@@ -7,7 +11,7 @@
 
 ## 自动选择方案
 
-固件对 `PING` 回应 `PONG,0.8.4`、`CAPS,HOST_PROFILE,1` 与
+固件对 `PING` 回应 `PONG,0.8.6`、`CAPS,HOST_PROFILE,1` 与
 `CAPS,VOICE_FLOW,1`。
 更新后的桌面端仅在收到这一能力声明时，按运行系统发送一次 `HOST,MACOS`、`HOST,WINDOWS` 或 `HOST,LINUX`。
 这是自动握手，不要求用户选择。仅靠 BLE 地址、MTU 或连接节奏无法可靠判断操作系统，固件不作此类猜测。
@@ -60,7 +64,7 @@ scripts/upload-firmware-macos.sh
 CLI 下载核验官方 SHA256；第一次安装需要网络。可按环境配置 HTTP(S) 代理，脚本不内置某个代理端口。
 刷写脚本只自动选择唯一的匹配 XIAO 板；必要时手工传入已确认的 `/dev/cu.usbmodem…`。
 先停止桌面端蓝牙连接、关闭串口监视器；使用支持数据传输的 USB 线。
-成功必须看到 `Device programmed.`，随后重新连接桌面端确认 `PONG,0.8.4` 和 `HOST,OK,MACOS`。
+成功必须看到 `Device programmed.`，随后重新连接桌面端确认 `PONG,0.8.6` 和 `HOST,OK,MACOS`。
 无需刷写 bootloader；不要将此包刷到 ESP32 或其他型号。
 
 ## 软件验证

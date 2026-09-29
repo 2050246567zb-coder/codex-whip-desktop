@@ -10,8 +10,8 @@ from ..models import WhipEvent
 class SendResult:
     sent: bool
     detail: str
+    text_may_be_inserted: bool = False
 
 
 class PromptSender(Protocol):
     def send(self, prompt: str, event: WhipEvent) -> SendResult: ...
-

@@ -593,6 +593,7 @@ class Interface:
         self._tap_done = False
         self._battery_percent = None
         self._battery_charging = False
+        self._battery_external_power = False
         self._power_state = "ACTIVE"
         self._sleep_at = 0.0
         self._tour_index = 0
@@ -1087,8 +1088,9 @@ class Interface:
         if kind == "battery":
             self._battery_percent = int(payload["percent"])
             self._battery_charging = bool(payload["charging"])
+            self._battery_external_power = bool(payload.get("external_power", self._battery_charging))
             self.battery_indicator.set_status(
-                self._battery_percent, self._battery_charging
+                self._battery_percent, self._battery_charging, self._battery_external_power
             )
         elif kind == "device" and getattr(payload, "kind", "") == "POWER" and len(payload.fields) >= 2:
             state = payload.fields[1]
@@ -1150,7 +1152,7 @@ class Interface:
             if kind == "voice_model_error":
                 self._notice = "语音识别尚未就绪，请在设置中查看准备失败的原因"
             else:
-                self._notice = ("发送已暂停，请在设置中查看原因" if kind == "send_error"
+                self._notice = ("发送失败，开关仍开启；请在设置中查看原因" if kind == "send_error"
                                 else "录音没完成，再敲两下试试；详情见设置")
             self._notice_until = time.monotonic() + (10 if kind != "voice_error" else 3)
         elif kind == "voice_calibration":
@@ -1162,6 +1164,7 @@ class Interface:
             self._voice_state = ""
             self._battery_percent = None
             self._battery_charging = False
+            self._battery_external_power = False
             self._power_state = "ACTIVE"
             self.battery_indicator.set_status(None)
         elif kind == "worker_stopped":

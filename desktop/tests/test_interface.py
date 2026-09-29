@@ -87,6 +87,22 @@ def test_send_switch_label_and_confirmation_only_explain_behavior(app, monkeypat
     assert not app.armed.is_set()
 
 
+def test_send_failure_keeps_switch_and_recognized_text_ready(app):
+    app.ui.stage = "ready"
+    app.armed.set()
+    app.arm_value.set(True)
+    app.ui.preferences.send_enabled = True
+    app.voice_module.set_pending("保留的识别文字")
+
+    app.emit("send_error", "Codex 粘贴内容未能验证")
+    app._drain_events()
+
+    assert app.armed.is_set()
+    assert app.arm_value.get() is True
+    assert app.ui.preferences.send_enabled is True
+    assert app.voice_module.pending_text == "保留的识别文字"
+
+
 def test_hover_clock_is_local_interruptible_and_yields_to_recording(app):
     app.ui.hero.set_mode('whip')
     app.ui.hero._clock_started -= 1
@@ -306,7 +322,13 @@ def test_home_battery_indicator_tracks_device_and_disconnect(app):
     assert app.ui.battery_indicator.color == app.ui.battery_indicator.CHARGING
     assert app.ui.battery_indicator.find_withtag('glyph')
     assert app.ui.battery_indicator.find_withtag('percentage') == ()
-    assert app.ui.battery_indicator.tooltip_text == '剩余电量 55%'
+    assert app.ui.battery_indicator.tooltip_text == '正在充电 · 剩余电量 55%'
+
+    app.emit('device', DeviceMessage('BATTERY', ('100', '0', '1'), ''))
+    app._drain_events()
+    assert not app.ui.battery_indicator.charging
+    assert app.ui.battery_indicator.external_power
+    assert app.ui.battery_indicator.tooltip_text == '已接电源 · 剩余电量 100%'
 
     app.emit('ble', 'disconnected')
     app._drain_events()

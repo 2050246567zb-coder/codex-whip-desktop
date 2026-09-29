@@ -28,6 +28,7 @@ class BatteryIndicator(tk.Canvas):
         self._glyph: ImageTk.PhotoImage | None = None
         self.percent: int | None = None
         self.charging = False
+        self.external_power = False
         self._tooltip: tk.Toplevel | None = None
         self.bind("<Enter>", self._show_tooltip)
         self.bind("<Leave>", self._hide_tooltip)
@@ -56,26 +57,30 @@ class BatteryIndicator(tk.Canvas):
 
     @property
     def color(self) -> str:
-        if self.charging:
+        if self.external_power:
             return self.CHARGING
         if self.percent is not None and self.percent < 20:
             return self.LOW
         return self.NORMAL
 
-    def set_status(self, percent: int | None, charging: bool = False) -> None:
+    def set_status(self, percent: int | None, charging: bool = False,
+                   external_power: bool = False) -> None:
         self.percent = None if percent is None else max(0, min(100, int(percent)))
         self.charging = bool(charging and self.percent is not None)
+        self.external_power = bool((external_power or charging) and self.percent is not None)
         self._draw()
         if self._tooltip is not None:
             self._tooltip_label().configure(text=self.tooltip_text)
 
     @property
     def tooltip_text(self) -> str:
-        return (
-            f"剩余电量 {self.percent}%"
-            if self.percent is not None
-            else "等待手柄电量"
-        )
+        if self.percent is None:
+            return "等待手柄电量"
+        if self.charging:
+            return f"正在充电 · 剩余电量 {self.percent}%"
+        if self.external_power:
+            return f"已接电源 · 剩余电量 {self.percent}%"
+        return f"剩余电量 {self.percent}%"
 
     def _draw(self) -> None:
         self.delete("all")
@@ -113,7 +118,7 @@ class BatteryIndicator(tk.Canvas):
                 fill=self.color,
             )
 
-        if self.charging:
+        if self.external_power:
             bolt = tuple(
                 (round(x * scale), round(y * scale))
                 for x, y in (
