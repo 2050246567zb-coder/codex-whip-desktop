@@ -50,6 +50,9 @@ mkdir -p "$MAC_DIR/.build" "$OUTPUT_DIR" "$(dirname "$WHISPER_ASSET")"
 if [[ -n "${CODEX_WHIP_DOUBAO_API_KEY:-}" ]]; then
   mkdir -p "$DESKTOP_DIR/assets/private"
   printf '%s' "$CODEX_WHIP_DOUBAO_API_KEY" > "$DESKTOP_DIR/assets/private/doubao-api-key.txt"
+elif [[ -f "$DESKTOP_DIR/assets/private/doubao-api-key.txt" ]]; then
+  echo 'Private API key asset remains in the source tree; refusing a build without explicit CODEX_WHIP_DOUBAO_API_KEY.' >&2
+  exit 1
 fi
 
 if [[ ! -x "$WHISPER_ASSET" ]]; then

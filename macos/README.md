@@ -38,7 +38,7 @@ export CODEX_WHIP_PYTHON="$(brew --prefix python@3.12)/bin/python3.12"
 bash macos/build-macos.sh
 ```
 
-产物在 `macos/dist/`。未配置开发者证书时是 ad-hoc 签名测试包；它通过结构和
+产物在 `macos/dist/`。公开构建不内置 API Key；本机使用时可单独配置。打包脚本在没有显式传入 Key 却发现源码目录残留私有 Key 文件时会拒绝构建，避免误发布。未配置开发者证书时是 ad-hoc 签名测试包；它通过结构和
 签名自检，不等于已公证发行。
 
 首次使用需在“系统设置 > 隐私与安全性”授予蓝牙和设备控制权限（旧版系统称辅助功能）。该权限
