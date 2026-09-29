@@ -184,6 +184,30 @@ def test_bundled_vad_model_is_verified_and_copied_to_ascii_runtime(
     assert hashlib.sha256(transcriber.vad_model_path.read_bytes()).hexdigest() == VAD_MODEL_SHA256
 
 
+def test_bundled_whisper_model_never_downloads_on_first_prepare(tmp_path, monkeypatch):
+    from codex_whip import voice
+
+    assets = tmp_path / "assets"
+    bundle = assets / "stt" / f"whispercpp-{voice.WHISPER_VERSION}"
+    bundle.mkdir(parents=True)
+    (bundle / "whisper-cli").write_bytes(b"cli")
+    model_bytes = b"verified-model"
+    (bundle / voice.MODEL_NAME).write_bytes(model_bytes)
+    monkeypatch.setattr(voice, "_asset_root", lambda: assets)
+    monkeypatch.setattr(voice, "MODEL_SIZE", len(model_bytes))
+    monkeypatch.setattr(voice, "MODEL_SHA256", hashlib.sha256(model_bytes).hexdigest())
+    monkeypatch.setattr(voice, "VAD_MODEL_SIZE", 1)
+    monkeypatch.setattr(voice.urllib.request, "urlopen", lambda *a, **kw: pytest.fail("network used"))
+    transcriber = WhisperCppTranscriber(tmp_path / "runtime")
+    monkeypatch.setattr(transcriber, "_prepare_vad_model",
+                        lambda: transcriber.vad_model_path.write_bytes(b"v"))
+
+    transcriber.prepare()
+
+    assert transcriber.ready
+    assert transcriber.model_path == bundle / voice.MODEL_NAME
+
+
 class _FakeTranscriber:
     ready = True
 

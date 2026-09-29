@@ -6,6 +6,7 @@ from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
+import ssl
 import tempfile
 import time
 import tkinter as tk
@@ -24,13 +25,28 @@ def main(argv=None) -> int:
     from .settings import Settings
     from .migration import FACTORY_DEFAULT_FILES, import_factory_calibration_once
     from .interface_state import initialize_fresh_preferences, InterfacePreferences
+    from .cloud_speech import bundled_ca_path
+    from .voice import WhisperCppTranscriber
     from PIL import ImageGrab
 
     report = {"synthetic": True, "native_overlay_tested": False,
               "screenshots": [], "capture_errors": [], "callback_errors": [],
-              "high_rate_event_buffer_drained": False, "factory_defaults_loaded": False}
+              "high_rate_event_buffer_drained": False, "factory_defaults_loaded": False,
+              "bundled_https_ca": False, "offline_model_ready": False,
+              "new_user_tour_and_calibration": False}
     with tempfile.TemporaryDirectory(prefix="codex-whip-ui-") as data, ExitStack() as stack:
         stack.enter_context(patch.dict(os.environ, {"CODEX_WHIP_DATA_DIR": data}))
+        ca = bundled_ca_path()
+        if not ca.is_file():
+            raise RuntimeError("Packaged HTTPS CA certificate store is missing")
+        ssl.create_default_context(cafile=str(ca))
+        report["bundled_https_ca"] = True
+        local = WhisperCppTranscriber(Path(data) / "voice")
+        with patch("urllib.request.urlopen", side_effect=AssertionError("offline model accessed network")):
+            local.prepare()
+        report["offline_model_ready"] = local.ready
+        if not report["offline_model_ready"]:
+            raise RuntimeError("Packaged Whisper model is not ready offline")
         initialize_fresh_preferences(Path(data))
         factory = import_factory_calibration_once()
         report["factory_defaults_loaded"] = (
@@ -52,8 +68,24 @@ def main(argv=None) -> int:
         root = tk.Tk()
         root.report_callback_exception = lambda typ, val, tb: report["callback_errors"].append(str(val))
         app = CodexWhipWindow(root, Settings(), None)
+        if app.ui.stage != "connect":
+            raise RuntimeError("New-user guide did not open at the connection step")
+        app.ble_connected = True
+        app.worker_loop = Mock()
+        app.processor = Mock()
+        app.ui.observe("sensor_pose", SensorPose(0.0, 0.0, 0.0, 0.0, True))
+        app.ui._refresh()
+        if app.ui.stage != "tour":
+            raise RuntimeError("Connected new user did not enter the feature tour")
+        app.ui._tour_index = len(app.ui.TOUR) - 1
+        with patch.object(app, "_send_mount_command"):
+            app.ui.next_tour()
+        report["new_user_tour_and_calibration"] = app.ui.stage == "calibrate"
+        if not report["new_user_tour_and_calibration"]:
+            raise RuntimeError("Feature tour did not open direction calibration")
         root.geometry("560x660+80+80")
         app.ui.stage = "ready"
+        app.ui._mount_token = ""
         app._restore_send_state()
 
         def settle_and_capture(name, delay=1.2, widget=None):

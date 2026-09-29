@@ -21,6 +21,8 @@ macos/migration-data/
 macos/.build/
 macos/.venv-macos/
 desktop/assets/stt/whispercpp-*/whisper-cli
+desktop/assets/stt/whispercpp-*/ggml-small-q5_1.bin
+desktop/assets/tls/cacert.pem
 *.spec
 *.dmp
 .env

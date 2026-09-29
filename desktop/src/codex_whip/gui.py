@@ -2130,6 +2130,7 @@ def main() -> int:
     if "--ui-smoke" in sys.argv:
         from .ui_smoke import main as smoke_main
         return smoke_main(sys.argv[sys.argv.index("--ui-smoke") + 1:])
+    migration = import_bundled_profile_once()
     initialize_fresh_preferences(user_data_dir())
     factory_calibration = import_factory_calibration_once()
     log_path = user_data_dir() / "runtime.log"
@@ -2140,7 +2141,6 @@ def main() -> int:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
     logger.info("Starting Codex Whip %s", __version__)
-    migration = import_bundled_profile_once()
     config_path = find_config_path()
     try:
         settings = load_settings(config_path)

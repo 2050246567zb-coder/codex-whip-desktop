@@ -64,6 +64,22 @@ fi
 "$VENV_DIR/bin/python" -m pip install -e "$DESKTOP_DIR[build]"
 VERSION="$("$VENV_DIR/bin/python" -c 'from importlib.metadata import version; print(version("codex-whip"))')"
 
+# OpenSSL's compiled default CA path may exist only on the build machine.
+mkdir -p "$DESKTOP_DIR/assets/tls"
+"$VENV_DIR/bin/python" - "$DESKTOP_DIR/assets/tls/cacert.pem" <<'PY'
+from pathlib import Path
+import certifi
+import shutil
+import sys
+
+target = Path(sys.argv[1])
+shutil.copyfile(certifi.where(), target)
+if target.stat().st_size < 100_000:
+    raise SystemExit("Bundled CA certificate store is unexpectedly small")
+print("Bundled HTTPS CA certificate store:", target)
+PY
+"$VENV_DIR/bin/python" "$MAC_DIR/prepare-whisper-model.py"
+
 safe_remove_tree "$DESKTOP_DIR/build/CodexWhip" "$DESKTOP_DIR/build"
 safe_remove_tree "$DESKTOP_DIR/dist/CodexWhip.app" "$DESKTOP_DIR/dist"
 cd "$DESKTOP_DIR"
@@ -81,6 +97,23 @@ cd "$DESKTOP_DIR"
   --collect-submodules Foundation \
   --collect-all sounddevice \
   codex_whip_gui.py
+
+"$VENV_DIR/bin/python" - "$DESKTOP_DIR/dist/CodexWhip.app" <<'PY'
+from pathlib import Path
+import sys
+from codex_whip.voice import MODEL_NAME, MODEL_SHA256, MODEL_SIZE, WHISPER_VERSION, _file_matches
+
+assets = Path(sys.argv[1]) / "Contents" / "Frameworks" / "assets"
+if not assets.is_dir():
+    assets = Path(sys.argv[1]) / "Contents" / "Resources" / "assets"
+model = assets / "stt" / f"whispercpp-{WHISPER_VERSION}" / MODEL_NAME
+ca = assets / "tls" / "cacert.pem"
+if not _file_matches(model, MODEL_SIZE, MODEL_SHA256):
+    raise SystemExit(f"Packaged Whisper model missing or invalid: {model}")
+if not ca.is_file() or ca.stat().st_size < 100_000:
+    raise SystemExit(f"Packaged HTTPS CA certificates missing: {ca}")
+print("Verified packaged offline model and HTTPS CA certificates")
+PY
 
 PLIST="$DESKTOP_DIR/dist/CodexWhip.app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c \

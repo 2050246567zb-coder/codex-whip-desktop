@@ -793,7 +793,14 @@ class WhisperCppTranscriber:
 
     @property
     def model_path(self) -> Path:
+        bundled = self.bundled_model_path
+        if bundled.is_file() and bundled.stat().st_size == MODEL_SIZE:
+            return bundled
         return self.runtime_dir / MODEL_NAME
+
+    @property
+    def bundled_model_path(self) -> Path:
+        return _asset_root() / "stt" / f"whispercpp-{WHISPER_VERSION}" / MODEL_NAME
 
     @property
     def executable_path(self) -> Path:
@@ -855,9 +862,13 @@ class WhisperCppTranscriber:
             raise FileNotFoundError("程序包中缺少 whisper.cpp 运行时")
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self._prepare_vad_model()
-        if self.model_path.is_file() and self.model_path.stat().st_size == MODEL_SIZE:
+        if self.bundled_model_path.is_file():
+            if not _file_matches(self.bundled_model_path, MODEL_SIZE, MODEL_SHA256):
+                raise OSError("程序包中的语音模型缺失或校验失败")
             return
-        temporary = self.model_path.with_suffix(self.model_path.suffix + ".download")
+        if _file_matches(self.runtime_dir / MODEL_NAME, MODEL_SIZE, MODEL_SHA256):
+            return
+        temporary = (self.runtime_dir / MODEL_NAME).with_suffix(".bin.download")
         request = urllib.request.Request(
             MODEL_URL, headers={"User-Agent": "CodexWhip/1.3"}
         )
@@ -878,7 +889,7 @@ class WhisperCppTranscriber:
                 raise OSError(f"模型下载不完整：{downloaded} / {MODEL_SIZE} bytes")
             if digest.hexdigest().lower() != MODEL_SHA256:
                 raise OSError("语音模型 SHA-256 校验失败")
-            temporary.replace(self.model_path)
+            temporary.replace(self.runtime_dir / MODEL_NAME)
         except Exception:
             try:
                 temporary.unlink()

@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import ssl
 import socket
 import struct
 import sys
@@ -58,6 +59,25 @@ def bundled_doubao_key_path() -> Path:
     root = (Path(sys._MEIPASS) if getattr(sys, 'frozen', False)
             else Path(__file__).resolve().parents[2])
     return root / 'assets' / 'private' / 'doubao-api-key.txt'
+
+
+def bundled_ca_path() -> Path:
+    root = (Path(sys._MEIPASS) if getattr(sys, 'frozen', False)
+            else Path(__file__).resolve().parents[2])
+    return root / 'assets' / 'tls' / 'cacert.pem'
+
+
+def _https_opener():
+    # Homebrew's OpenSSL may point at a build-machine-only certificate path.
+    # Always use the CA bundle shipped inside the signed application.
+    ca = bundled_ca_path()
+    if not ca.is_file():
+        if getattr(sys, 'frozen', False) and sys.platform == 'darwin':
+            raise SpeechError('安装包缺少 HTTPS 根证书，请重新安装完整版本')
+        import certifi
+        ca = Path(certifi.where())
+    context = ssl.create_default_context(cafile=str(ca))
+    return urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPSHandler(context=context))
 
 
 def bundled_doubao_key() -> str:
@@ -277,7 +297,7 @@ class SpeechRouter:
         try:
             if on_started is not None:
                 on_started()
-            opener = urllib.request.build_opener(_NoRedirect())
+            opener = _https_opener()
             if diagnostic is not None:
                 diagnostic['submitted'] = True
             with opener.open(request, timeout=30) as response:
@@ -323,7 +343,7 @@ class SpeechRouter:
             messages.update({401: '豆包语音凭据无效',
                              403: '豆包语音无权限；请开通录音文件识别 2.0（volc.seedasr.auc）'})
             raise SpeechError(messages.get(exc.code, f'语音服务请求失败（HTTP {exc.code}）')) from None
-        except (urllib.error.URLError, TimeoutError, socket.timeout):
+        except (urllib.error.URLError, TimeoutError, socket.timeout, ssl.SSLError):
             raise SpeechError('语音服务连接失败或超时，请检查网络后重新录音') from None
         except (ValueError, KeyError, IndexError, TypeError):
             raise SpeechError('语音服务返回格式异常') from None

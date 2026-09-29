@@ -16,6 +16,7 @@ from codex_whip.cloud_speech import (
     SpeechRouter,
     _NoRedirect,
     bundled_doubao_key,
+    _https_opener,
 )
 from codex_whip.voice import VoiceSettings, VoiceSettingsStore
 
@@ -47,6 +48,26 @@ def test_product_has_only_doubao_recording_v2():
     assert preset.query_url.endswith('/api/v3/auc/bigmodel/query')
     assert VoiceSettings().speech_provider == PRODUCT_PROVIDER
     assert VoiceSettings().precise_recognition is True
+
+
+def test_cloud_uses_explicit_bundled_ca_even_with_broken_openssl_default(tmp_path, monkeypatch):
+    from codex_whip import cloud_speech
+
+    ca = tmp_path / "cacert.pem"
+    ca.write_text("test CA")
+    monkeypatch.setattr(cloud_speech, "bundled_ca_path", lambda: ca)
+    context_factory = Mock(return_value=object())
+    monkeypatch.setattr(cloud_speech.ssl, "create_default_context", context_factory)
+    https_handler = Mock(return_value=object())
+    monkeypatch.setattr(cloud_speech.urllib.request, "HTTPSHandler", https_handler)
+    opener = Mock()
+    build = Mock(return_value=opener)
+    monkeypatch.setattr(cloud_speech.urllib.request, "build_opener", build)
+
+    assert _https_opener() is opener
+    context_factory.assert_called_once_with(cafile=str(ca))
+    assert isinstance(build.call_args.args[0], _NoRedirect)
+    https_handler.assert_called_once_with(context=context_factory.return_value)
 
 
 def test_local_only_switch_never_reads_key_or_uploads(setup, monkeypatch):

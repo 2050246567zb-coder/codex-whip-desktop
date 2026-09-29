@@ -36,11 +36,22 @@ class InterfacePreferences:
 
 
 def initialize_fresh_preferences(data_dir: Path) -> bool:
-    """Keep a first install in the tour even when factory direction is preloaded."""
+    """Use actual saved setup state, not whether any unrelated file exists."""
 
-    if data_dir.exists() and any(data_dir.iterdir()):
+    preferences_path = data_dir / "interface-preferences.json"
+    if preferences_path.exists():
         return False
-    InterfacePreferences().save(data_dir / "interface-preferences.json")
+
+    # An older installation may have a personally calibrated direction but no
+    # interface preferences. The factory mounting value is not user completion.
+    from .migration import bundled_factory_calibration_dir
+    from .mount_profile import load_mounting_profile
+    mounting = load_mounting_profile(data_dir / "mounting-profile.json")
+    factory_dir = bundled_factory_calibration_dir()
+    factory = (load_mounting_profile(factory_dir / "mounting-profile.json")
+               if factory_dir is not None else None)
+    previous_calibration = mounting is not None and mounting != factory
+    InterfacePreferences(setup_complete=previous_calibration).save(preferences_path)
     return True
 
 

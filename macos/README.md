@@ -1,4 +1,10 @@
-# Codex Whip 产品版 2.2.88 for macOS
+# Codex Whip 产品版 2.2.89 for macOS
+
+## 2.2.89 Mac 端语音打包与首次引导修复
+
+Mac 安装包现在附带独立的 HTTPS 根证书和已校验 SHA-256 的完整 `ggml-small-q5_1.bin` 本地识别模型。豆包连接明确使用包内 CA，不再依赖打包机器的 Homebrew OpenSSL 证书路径；云端暂时不可用时，Whisper 可以直接使用包内模型，无需在用户电脑上下载。构建缺少任一资源时会失败，避免发布不完整安装包。约 190 MB 的模型会增加安装包大小。
+
+首次启动依据 `interface-preferences.json` 中实际保存的引导状态判断，而不再依据用户数据目录是否已有日志或出厂设置。新用户连接并移动手柄后进入功能演示及方向校准；老用户已完成的引导和个人校准仍保留。
 
 ## 2.2.88 Mac 新用户默认设置与应用图标
 
@@ -56,7 +62,7 @@ API Key、本地文件路径、录音、识别日志、蓝牙设备身份、窗�
 双敲后开始录音，软件优先使用已配置的语音 API，否则使用本地 Whisper。
 识别文字保留到下一次挥鞭发送。产品界面不再包含 BlackHole 或 Codex 原生听写入口。
 
-从源码运行时，先执行 `bash macos/prepare-speech.sh` 准备 Mac 原生 Whisper（需 CMake 和 Xcode Command Line Tools）。完整打包脚本也会自动执行此步骤。首次启用本地识别时，应用下载并校验语音模型；准备完成后才能双敲录音。
+从源码运行时，先执行 `bash macos/prepare-speech.sh` 准备 Mac 原生 Whisper（需 CMake 和 Xcode Command Line Tools）。完整打包脚本也会自动执行此步骤。正式 Mac 安装包已带有本地识别模型，首次启用时无需联网下载。仅从源码直接运行、且没有模型文件时，程序才会下载并校验模型。构建时可设置 `CODEX_WHIP_WHISPER_MODEL_SOURCE` 为已有模型的路径；否则构建机从官方模型仓库下载。两种方式都会校验文件大小和 SHA-256。
 
 ## 验证
 
