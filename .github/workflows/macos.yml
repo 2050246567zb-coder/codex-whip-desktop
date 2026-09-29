@@ -20,6 +20,8 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror firmware/tests/voice_activity_test.cpp -o /tmp/voice-activity-test
           /tmp/voice-activity-test
       - name: Build native app
+        env:
+          CODEX_WHIP_DOUBAO_API_KEY: ${{ secrets.CODEX_WHIP_DOUBAO_API_KEY }}
         run: bash macos/build-macos.sh
       - name: Install test tools
         run: macos/.venv-macos/bin/python -m pip install -e 'desktop[dev]'
