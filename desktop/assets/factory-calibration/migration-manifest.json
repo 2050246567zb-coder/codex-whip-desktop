@@ -1,32 +1,52 @@
 {
   "schema_version": 1,
-  "kind": "factory-calibration",
+  "kind": "factory-defaults",
   "hardware": "XIAO nRF52840 Sense / LSM6DS3TR-C",
   "files": [
     {
       "path": "detector-profile.json",
-      "size": 527,
-      "sha256": "411717fda22f5bf7a70d8a5d40b413ecea6aad95382d63bf50aca4b49ff6c3aa"
+      "size": 546,
+      "sha256": "7bb1c4f92e205f5dc75d3e8e42b54dbbec15bc40402e64366bd803851cd7e363"
     },
     {
       "path": "double-tap-profile-v2.json",
-      "size": 27859,
-      "sha256": "6e824373bb60220de1077bc5e9fb2cb310972b80eccb5169a900d9789f21f1cc"
+      "size": 28925,
+      "sha256": "3fb1d5907f53d3092785f7c39bc6658e33fb93071dd69be570337cbfdec9a888"
+    },
+    {
+      "path": "interface-preferences.json",
+      "size": 80,
+      "sha256": "aa0c07c2c08d509d6b098d2d0c5c9419091aa617318e5ce3aafffea9675486ef"
+    },
+    {
+      "path": "message-profile.json",
+      "size": 106,
+      "sha256": "038b25d19659766a528ccd830e39a03c63eea827953655e1d69276eae357fa9e"
     },
     {
       "path": "mounting-profile.json",
-      "size": 215,
-      "sha256": "84dd4e4407a8b4a1a85e0fc1db3342fc762d1d6fe9d12cf197aa0b6cfe79ab42"
+      "size": 226,
+      "sha256": "4ab02435b59436e75b027f7459612ceaff09e4d98dcc2ee721ec045dee767c6c"
+    },
+    {
+      "path": "power-settings.json",
+      "size": 22,
+      "sha256": "aa014142a0168313a765dd1211c4c605eb3f15107ab0e1a27ec472170a5fbeca"
+    },
+    {
+      "path": "visual-settings.json",
+      "size": 129,
+      "sha256": "83a487bdf303239533810135c8871c232598697d0f0e007fd705c9d3e82251c3"
     },
     {
       "path": "voice-settings.json",
-      "size": 445,
-      "sha256": "7eb617a9548f064b3401a8483533f3da410784a725b16bb2cc8d02508e386217"
+      "size": 474,
+      "sha256": "0f2650b7da17e177774d08ad327415f8011489f67788fc7aed9d00f3b1244c7d"
     },
     {
       "path": "whip-sensitivity.json",
-      "size": 503,
-      "sha256": "0cb1093447e3677336378b53a9b16d5e8aba56a96e80be33624b13decdfe0083"
+      "size": 521,
+      "sha256": "26b096f7bc74abbd92a2117e5fe30548019a339b000011bc6414cfa0f84bbbbb"
     }
   ]
 }

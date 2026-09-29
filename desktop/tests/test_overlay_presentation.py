@@ -48,6 +48,10 @@ def test_overlay_clock_is_right_click_only_and_voice_takes_priority(overlay):
     p.render()
     p.toggle_clock()
     assert p.hero._clock_hover
+    assert p.title.cget('text') == ''  # Geometry moves before the title appears.
+    p.render()
+    p.render()
+    p.render()
     assert p.title.cget('text') == "Don't waste time on AI"
     advance_motion(p.hero)
     p.render()
@@ -67,6 +71,8 @@ def test_overlay_clock_is_right_click_only_and_voice_takes_priority(overlay):
     assert p.hero.mode == 'recognizing'
     update(p,title='测试文字',subtitle='beat it, then send',deadline=123.)
     p.render()
+    p.render()
+    p.render()
     assert p.subtitle._deadline == 123.
 
 
@@ -79,6 +85,32 @@ def test_overlay_render_item_pool_does_not_leak(overlay):
     count=len(p.canvas.find_all())
     for _ in range(30): p.render()
     assert len(p.canvas.find_all()) == count
+
+
+def test_voice_title_waits_for_overlay_shape_frames(overlay):
+    p = overlay
+    update(p,'recording','recording')
+    assert p.transition_active
+    p.render()
+    assert p.title.cget('text') == ''
+    assert p._text_wait_for_geometry == 1
+    p.render()
+    assert p.title.cget('text') == ''
+    p.render()
+    assert p.title.cget('text') == 'recording'
+
+
+def test_overlay_reuses_source_styles_between_frames(overlay):
+    p = overlay
+    update(p,'recording','recording')
+    advance_motion(p.hero, 'voice')
+    for _ in range(4): p.render()
+    assert p.items
+    sources = list(p._item_sources)
+    destinations = list(p.items)
+    p.render()
+    assert p._item_sources == sources
+    assert p.items == destinations
 
 
 @pytest.mark.parametrize('mode', ['whip','recording','recognizing','connecting','sleep'])
@@ -130,7 +162,7 @@ def test_ordinary_text_hidden_but_clock_and_voice_text_remain(overlay):
     assert p.title._old.getbbox() is None
     update(p)
     p.toggle_clock()
-    p.render()
+    for _ in range(3): p.render()
     assert all(p.canvas.itemcget(i,'state') == 'normal' for i in p.text_items)
     update(p,'recognizing','recognizing voice')
     p.render()
@@ -148,7 +180,7 @@ def test_native_text_surface_preserves_partial_alpha(overlay):
     p._native_text = FakeLayer()
     update(p,'recording','recording')
     p.title._mask = p.title._raster('Recording 录音')
-    p.render()
+    for _ in range(3): p.render()
     assert p._native_text.image is not None
     assert any(0 < a < 255 and count for count,a in
                p._native_text.image.getchannel('A').getcolors())

@@ -1,4 +1,6 @@
-> Windows 最新源码：**2.2.78**（`codex/product-windows`，仅本机，尚未上传 GitHub）；macOS 最新源码：**2.2.68**（`codex/product-macos`）。两个产品分支独立开发，固件目录保持一致。
+> Windows 产品版 **2.2.85**（`codex/product-windows`）；macOS 产品版 **2.2.87**（`codex/product-macos`）。两端独立开发，使用相同的 XIAO 固件 0.8.6。下载请到 [GitHub Releases](https://github.com/2050246567zb-coder/codex-whip-desktop/releases)，按系统选择对应安装包；不要只按数字大小选择跨平台安装包。
+
+Windows 新安装会装载经确认的出厂预设：本机挥鞭与双敲参数、方向模板、语音与发送设置、省电、音效、伤口频率及一条公开的预设消息。已有用户的设置不会被升级覆盖；“恢复默认”会备份并恢复这些预设，保留首次引导状态。蓝牙设备身份、传感器偏置、窗口位置、录音及识别日志不会随包分发。
 
 # Codex 鞭子
 

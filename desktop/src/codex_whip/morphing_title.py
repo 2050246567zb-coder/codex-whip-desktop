@@ -40,13 +40,14 @@ def blend_masks(old,new,progress):
 
 class MorphingTitle(tk.Label):
     def __init__(self,parent,reduce_motion=lambda:False,point_size=23,height=52,
-                 duration=.8,raster_only=False):
+                 duration=.8,raster_only=False,external_clock=False):
         self._ready = False
         self._timer = None
         self._reduce_motion = reduce_motion
         self._duration = duration
         self._motion = None
         self._raster_only = raster_only
+        self._external_clock = external_clock
         self._raster_size = (880,height*2)
         self._output_size = (440,height)
         self._mask = Image.new('L',self._raster_size)
@@ -158,10 +159,16 @@ class MorphingTitle(tk.Label):
              if self._motion is not None else 1.)
         self._show(blend_masks(self._old,self._new,p))
         if p<1:
-            delay = max(1,math.ceil(ACTIVE_FRAME_MS-(time.perf_counter()-started)*1000))
-            self._timer = self.after(delay,self._frame)
+            if not self._external_clock:
+                delay = max(1,math.ceil(ACTIVE_FRAME_MS-(time.perf_counter()-started)*1000))
+                self._timer = self.after(delay,self._frame)
         else:
             self._motion = None
+
+    def advance(self):
+        """Advance a raster-only title on the same tick as its overlay shape."""
+        if self._external_clock and self._motion is not None:
+            self._frame()
 
     def destroy(self):
         if self._timer:

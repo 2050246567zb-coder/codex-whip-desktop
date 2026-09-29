@@ -4,6 +4,11 @@ import pytest
 from test_interface import host, app, connected, refresh, advance_motion, ready_to_advance
 
 
+def visible_voice_art(hero):
+    return [item for item in hero.find_withtag('voice_art')
+            if hero.itemcget(item, 'state') != 'hidden']
+
+
 def test_recording_morph_reverses_from_current_pose_and_keeps_overlay_read_only(app):
     connected(app)
     ui = app.ui
@@ -30,7 +35,7 @@ def test_recording_morph_reverses_from_current_pose_and_keeps_overlay_read_only(
     hero._draw()
     assert hero._voice_amount == 0
     assert hero._display_pose != source  # Recognition now flows around an open infinity.
-    assert not hero.find_withtag('voice_art')
+    assert not visible_voice_art(hero)
     app.effects.set_sensor_pose.assert_not_called()
 
 
@@ -113,7 +118,7 @@ def test_mic_head_grows_solid_and_error_returns_directly_to_whip(app, monkeypatc
     advance_motion(hero, 'voice')
     hero._draw()
     assert hero._voice_amount == 0
-    assert not hero.find_withtag('voice_art')
+    assert not visible_voice_art(hero)
 
 
 def test_interrupt_mic_exit_uses_current_pose(app):
@@ -150,10 +155,10 @@ def test_recording_centers_head_hides_rope_and_reduced_motion_stops_ripples(app)
     assert pose.handle_start[1] > pose.handle_end[1]
     assert hero._voice_amount == 1
     assert hero._whip_drawing.cord_opacity == 0
-    assert len(hero.find_withtag('voice_art')) == 4  # Three rings + grille.
+    assert len(visible_voice_art(hero)) == 4  # Three rings + head.
     hero.reduce_motion = True
     hero._draw()
-    assert len(hero.find_withtag('voice_art')) == 1
+    assert len(visible_voice_art(hero)) == 1
 
 
 def test_mic_transition_still_runs_if_double_tap_precedes_first_idle_frame(app):

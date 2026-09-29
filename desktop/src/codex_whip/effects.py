@@ -19,7 +19,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageTk
 
 from .sensor_pose import SensorPose, SensorPoseTracker
 from .paths import user_data_dir
-from .motion_clock import ACTIVE_FRAME_MS
+from .motion_clock import ACTIVE_FRAME_MS, BACKGROUND_FRAME_MS
 
 if os.name == "nt":
     from ctypes import wintypes
@@ -2491,6 +2491,11 @@ class CodexWhipEffects:
         root = int(_user32.GetAncestor(foreground, GA_ROOT))
         return root if root in getattr(self, "_product_window_roots", ()) else None
 
+    def product_window_foreground(self, window: tk.Misc) -> bool:
+        """Whether this product window, rather than Codex, has input focus."""
+        return (os.name == 'nt'
+                and self._own_foreground_root() == self._window_handle(window))
+
     def _overlay_z_anchor(self) -> int:
         # Keep the overlay above Codex but behind our own active UI.
         return self._own_foreground_root() or HWND_TOPMOST
@@ -2901,7 +2906,10 @@ class CodexWhipEffects:
         # every frame. Do not catch up with a burst after a blocked UI thread.
         spent = (time.perf_counter() - getattr(self, "_sync_started_at", time.perf_counter())) * 1000
         presentation = getattr(self, '_presentation', None)
-        budget = (ACTIVE_FRAME_MS if getattr(presentation, 'transition_active', False) is True
+        transitioning = getattr(presentation, 'transition_active', False) is True
+        budget = (BACKGROUND_FRAME_MS if transitioning and os.name == 'nt'
+                  and self._own_foreground_root() is not None
+                  else ACTIVE_FRAME_MS if transitioning
                   else self.SYNC_INTERVAL_MS)
         delay = max(1, math.ceil(budget - spent))
         self._sync_after = self._root.after(delay, self._sync_tick)

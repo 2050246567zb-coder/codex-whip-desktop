@@ -1,0 +1,7 @@
+{
+  "schema_version": 3,
+  "strikes_per_wound": 5,
+  "wounds_enabled": true,
+  "sound_enabled": true,
+  "scare_enabled": false
+}

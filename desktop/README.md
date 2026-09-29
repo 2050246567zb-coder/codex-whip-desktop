@@ -11,7 +11,7 @@ automatically and remains in safe-listening mode until the user explicitly
 checks the live-send arm control. A packaged build can be created from the
 repository root with `scripts\build-desktop.ps1`.
 
-## Current product branch: desktop 2.2.68 / shared firmware 0.8.3
+## Current product branches: Windows 2.2.85 / macOS 2.2.87 / shared firmware 0.8.6
 
 The 2.2.68 Windows/macOS product uses the XIAO nRF52840 Sense LSM6DS3TR-C hardware
 Shock/Quiet/Duration state machine for double taps. The desktop exposes only a
@@ -37,10 +37,14 @@ assembles the complete recording before cloud/local recognition. Backpressure,
 host stalls and an unusable link end only that recording; they do not deliberately
 disconnect BLE.
 
-New installations are seeded once with the public factory calibration in
-`assets/factory-calibration`. Existing user profiles always win, so later
-recalibration is never overwritten. API keys, recordings, messages and
-device-specific sensor bias are not part of the factory profile.
+New Windows installations are seeded once with the approved public defaults in
+`assets/factory-calibration`: gesture thresholds and templates, mounting,
+voice and send preferences, power saving, feedback, and one approved message.
+Existing user files always win. The Restore Defaults action backs up and
+restores these exact presets while retaining onboarding completion. BLE device
+identity, sensor bias, window placement, recordings and logs are excluded.
+The Doubao key is injected from the GitHub Actions secret at build time, never
+committed as source.
 
 ### Historical: desktop 2.2.6 interval control (superseded)
 

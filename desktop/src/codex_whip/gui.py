@@ -31,8 +31,9 @@ from .effects import CodexWhipEffects
 from .gate import EventGate
 from .hotkeys import GlobalHotkey, HotkeyRegistrationError, parse_hotkey
 from .messages import MessageProfileStore, PromptSelector
-from .migration import (bundled_factory_calibration_dir, import_bundled_profile_once,
-                        import_factory_calibration_once)
+from .migration import (import_bundled_profile_once,
+                        import_factory_calibration_once,
+                        restore_factory_defaults as restore_bundled_defaults)
 from .models import (
     AudioChunk,
     AudioEnd,
@@ -907,32 +908,33 @@ class CodexWhipWindow:
         self.sensor_calibrate_button.configure(state="disabled", text="校准中…")
         loop.call_soon_threadsafe(processor.calibrate_sensor_neutral)
 
-    def restore_factory_direction(self) -> None:
-        """Restore only the bundled direction profile, not personal inputs."""
+    def restore_factory_defaults(self) -> None:
+        """Restore the approved public preset while preserving device-local data."""
         parent = self.ui.settings if self.ui.settings.winfo_viewable() else self.root
         if self.ui.stage == 'calibrate' or (self.processor is not None
                 and self.processor._mount_session is not None):
             messagebox.showinfo("正在校准", "请先完成或取消当前方向校准。", parent=parent)
             return
-        source = bundled_factory_calibration_dir()
-        profile = load_mounting_profile(source / "mounting-profile.json") if source else None
-        if profile is None:
-            messagebox.showerror("无法恢复默认", "安装包中没有可用的默认方向数据。", parent=parent)
-            return
         if not messagebox.askyesno(
-            "恢复默认方向", "将方向校准恢复为产品预设值？\n不会修改挥鞭、双敲、语音或发送设置。",
+            "恢复默认设置",
+            "将挥鞭、双敲、方向、语音、发送、省电、音效和消息恢复为产品预设值？\n"
+            "现有设置会备份；蓝牙身份、传感器偏置、窗口位置、录音和历史记录不会改变。\n"
+            "恢复后需要重新打开软件。",
             parent=parent,
         ):
             return
-        try:
-            save_mounting_profile(profile, self.mounting_path)
-        except OSError as exc:
-            messagebox.showerror("无法恢复默认", str(exc), parent=parent)
+        result = restore_bundled_defaults(
+            setup_complete=self.ui.preferences.setup_complete
+        )
+        if result.errors:
+            messagebox.showerror("无法恢复默认", "\n".join(result.errors), parent=parent)
             return
-        if self.worker_loop is not None and self.processor is not None:
-            self.worker_loop.call_soon_threadsafe(self.processor.set_mounting_profile, profile)
-        self.sensor_calibrate_button.configure(text="开始校准")
-        self.last_event_value.set("方向已恢复默认；请将手柄对准屏幕静止三秒完成归中。")
+        messagebox.showinfo(
+            "默认设置已恢复",
+            "已恢复产品预设并备份原设置。软件将关闭，请重新打开以加载全部设置。",
+            parent=parent,
+        )
+        self.close()
 
     def open_mount_calibration(self) -> None:
         if self.worker_loop is None or self.processor is None:
@@ -1522,6 +1524,7 @@ class CodexWhipWindow:
                             self.ui.observe('battery', {
                                 'percent': battery.percent,
                                 'charging': battery.charging,
+                                'external_power': battery.external_power,
                             })
                     elif message.kind == 'TAPCFG' and len(message.fields) >= 2:
                         if message.fields[0] == 'OK':

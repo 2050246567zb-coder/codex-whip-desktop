@@ -1017,6 +1017,26 @@ def test_sync_frame_advances_pose_once_without_duplicate_draw(monkeypatch):
     effect._presentation.render.assert_called_once()
 
 
+def test_sync_hides_codex_overlay_when_another_app_has_focus():
+    from unittest.mock import Mock
+    effect = object.__new__(CodexWhipEffects)
+    effect._sync_started_at = 100.
+    effect._target_hwnd = 1
+    effect._target_available = lambda: False
+    effect.disarm_manual = Mock()
+    effect.hit_window = Mock()
+    effect.capture_window = Mock()
+    effect.window = Mock()
+    effect.damage_window = Mock()
+    effect._presentation = Mock()
+    effect._hide_scare = Mock()
+    effect._schedule_sync = Mock()
+    effect._sync_tick()
+    effect.window.withdraw.assert_called_once()
+    effect._presentation.hide.assert_called_once()
+    effect.hit_window.withdraw.assert_called_once()
+
+
 def test_kinematic_grip_stops_exactly_while_rope_keeps_settling():
     physics = CartoonWhipPhysics((500, 100))
     for index in range(30):

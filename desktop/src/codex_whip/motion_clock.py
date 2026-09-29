@@ -3,6 +3,9 @@ from dataclasses import dataclass
 
 
 ACTIVE_FRAME_MS = 12
+# Tk timers on Windows often round to a roughly 16 ms tick; this schedules
+# background transitions at about 30 FPS while the foreground view stays fast.
+BACKGROUND_FRAME_MS = 25
 
 
 class RenderClock:

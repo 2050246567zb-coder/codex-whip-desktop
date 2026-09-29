@@ -52,7 +52,7 @@ class SandCountdownTitle(MorphingTitle):
         if self._sand_timer is not None:
             self.after_cancel(self._sand_timer)
             self._sand_timer = None
-        if deadline is not None:
+        if deadline is not None and not self._external_clock:
             self._sand_tick()
 
     def _show(self, mask):

@@ -23,12 +23,12 @@ from .interface_state import InterfacePreferences
 from .mount_profile import load_mounting_profile
 from .paths import user_data_dir
 from . import __version__
-from .effects import CodexWhipEffects, WhipPose
+from .effects import CartoonWhipPhysics, CodexWhipEffects, WhipPose
 from .whip_drawing import WhipDrawing, SupersampledWhipDrawing
 from .gear_button import GearButton
 from .battery_indicator import BatteryIndicator
 from .morphing_title import MorphingTitle
-from .motion_clock import ACTIVE_FRAME_MS, MotionFrameTrace, RenderClock
+from .motion_clock import ACTIVE_FRAME_MS, BACKGROUND_FRAME_MS, MotionFrameTrace, RenderClock
 from .presentation_timeline import PresentationFrame, PresentationTimeline
 from .sand_countdown import SandCountdownTitle
 from .hover_clock import clock_pose, morph, ease, near_whip, project, project_pose, pointer_tilt, loading_pose, recognizing_pose, sleep_pose, question_pose, cord_rotation
@@ -44,10 +44,10 @@ BLUE, GREEN, RED = "#19191B", "#237C4B", "#BC3434"
 FONT = "Helvetica Neue" if sys.platform == "darwin" else "Microsoft YaHei UI"
 
 
-def asset_path(name: str) -> Path:
+def asset_path(name: str, *, group: str = "interface") -> Path:
     root = (Path(sys._MEIPASS) if getattr(sys, "frozen", False)
             else Path(__file__).resolve().parents[2])
-    return root / "assets" / "interface" / name
+    return root / "assets" / group / name
 
 
 def label(parent, text="", *, size=10, color=TEXT, bold=False, **kwargs):
@@ -76,6 +76,7 @@ class Hero(tk.Canvas):
         super().__init__(parent, width=size, height=size, bg=parent.cget("bg"),
                          highlightthickness=0)
         self.reduce_motion = reduce_motion
+        self._background_rendering = False
         self.mode = "whip"
         self._closed = False
         self._timer = None
@@ -123,6 +124,14 @@ class Hero(tk.Canvas):
         self._voice_at = -100.
         self._voice_motion = None
         self._voice_source = None
+        self._voice_rings = [self.create_oval(0,0,0,0,outline='',width=1.4,
+                                              tags='voice_art',state='hidden')
+                             for _ in range(3)]
+        for ring in self._voice_rings:
+            self.tag_lower(ring)
+        self._voice_head = self.create_line(0,0,0,0,width=2.,fill='#171717',
+                                            capstyle='round',tags='voice_art',
+                                            state='hidden')
         self._last_rendered_mode = None
         self._last_rendered_at = None
         self._motion_trace = None
@@ -130,6 +139,8 @@ class Hero(tk.Canvas):
         self._voice_scale = 1.
         self._demo_direction = None
         self._demo_at = time.monotonic()
+        self._demo_physics = None
+        self._demo_physics_at = self._demo_at
         for key, file in (("microphone", "microphone.png"),):
             with Image.open(asset_path(file)) as source:
                 self._sources[key] = source.convert("RGBA")
@@ -246,7 +257,26 @@ class Hero(tk.Canvas):
         if self.external_clock:
             return
         if not self._closed and self._timer is None:
-            self._timer = self.after(16, self._draw)
+            self._timer = self.after(
+                BACKGROUND_FRAME_MS if self._background_rendering else 16,
+                self._draw,
+            )
+
+    def set_background_rendering(self, background: bool) -> None:
+        """Keep the home preview in sync at lower cost while Codex is foreground."""
+        background = bool(background)
+        if background == self._background_rendering:
+            return
+        self._background_rendering = background
+        if isinstance(self._whip_drawing, SupersampledWhipDrawing):
+            self._whip_drawing.supersample = 2 if background else 4
+        self._preview_key = None
+        if self.external_clock or self._closed:
+            return
+        if self._timer is not None:
+            self.after_cancel(self._timer)
+            self._timer = None
+        self._timer = self.after_idle(self._draw)
 
     def set_mode(self, mode):
         if self.mode != mode:
@@ -306,6 +336,8 @@ class Hero(tk.Canvas):
         if direction != self._demo_direction:
             self._demo_direction = direction
             self._demo_at = time.monotonic()
+            self._demo_physics = None
+            self._demo_physics_at = self._demo_at
             self._preview_key = None
             self._wake()
 
@@ -319,7 +351,7 @@ class Hero(tk.Canvas):
             self._set_clock(False, force=True)
             if self.mode != 'away':
                 self._whip_drawing.hide()
-                self.delete('voice_art')
+                self.itemconfigure('voice_art', state='hidden')
                 self.delete('demo_art')
                 for item in self._clock_items + self._dial_edges + self._loading_dots:
                     self.itemconfigure(item, state='hidden')
@@ -343,7 +375,9 @@ class Hero(tk.Canvas):
         if self._closed:
             return
         self._draw_live_whip()
-        budget = 100 if self.reduce_motion else ACTIVE_FRAME_MS if self.transition_active else 16
+        budget = (100 if self.reduce_motion else
+                  BACKGROUND_FRAME_MS if self._background_rendering else
+                  ACTIVE_FRAME_MS if self.transition_active else 16)
         delay = max(1, math.ceil(budget - (time.perf_counter() - started) * 1000))
         self._timer = self.after(delay, self._draw)
     def _draw_live_whip(self):
@@ -352,7 +386,6 @@ class Hero(tk.Canvas):
             self._set_clock(False, force=True)
         if not self._preview_visible and self.mode != 'away':
             return
-        self.delete("voice_art")
         self.delete("demo_art")
         frame = self._frame_provider() if self._frame_provider else None
         if self._demo_direction:
@@ -405,18 +438,25 @@ class Hero(tk.Canvas):
                 and not self._voice_motion.complete and self._voice_target > 0):
             self._voice_source = live
         if self._demo_direction in {'up', 'right'}:
-            phase = (time.monotonic() - self._demo_at) % 2.4 / 2.4
-            amount = (1 - math.cos(math.tau * phase)) / 2
-            angle = (-.20 if self._demo_direction == 'up' else .20) * amount
-            shift_x = (w * .15 * amount) if self._demo_direction == 'right' else 0.
-            shift_y = (-h * .15 * amount) if self._demo_direction == 'up' else 0.
-            pivot = live.handle_start
-            def turn(point):
-                x, y = point[0] - pivot[0], point[1] - pivot[1]
-                return (pivot[0] + x*math.cos(angle) - y*math.sin(angle) + shift_x,
-                        pivot[1] + x*math.sin(angle) + y*math.cos(angle) + shift_y)
-            live = WhipPose(turn(live.handle_start), turn(live.handle_end),
-                            tuple(turn(point) for point in live.cord))
+            now = time.monotonic()
+            if self._demo_physics is None:
+                self._demo_physics = CartoonWhipPhysics(pose.handle_start)
+                self._demo_physics.adopt_pose(pose)
+                self._demo_physics_at = now
+            phase = (now - self._demo_at) % 2.8 / 2.8
+            amount = 0. if self.reduce_motion else (1 - math.cos(math.tau * phase)) / 2
+            dx = 130. * amount if self._demo_direction == 'right' else 0.
+            dy = -130. * amount if self._demo_direction == 'up' else 0.
+            aim = (24. if self._demo_direction == 'up' else -24.) * amount
+            demo_pose = self._demo_physics.step(
+                (pose.handle_start[0] + dx, pose.handle_start[1] + dy),
+                min(.08, max(0., now - self._demo_physics_at)),
+                aim_offset_degrees=aim,
+            )
+            self._demo_physics_at = now
+            demo_screen = (lambda point: point) if self.direct_pose else screen
+            live = WhipPose(demo_screen(demo_pose.handle_start), demo_screen(demo_pose.handle_end),
+                            tuple(demo_screen(point) for point in demo_pose.cord))
         self._update_tilt()
         target = project_pose(clock_pose(w,h,len(pose.cord)),w,h,self._tilt) if self._clock_hover else live
         if self.mode == 'connecting':
@@ -479,6 +519,7 @@ class Hero(tk.Canvas):
     def _draw_voice(self,w,h):
         alpha = self._voice_amount
         if alpha < .001:
+            self.itemconfigure('voice_art', state='hidden')
             return
         x,y = self._display_pose.handle_end
         # Audio changes ring strength, never the hand or rope physics.
@@ -491,9 +532,13 @@ class Hero(tk.Canvas):
                 opacity = alpha*(1-phase)**2*(.18+.25*level)
                 bg = self.winfo_rgb(self.cget('bg'))
                 color = '#' + ''.join(f'{round(v/257*(1-opacity)+35*opacity):02x}' for v in bg)
-                ring = self.create_oval(x-radius,y-radius,x+radius,y+radius,
-                                       outline=color,width=1.4,tags='voice_art')
-                self.tag_lower(ring)
+                ring = self._voice_rings[index]
+                self.coords(ring,x-radius,y-radius,x+radius,y+radius)
+                self.itemconfigure(ring,outline=color,
+                                   state='normal' if opacity > .001 else 'hidden')
+        else:
+            for ring in self._voice_rings:
+                self.itemconfigure(ring,state='hidden')
         # Flat black capsule: the same visual language as the cartoon handle.
         size = min(w,h)*.075
         # Grow from the existing handle tip, never fade a full-size ghost head.
@@ -501,9 +546,10 @@ class Hero(tk.Canvas):
         start = self._display_pose.handle_start
         length = max(.001, math.hypot(x-start[0], y-start[1]))
         dx,dy = (x-start[0])/length, (y-start[1])/length
-        self.create_line(x+dx*size*.65*alpha,y+dy*size*.65*alpha,
-                         x-dx*size*.15*alpha,y-dy*size*.15*alpha,width=width,
-                         fill='#171717',capstyle='round',tags='voice_art')
+        self.coords(self._voice_head,x+dx*size*.65*alpha,y+dy*size*.65*alpha,
+                    x-dx*size*.15*alpha,y-dy*size*.15*alpha)
+        self.itemconfigure(self._voice_head,width=width,state='normal')
+        self.tag_raise(self._voice_head)
 
     def _draw_loading(self,w,h):
         amount = (1. if self.reduce_motion else
@@ -579,6 +625,7 @@ class Interface:
         self._tap_done = False
         self._battery_percent = None
         self._battery_charging = False
+        self._battery_external_power = False
         self._power_state = "ACTIVE"
         self._sleep_at = 0.0
         self._tour_index = 0
@@ -600,6 +647,13 @@ class Interface:
 
     def _build_home(self):
         from .settings_style import Switch
+        if sys.platform == "win32":
+            try:
+                self._window_icon = tk.PhotoImage(
+                    file=str(asset_path("codex-whip.png", group="icon")))
+                self.root.iconphoto(True, self._window_icon)
+            except tk.TclError:
+                self._window_icon = None
         self.root.title("Codex 鞭子")
         self.root.geometry("560x660")
         self.root.minsize(500, 620)
@@ -785,7 +839,7 @@ class Interface:
                          font=(FONT, 10)).pack(anchor="w", pady=(12,0))
 
         self._calibration_action_card = style.RoundedCard(self.host, padx=24, pady=24)
-        button(self._calibration_action_card, "恢复默认", a.restore_factory_direction,
+        button(self._calibration_action_card, "恢复默认", a.restore_factory_defaults,
                primary=True).pack(side='left')
         button(self._calibration_action_card, "引导教程", self.restart_setup,
                primary=True).pack(side='left', padx=(8, 0))
@@ -1082,8 +1136,9 @@ class Interface:
         if kind == "battery":
             self._battery_percent = int(payload["percent"])
             self._battery_charging = bool(payload["charging"])
+            self._battery_external_power = bool(payload.get("external_power", self._battery_charging))
             self.battery_indicator.set_status(
-                self._battery_percent, self._battery_charging
+                self._battery_percent, self._battery_charging, self._battery_external_power
             )
         elif kind == "device" and getattr(payload, "kind", "") == "POWER" and len(payload.fields) >= 2:
             state = payload.fields[1]
@@ -1159,6 +1214,7 @@ class Interface:
             self._voice_state = ""
             self._battery_percent = None
             self._battery_charging = False
+            self._battery_external_power = False
             self._power_state = "ACTIVE"
             self.battery_indicator.set_status(None)
         elif kind == "worker_stopped":
@@ -1194,7 +1250,7 @@ class Interface:
         if current is None:
             return
         if not preview_visible:
-            timeline.mark_presented(current.key, now)
+            timeline.suspend_presentation(now)
             return
         presenter = getattr(getattr(self.app, 'effects', None), '_presentation', None)
         visual = presenter.hero if isinstance(getattr(presenter, 'hero', None), Hero) else self.hero
@@ -1219,6 +1275,13 @@ class Interface:
         effects = getattr(a, 'effects', None)
         preview_visible = (self.stage != 'ready' or sys.platform != 'win32'
                            or effects is None or bool(effects.target_active()))
+        is_product_foreground = getattr(effects, 'product_window_foreground', None)
+        self.hero.set_background_rendering(
+            sys.platform == 'win32' and self.stage == 'ready'
+            and preview_visible
+            and callable(is_product_foreground)
+            and not is_product_foreground(self.root)
+        )
         fresh = connected and time.monotonic() - self._sensor_at < 1.5
         if self.stage == "connect" and fresh:
             self.stage = "tour"
@@ -1229,6 +1292,7 @@ class Interface:
         title, subtitle, step, primary, progress = "", "", "", "", ""
         mode = "whip"
         enabled = True
+        tour_deadline = None
         if self.stage == "connect":
             step, title = "01  /  03 · 连接", "先连接你的手柄"
             subtitle = "给手柄通电，并打开电脑蓝牙。\n连接成功后，我们一起确认握持方向。"
@@ -1243,7 +1307,11 @@ class Interface:
                 mode = "whip"
             elif mode == "pending":
                 mode, title, subtitle = "whip", "识别后的文字", "beat it, then send"
-                progress = self.TOUR[self._tour_index][2]
+                now = time.monotonic()
+                self._tour_started += max(0, int((now - self._tour_started) // 10)) * 10
+                tour_deadline = self._tour_started + 10
+                remaining = max(1, math.ceil(tour_deadline - now))
+                progress = f"倒计时 {remaining:02d} 秒 · {self.TOUR[self._tour_index][2]}"
             if self.TOUR[self._tour_index][0] == "clock":
                 mode = "whip"
                 self.hero.clock_enabled = True
@@ -1351,7 +1419,8 @@ class Interface:
         home_mode = 'away' if home_away else mode
         home_title = '切回 Codex 继续' if home_away else title
         home_subtitle = '' if home_away else subtitle
-        home_deadline = None if home_away else deadline
+        home_deadline = None if home_away else (
+            tour_deadline if self.stage == 'tour' else deadline)
         clock_enabled = (
             (self.stage == "tour" and self.TOUR[self._tour_index][0] == "clock")
             or (self.stage == "ready" and preview_visible and connected

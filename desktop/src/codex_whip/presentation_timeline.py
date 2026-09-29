@@ -22,22 +22,32 @@ class PresentationTimeline:
         self.current: PresentationFrame | None = None
         self.entered_at = 0.0
         self.presented_at: float | None = None
+        self.visible_after = 0.0
         self._queued_recognizing: PresentationFrame | None = None
 
     def reset(self) -> None:
         self.current = None
         self.entered_at = 0.0
         self.presented_at = None
+        self.visible_after = 0.0
         self._queued_recognizing = None
 
     def _enter(self, frame: PresentationFrame, now: float) -> None:
         self.current = frame
         self.entered_at = now
         self.presented_at = None
+        self.visible_after = now
+
+    def suspend_presentation(self, now: float) -> None:
+        """A hidden voice state must receive a fresh visible frame before its hold."""
+        if self.current is not None and self.current.key in {"recording", "recognizing"}:
+            self.presented_at = None
+            self.visible_after = max(self.visible_after, now)
 
     def mark_presented(self, key: str, now: float) -> None:
         """The first real shape frame, rather than the event, starts the hold."""
-        if self.current is not None and self.current.key == key and self.presented_at is None:
+        if (self.current is not None and self.current.key == key
+                and self.presented_at is None and now >= self.visible_after):
             self.presented_at = now
 
     def note(self, event: str, now: float) -> None:

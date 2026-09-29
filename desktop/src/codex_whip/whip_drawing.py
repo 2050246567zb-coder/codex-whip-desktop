@@ -11,25 +11,26 @@ class WhipDrawing:
 
     def __init__(self, canvas: tk.Canvas):
         self.canvas = canvas
+        self._cord_tags = tuple(f'whip_cord_{id(self)}_{index}' for index in range(3))
         before = set(canvas.find_all())
         self._cord_outline_segments = tuple(
             self.canvas.create_line(
                 0, 0, 0, 0, fill="#000103", width=10,
-                capstyle=tk.ROUND, joinstyle=tk.ROUND
+                capstyle=tk.ROUND, joinstyle=tk.ROUND, tags=self._cord_tags[0]
             )
             for _ in range(self.RENDER_SECTIONS)
         )
         self._cord_segments = tuple(
             self.canvas.create_line(
                 0, 0, 0, 0, fill="#090B0E", width=7,
-                capstyle=tk.ROUND, joinstyle=tk.ROUND
+                capstyle=tk.ROUND, joinstyle=tk.ROUND, tags=self._cord_tags[1]
             )
             for _ in range(self.RENDER_SECTIONS)
         )
         self._cord_highlight_segments = tuple(
             self.canvas.create_line(
                 0, 0, 0, 0, fill="#30343A", width=2,
-                capstyle=tk.ROUND, joinstyle=tk.ROUND
+                capstyle=tk.ROUND, joinstyle=tk.ROUND, tags=self._cord_tags[2]
             )
             for _ in range(self.RENDER_SECTIONS)
         )
@@ -65,6 +66,7 @@ class WhipDrawing:
         self._hidden = False
         self._style_cache = {}
         self.cord_opacity = 1.0
+        self._cord_fills = (None, None, None)
 
     def _configure(self, item, **options):
         if self._style_cache.get(item) != options:
@@ -75,13 +77,14 @@ class WhipDrawing:
         """Optional home-view fade; overlay rendering keeps its existing style."""
         self.cord_opacity = max(0.0, min(1.0, float(opacity)))
         bg = self.canvas.winfo_rgb(background)
-        for items, color in ((self._cord_outline_segments, '#000103'),
-                             (self._cord_segments, '#090B0E'),
-                             (self._cord_highlight_segments, '#30343A')):
+        fills = []
+        for index, color in enumerate(('#000103', '#090B0E', '#30343A')):
             fg = self.canvas.winfo_rgb(color)
             fill = '#' + ''.join(f'{round((a*opacity+b*(1-opacity))/257):02x}' for a,b in zip(fg,bg))
-            for item in items:
-                self.canvas.itemconfigure(item, fill=fill)
+            if self._cord_fills[index] != fill:
+                self.canvas.itemconfigure(self._cord_tags[index], fill=fill)
+            fills.append(fill)
+        self._cord_fills = tuple(fills)
 
     @property
     def display_handle(self):

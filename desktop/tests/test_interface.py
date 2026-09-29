@@ -1,3 +1,4 @@
+import math
 import time
 import sys
 from types import SimpleNamespace
@@ -195,7 +196,35 @@ def ready_to_advance(ui):
     finish_title(ui.title)
     current = ui._presentation_timeline.current
     if current is not None:
-        ui._presentation_timeline.mark_presented(current.key, time.monotonic()-1.1)
+        ui._presentation_timeline.mark_presented(current.key, time.monotonic())
+        ui._presentation_timeline.presented_at -= 1.1
+
+
+def test_home_draw_timer_keeps_syncing_behind_codex_at_lower_cost(app):
+    from codex_whip.effects import CodexWhipEffects
+
+    hero = app.ui.hero
+    assert hero._timer is not None
+    hero.set_background_rendering(True)
+    assert hero._timer is not None
+    assert hero._whip_drawing.supersample == 2
+    hero.set_mode('whip')
+    advance_motion(hero)
+    app.effects.preview_frame.return_value = (CodexWhipEffects.IDLE, (0.0, 0.0))
+    hero._draw()
+    first = hero._display_pose.handle_start
+    app.effects.preview_frame.return_value = (CodexWhipEffects.IDLE, (0.3, 0.0))
+    hero._draw()
+    assert hero._display_pose.handle_start[0] > first[0]
+    assert hero._timer is not None
+    hero.set_mode('recording')
+    hero._draw()
+    assert hero._timer is not None
+    hero.set_background_rendering(False)
+    assert hero._timer is not None
+    assert hero._whip_drawing.supersample == 4
+    hero._draw()
+    assert hero._timer is not None
 
 
 def test_home_title_changes_with_clock_hover(app):
@@ -302,7 +331,14 @@ def test_home_battery_indicator_tracks_device_and_disconnect(app):
     assert app.ui.battery_indicator.color == app.ui.battery_indicator.CHARGING
     assert app.ui.battery_indicator.find_withtag('glyph')
     assert app.ui.battery_indicator.find_withtag('percentage') == ()
-    assert app.ui.battery_indicator.tooltip_text == '剩余电量 55%'
+    assert app.ui.battery_indicator.tooltip_text == '正在充电 · 剩余电量 55%'
+
+    app.emit('device', DeviceMessage('BATTERY', ('100', '0', '1'), ''))
+    app._drain_events()
+    assert not app.ui.battery_indicator.charging
+    assert app.ui.battery_indicator.external_power
+    assert app.ui.battery_indicator.color == app.ui.battery_indicator.CHARGING
+    assert app.ui.battery_indicator.tooltip_text == '已接电源 · 剩余电量 100%'
 
     app.emit('ble', 'disconnected')
     app._drain_events()
@@ -360,22 +396,29 @@ def test_settings_reopens_at_top_and_scrolls_up_over_slider(app):
     assert canvas.yview()[0] < .55
 
 
-def test_calibration_actions_restore_only_direction_and_restart_tour(app, monkeypatch):
+def test_calibration_actions_restore_all_defaults_and_restart_tour(app, monkeypatch):
     from codex_whip.mount_profile import load_mounting_profile
     connected(app)
     app.ui.open_preferences()
     original = MountingProfile((0., -1., 0.), 30., 30.)
     save_mounting_profile(original, app.mounting_path)
     monkeypatch.setattr('codex_whip.gui.messagebox.askyesno', lambda *a, **kw: True)
-    app.restore_factory_direction()
+    monkeypatch.setattr('codex_whip.gui.messagebox.showinfo', lambda *a, **kw: None)
+    real_close = app.close
+    close = Mock()
+    monkeypatch.setattr(app, 'close', close)
+    app.restore_factory_defaults()
     assert load_mounting_profile(app.mounting_path) != original
+    close.assert_called_once()
     card = app.ui._calibration_action_card
     actions = {child.cget('text'): child for child in card.winfo_children()
                if isinstance(child, tk.Button)}
-    assert {'恢复默认', '引导教程', '开始校准'} <= actions.keys()
+    assert {'恢复默认', '引导教程'} <= actions.keys()
+    assert any(text.endswith('校准') for text in actions)
     assert len({(button.winfo_height(), button.cget('bg')) for button in actions.values()}) == 1
     actions['引导教程'].invoke()
     assert app.ui.stage == 'connect'
+    monkeypatch.setattr(app, 'close', real_close)
 
 
 def test_home_preview_hides_when_codex_is_not_active(app):
@@ -396,6 +439,38 @@ def test_home_preview_hides_when_codex_is_not_active(app):
     refresh(ui)
     assert ui.hero._preview_visible
     assert ui.hero.mode == 'away'  # Finish the question-mark state first.
+
+
+def test_home_draw_resumes_for_question_mark_when_other_app_has_focus(app):
+    connected(app)
+    ui = app.ui
+    ui.stage = 'ready'
+    app.effects.product_window_foreground.return_value = False
+    app.effects.target_active.return_value = True
+    refresh(ui)
+    assert ui.hero._background_rendering  # Codex owns the foreground.
+    assert ui.hero._timer is not None  # The home whip still mirrors Codex.
+    assert ui.hero._whip_drawing.supersample == 2
+    app.effects.target_active.return_value = False
+    refresh(ui)
+    assert not ui.hero._background_rendering
+    assert ui.hero.mode == 'away'
+    assert ui.hero._timer is not None
+    ui.hero._draw_live_whip()
+    assert ui.hero._whip_drawing.visible
+
+
+def test_product_focus_keeps_both_whips_visible(app):
+    connected(app)
+    ui = app.ui
+    ui.stage = 'ready'
+    app.effects.product_window_foreground.return_value = True
+    app.effects.target_active.return_value = True
+    refresh(ui)
+    assert not ui.hero._background_rendering
+    assert ui.hero._whip_drawing.supersample == 4
+    assert ui.hero._preview_visible
+    assert ui.hero.mode == 'whip'
 
 
 def test_away_question_morphs_from_current_whip_and_back(app):
@@ -636,6 +711,42 @@ def test_first_use_tour_waits_for_arrows_and_calibration_demos_up_first(app):
     ui._mount_inline_state = 'right_ready'
     refresh(ui)
     assert ui.hero._demo_direction == 'right'
+
+
+def test_tour_pending_countdown_repeats_and_clears_on_next_page(app):
+    ui = app.ui
+    ui.stage = 'tour'
+    ui._tour_index = 5
+    ui._tour_started = time.monotonic() - 21
+    refresh(ui)
+    assert ui.subtitle.cget('text') == 'beat it, then send'
+    assert ui.subtitle._deadline > time.monotonic()
+    assert ui.progress.cget('text').startswith('倒计时 09 秒')
+    assert '超时会消失' in ui.progress.cget('text')
+    ui.next_tour()
+    refresh(ui)
+    assert ui.subtitle._deadline is None
+
+
+@pytest.mark.parametrize('direction,axis,sign', [('up', 1, -1), ('right', 0, 1)])
+def test_direction_demo_uses_rope_physics(app, direction, axis, sign):
+    from codex_whip.effects import CodexWhipEffects
+
+    hero = app.ui.hero
+    hero.set_demo(direction)
+    hero._demo_at -= .7
+    for _ in range(24):
+        hero._demo_physics_at -= 1 / 60
+        hero._draw_live_whip()
+    physics = hero._demo_physics
+    assert physics is not None
+    assert (physics.position[axis] - CodexWhipEffects.IDLE.handle_start[axis]) * sign > 15
+    current = physics.pose()
+    original = CodexWhipEffects.IDLE
+    assert abs(math.dist(current.handle_end, current.cord[-1]) -
+               math.dist(original.handle_end, original.cord[-1])) > 5
+    hero.set_demo(None)
+    assert hero._demo_physics is None
 
 
 def test_recording_pending_and_errors_render_without_changing_backend(app):

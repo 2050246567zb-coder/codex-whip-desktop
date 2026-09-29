@@ -6,9 +6,11 @@ from pathlib import Path
 
 from codex_whip import paths
 from codex_whip.migration import (
+    FACTORY_DEFAULT_FILES,
     bundled_factory_calibration_dir,
     import_factory_calibration_once,
     import_migration_data,
+    restore_factory_defaults,
 )
 
 
@@ -78,18 +80,12 @@ def test_migration_rejects_hash_mismatch(tmp_path: Path) -> None:
     assert not (target / "profile.json").exists()
 
 
-def test_factory_calibration_is_sanitized_and_verified() -> None:
+def test_factory_defaults_are_approved_and_verified() -> None:
     source = bundled_factory_calibration_dir()
     assert source is not None
     manifest = json.loads((source / "migration-manifest.json").read_text(encoding="utf-8"))
     entries = manifest["files"]
-    expected = {
-        "detector-profile.json",
-        "double-tap-profile-v2.json",
-        "mounting-profile.json",
-        "voice-settings.json",
-        "whip-sensitivity.json",
-    }
+    expected = FACTORY_DEFAULT_FILES
     assert {entry["path"] for entry in entries} == expected
     for entry in entries:
         path = source / entry["path"]
@@ -97,14 +93,20 @@ def test_factory_calibration_is_sanitized_and_verified() -> None:
         assert hashlib.sha256(path.read_bytes()).hexdigest() == entry["sha256"]
     combined = "\n".join((source / name).read_text(encoding="utf-8") for name in expected)
     assert "api_key" not in combined.lower()
-    assert "message-profile" not in combined
     assert "last-voice-recording" not in combined
     assert "E2:30:F0:9F:D1:21" not in combined
+    assert "sensor-bias" not in combined
+    assert "ble-device-preference" not in combined
+    assert "overlay-position" not in combined
     voice = json.loads((source / "voice-settings.json").read_text(encoding="utf-8"))
     assert voice["enabled"] is True
+    assert voice["precise_recognition"] is True
     assert voice["schema_version"] == 2
-    assert voice["tap_force_calibrated"] is False
-    assert voice["impact_dynamic_accel_g"] == 1.0
+    interface = json.loads((source / "interface-preferences.json").read_text(encoding="utf-8"))
+    assert interface["setup_complete"] is False
+    assert interface["send_enabled"] is True
+    messages = json.loads((source / "message-profile.json").read_text(encoding="utf-8"))
+    assert len(messages["messages"]) == 1
 
 
 def test_factory_calibration_seeds_empty_profile_and_preserves_user_data(
@@ -112,13 +114,7 @@ def test_factory_calibration_seeds_empty_profile_and_preserves_user_data(
 ) -> None:
     monkeypatch.setenv("CODEX_WHIP_DATA_DIR", str(tmp_path))
     first = import_factory_calibration_once()
-    assert set(first.imported) == {
-        "detector-profile.json",
-        "double-tap-profile-v2.json",
-        "mounting-profile.json",
-        "voice-settings.json",
-        "whip-sensitivity.json",
-    }
+    assert set(first.imported) == FACTORY_DEFAULT_FILES
     assert not first.errors
 
     custom = tmp_path / "mounting-profile.json"
@@ -126,3 +122,47 @@ def test_factory_calibration_seeds_empty_profile_and_preserves_user_data(
     second = import_factory_calibration_once()
     assert "mounting-profile.json" in second.preserved
     assert custom.read_text(encoding="utf-8") == '{"custom": true}'
+
+
+def test_restore_factory_defaults_backs_up_personal_settings_and_preserves_device_data(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "user"
+    target.mkdir()
+    (target / "interface-preferences.json").write_text(
+        '{"setup_complete": true, "send_enabled": false}', encoding="utf-8"
+    )
+    (target / "sensor-bias-profiles.json").write_text(
+        '{"devices": {"one-device": {}}}', encoding="utf-8"
+    )
+    (target / "last-voice-recording.wav").write_bytes(b"personal audio")
+    result = restore_factory_defaults(target, setup_complete=True)
+    assert not result.errors
+    assert set(result.restored) == FACTORY_DEFAULT_FILES
+    restored = json.loads((target / "interface-preferences.json").read_text(encoding="utf-8"))
+    assert restored["setup_complete"] is True
+    assert restored["send_enabled"] is True
+    assert (target / "sensor-bias-profiles.json").read_text(encoding="utf-8") == (
+        '{"devices": {"one-device": {}}}'
+    )
+    assert (target / "last-voice-recording.wav").read_bytes() == b"personal audio"
+    assert result.backup is not None
+    backup = json.loads(
+        (result.backup / "interface-preferences.json").read_text(encoding="utf-8")
+    )
+    assert backup["send_enabled"] is False
+
+
+def test_restore_factory_defaults_rejects_tampered_bundle(tmp_path: Path) -> None:
+    source = bundled_factory_calibration_dir()
+    assert source is not None
+    fake = tmp_path / "bundle"
+    fake.mkdir()
+    for path in source.iterdir():
+        (fake / path.name).write_bytes(path.read_bytes())
+    (fake / "voice-settings.json").write_text('{}', encoding="utf-8")
+    target = tmp_path / "user"
+    result = restore_factory_defaults(target, setup_complete=False, source=fake)
+    assert result.errors
+    assert not result.restored
+    assert not target.exists()

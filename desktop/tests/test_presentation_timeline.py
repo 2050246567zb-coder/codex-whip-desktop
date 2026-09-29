@@ -73,3 +73,17 @@ def test_pending_clears_immediately_after_send():
     timeline = PresentationTimeline()
     assert timeline.resolve(PENDING, 0.) == PENDING
     assert timeline.resolve(WHIP, .1) == WHIP
+
+
+def test_hidden_voice_frame_waits_for_a_new_visible_frame():
+    timeline = PresentationTimeline()
+    timeline.note('recording', .1)
+    timeline.mark_presented('recording', .2)
+    timeline.note('recognizing', .3)
+    timeline.suspend_presentation(2.)
+    timeline.mark_presented('recording', 1.9)  # An old offscreen render.
+    assert timeline.presented_at is None
+    assert timeline.resolve(RECOGNIZING, 4.) == RECORDING
+    timeline.mark_presented('recording', 4.1)
+    assert timeline.resolve(RECOGNIZING, 5., visual_complete=True) == RECORDING
+    assert timeline.resolve(RECOGNIZING, 5.1, visual_complete=True) == RECOGNIZING

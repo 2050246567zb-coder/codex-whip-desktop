@@ -34,6 +34,7 @@ if ($LASTEXITCODE -ne 0) {
     --onefile `
     --windowed `
     --name $Name `
+    --icon (Join-Path $desktopRoot 'assets\icon\codex-whip.ico') `
     --paths (Join-Path $desktopRoot 'src') `
     --add-data "$(Join-Path $desktopRoot 'assets');assets" `
     --collect-all bleak `

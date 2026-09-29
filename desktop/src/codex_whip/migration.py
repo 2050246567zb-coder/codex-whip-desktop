@@ -5,7 +5,9 @@ import json
 import os
 import shutil
 import sys
+import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from .paths import user_data_dir
@@ -13,6 +15,13 @@ from .paths import user_data_dir
 
 MIGRATION_MANIFEST = "migration-manifest.json"
 FACTORY_CALIBRATION_DIRECTORY = "factory-calibration"
+FACTORY_DEFAULT_FILES = frozenset({
+    "detector-profile.json", "double-tap-profile-v2.json",
+    "interface-preferences.json", "message-profile.json",
+    "mounting-profile.json", "power-settings.json",
+    "visual-settings.json", "voice-settings.json",
+    "whip-sensitivity.json",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +29,13 @@ class MigrationResult:
     source: Path | None
     imported: tuple[str, ...]
     preserved: tuple[str, ...]
+    errors: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FactoryRestoreResult:
+    restored: tuple[str, ...]
+    backup: Path | None
     errors: tuple[str, ...]
 
 
@@ -145,9 +161,83 @@ def import_bundled_profile_once() -> MigrationResult:
 
 
 def import_factory_calibration_once() -> MigrationResult:
-    """Seed a new user profile without replacing later user calibration."""
+    """Seed approved defaults without replacing any existing user choices."""
 
     source = bundled_factory_calibration_dir()
     if source is None:
         return MigrationResult(None, (), (), ())
     return import_migration_data(source)
+
+
+def restore_factory_defaults(
+    destination: Path | None = None,
+    *,
+    setup_complete: bool,
+    source: Path | None = None,
+) -> FactoryRestoreResult:
+    """Restore verified defaults, preserving onboarding and device-local data.
+
+    Existing settings are backed up before replacement. A failure during the
+    replacement phase rolls back changed files from their in-memory originals.
+    """
+    source = source or bundled_factory_calibration_dir()
+    if source is None:
+        return FactoryRestoreResult((), None, ("安装包中没有出厂预设",))
+    target_root = destination or user_data_dir()
+    try:
+        manifest = json.loads((source / MIGRATION_MANIFEST).read_text(encoding="utf-8"))
+        entries = manifest["files"]
+        if manifest.get("schema_version") != 1 or not isinstance(entries, list):
+            raise ValueError("出厂预设清单格式无效")
+        if {entry["path"] for entry in entries} != FACTORY_DEFAULT_FILES:
+            raise ValueError("出厂预设文件不完整或包含未批准的数据")
+        payloads: dict[str, bytes] = {}
+        for entry in entries:
+            name = entry["path"]
+            data = (source / name).read_bytes()
+            if (len(data) != int(entry["size"])
+                    or hashlib.sha256(data).hexdigest() != entry["sha256"]):
+                raise ValueError(f"出厂预设校验失败：{name}")
+            payloads[name] = data
+        interface = json.loads(payloads["interface-preferences.json"])
+        interface["setup_complete"] = bool(setup_complete)
+        payloads["interface-preferences.json"] = (
+            json.dumps(interface, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        return FactoryRestoreResult((), None, (str(exc),))
+
+    backup = (target_root / "factory-backups"
+              / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}")
+    originals: dict[str, bytes | None] = {}
+    changed: list[str] = []
+    try:
+        backup.mkdir(parents=True, exist_ok=False)
+        for name in sorted(payloads):
+            path = target_root / name
+            old = path.read_bytes() if path.exists() else None
+            originals[name] = old
+            if old is not None:
+                (backup / name).write_bytes(old)
+        for name, data in sorted(payloads.items()):
+            path = target_root / name
+            temporary = path.with_suffix(path.suffix + ".restoring")
+            temporary.write_bytes(data)
+            temporary.replace(path)
+            changed.append(name)
+    except OSError as exc:
+        for name in reversed(changed):
+            path = target_root / name
+            previous = originals[name]
+            try:
+                if previous is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    rollback = path.with_suffix(path.suffix + ".rollback")
+                    rollback.write_bytes(previous)
+                    rollback.replace(path)
+            except OSError:
+                pass  # The backup remains available for manual recovery.
+        return FactoryRestoreResult((), backup if backup.exists() else None,
+                                    (str(exc),))
+    return FactoryRestoreResult(tuple(changed), backup, ())

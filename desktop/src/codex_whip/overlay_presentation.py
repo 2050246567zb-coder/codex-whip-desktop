@@ -30,10 +30,14 @@ class OverlayPresentation:
                 f'绘制 P95 {report.draw_p95_ms} ms')
         self.hero.place(x=0,y=0,width=400,height=400)
         self.title = MorphingTitle(self.host, point_size=16, duration=1.0,
-                                   raster_only=True)
+                                   raster_only=True, external_clock=True)
         self.subtitle = SandCountdownTitle(self.host, point_size=10,height=40,
-                                           raster_only=True)
+                                           raster_only=True, external_clock=True)
         self.items = []
+        self._item_sources = []
+        self._item_styles = []
+        self._item_coords = []
+        self._text_wait_for_geometry = 0
         self.text_items = [self.canvas.create_image(0,0,anchor='n') for _ in range(2)]
         self.photos = [None,None]
         self.text_keys = [None,None]
@@ -68,7 +72,8 @@ class OverlayPresentation:
 
     @property
     def transition_active(self):
-        return self.hero.transition_active or not self.title.animation_complete
+        return (self.hero.transition_active or self._text_wait_for_geometry > 0
+                or not self.title.animation_complete)
 
     @property
     def transition_complete(self):
@@ -82,8 +87,9 @@ class OverlayPresentation:
         self.hero._clock_alpha = self.hero._voice_amount = 0.
         self.hero._voice_from = 0.
         self.hero._voice_at = time.monotonic()+.35
-        for _,item in self.items:
+        for index,(_,item) in enumerate(self.items):
             self.canvas.itemconfigure(item,state='hidden')
+            self._item_styles[index]['state'] = 'hidden'
 
     def frame(self):
         pose = self.effects._preview_pose
@@ -93,11 +99,14 @@ class OverlayPresentation:
         return WhipPose(local(pose.handle_start),local(pose.handle_end),tuple(map(local,pose.cord))), (0.,0.)
 
     def update(self, *, mode, title, subtitle, deadline, clock_enabled, reduce_motion, level):
+        mode_changed = mode != self.hero.mode
         self.hero.reduce_motion = reduce_motion
         self.hero.clock_enabled = clock_enabled
         if not clock_enabled:
             self.hero._set_clock(False, force=True)
         self.hero.set_mode(mode)
+        if mode_changed:
+            self._text_wait_for_geometry = 0 if reduce_motion else 2
         self.hero.audio_level(level)
         # The home hover clock does not open the overlay clock.
         self.normal_title = '' if title == "Don't waste time on AI" else title
@@ -110,7 +119,8 @@ class OverlayPresentation:
     def toggle_clock(self):
         if self.hero.clock_enabled and self.hero.mode == 'whip':
             self.hero._set_clock(not self.hero._clock_hover)
-            self.title.configure(text="Don't waste time on AI" if self.hero._clock_hover else self.normal_title)
+            self._requested_title = "Don't waste time on AI" if self.hero._clock_hover else self.normal_title
+            self._text_wait_for_geometry = 0 if self.hero.reduce_motion else 2
         return 'break'
 
     def render(self, cursor=None):
@@ -122,9 +132,6 @@ class OverlayPresentation:
             self.hero._draw_live_whip()
         else:
             self.hero._display_pose = self.frame()[0]
-        self.title.configure(text=self._requested_title)
-        self.subtitle.configure(text=self._requested_subtitle)
-        self.subtitle.set_countdown(self._requested_deadline)
         ox,oy = self.offset
         pose = self.hero._display_pose
         if pose is None:
@@ -141,22 +148,53 @@ class OverlayPresentation:
                 continue
             if slot == len(self.items):
                 self.items.append((kind, getattr(self.canvas,'create_'+kind)(0,0, *( (0,0) if kind!='text' else ()))))
+                self._item_sources.append(None)
+                self._item_styles.append({})
+                self._item_coords.append(None)
             elif self.items[slot][0] != kind:
                 self.canvas.delete(self.items[slot][1])
                 self.items[slot] = (kind,getattr(self.canvas,'create_'+kind)(0,0,*((0,0) if kind!='text' else ())))
+                self._item_sources[slot] = None
+                self._item_styles[slot] = {}
+                self._item_coords[slot] = None
             dest = self.items[slot][1]
-            coords = self.hero.coords(source)
-            self.canvas.coords(dest,*[v+(ox if i%2==0 else oy) for i,v in enumerate(coords)])
-            names = ('fill','width','capstyle','joinstyle','smooth') if kind=='line' else (
-                ('fill','outline','width') if kind=='oval' else ('fill','text','font','anchor'))
+            coords = tuple(v+(ox if i%2==0 else oy) for i,v in enumerate(self.hero.coords(source)))
+            if coords != self._item_coords[slot]:
+                self.canvas.coords(dest,*coords)
+                self._item_coords[slot] = coords
+            if self._item_sources[slot] != source:
+                self._item_sources[slot] = source
+                self._item_styles[slot] = {}
+                static_names = ('capstyle','joinstyle','smooth') if kind=='line' else (
+                    ('font','anchor') if kind=='text' else ())
+                if static_names:
+                    self.canvas.itemconfigure(dest,**{name:self.hero.itemcget(source,name)
+                                                      for name in static_names})
+            names = ('fill','width') if kind=='line' else (
+                ('fill','outline','width') if kind=='oval' else ('fill','text'))
             options = {name:self.hero.itemcget(source,name) for name in names}
             # Fully faded geometry must not paint a background-colored silhouette.
             invisible = options.get('fill','').lower() == BG.lower()
-            self.canvas.itemconfigure(dest,**options,state='hidden' if invisible else 'normal')
+            options['state'] = 'hidden' if invisible else 'normal'
+            changed = {name:value for name,value in options.items()
+                       if self._item_styles[slot].get(name) != value}
+            if changed:
+                self.canvas.itemconfigure(dest,**changed)
+                self._item_styles[slot].update(changed)
             self.canvas.tag_raise(dest)
             slot += 1
-        for _,item in self.items[slot:]:
-            self.canvas.itemconfigure(item,state='hidden')
+        for index in range(slot,len(self.items)):
+            if self._item_styles[index].get('state') != 'hidden':
+                self.canvas.itemconfigure(self.items[index][1],state='hidden')
+                self._item_styles[index]['state'] = 'hidden'
+        if self._text_wait_for_geometry:
+            self._text_wait_for_geometry -= 1
+        else:
+            self.title.configure(text=self._requested_title)
+            self.subtitle.configure(text=self._requested_subtitle)
+            self.subtitle.set_countdown(self._requested_deadline)
+        self.title.advance()
+        self.subtitle.advance()
         bottom = max(p[1] for p in (pose.handle_start,pose.handle_end,*pose.cord)) + oy + 20
         dial = self.hero._clock_alpha
         bottom = bottom*(1-dial)+(400+oy)*dial
