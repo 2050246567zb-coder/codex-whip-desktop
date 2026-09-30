@@ -1,4 +1,6 @@
-> Windows 产品版 **2.2.85**（`codex/product-windows`）；macOS 产品版 **2.2.87**（`codex/product-macos`）。两端独立开发，使用相同的 XIAO 固件 0.8.6。下载请到 [GitHub Releases](https://github.com/2050246567zb-coder/codex-whip-desktop/releases)，按系统选择对应安装包；不要只按数字大小选择跨平台安装包。
+> Windows 产品版 **2.2.91**（`codex/product-windows`）；macOS 产品版 **2.2.90**（`codex/product-macos`）。两端独立开发，使用相同的 XIAO 固件 0.8.6。下载请到 [GitHub Releases](https://github.com/2050246567zb-coder/codex-whip-desktop/releases)，按系统选择对应安装包；不要只按数字大小选择跨平台安装包。
+
+Windows 2.2.91 的功能演示增加“自动居中”第一页：将手柄头部对准屏幕方向，静止三秒即可自动居中；引导共九页。此更新不改变固件或已有用户设置。
 
 Windows 新安装会装载经确认的出厂预设：本机挥鞭与双敲参数、方向模板、语音与发送设置、省电、音效、伤口频率及一条公开的预设消息。已有用户的设置不会被升级覆盖；“恢复默认”会备份并恢复这些预设，保留首次引导状态。蓝牙设备身份、传感器偏置、窗口位置、录音及识别日志不会随包分发。
 

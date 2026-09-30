@@ -690,6 +690,11 @@ def test_first_use_tour_waits_for_arrows_and_calibration_demos_up_first(app):
     ui = app.ui
     refresh(ui)
     assert ui.stage == 'tour'
+    assert len(ui.TOUR) == 9
+    assert ui.TOUR[0][1] == '自动居中'
+    assert '对准屏幕方向' in ui.TOUR[0][2]
+    assert '静止三秒' in ui.TOUR[0][2]
+    assert ui.title.cget('text') == '自动居中'
     first = ui._tour_index
     ui._tour_started -= 60
     refresh(ui)
@@ -716,7 +721,7 @@ def test_first_use_tour_waits_for_arrows_and_calibration_demos_up_first(app):
 def test_tour_pending_countdown_repeats_and_clears_on_next_page(app):
     ui = app.ui
     ui.stage = 'tour'
-    ui._tour_index = 5
+    ui._tour_index = next(i for i, item in enumerate(ui.TOUR) if item[0] == 'pending')
     ui._tour_started = time.monotonic() - 21
     refresh(ui)
     assert ui.subtitle.cget('text') == 'beat it, then send'

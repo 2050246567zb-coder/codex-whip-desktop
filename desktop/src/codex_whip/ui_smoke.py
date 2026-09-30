@@ -64,6 +64,12 @@ def main(argv=None) -> int:
             app.worker_loop = Mock()
             app.ui.observe("battery", {"percent": 68, "charging": False})
             settle_and_capture("02-whip")
+            app.ui.stage = "tour"
+            app.ui._tour_index = 0
+            app.ui._render_key = None
+            settle_and_capture("02d-tour-auto-center", 1.4)
+            app.ui.stage = "ready"
+            app.ui._render_key = None
             app.ui.open_preferences("calibration")
             app.ui.settings.geometry("1060x820+100+40")
             settle_and_capture("02a-hardware-tap-settings", .3, app.ui.settings)
