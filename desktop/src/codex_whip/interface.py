@@ -189,6 +189,7 @@ class Hero(tk.Canvas):
         self._demo_physics = None
         self._demo_physics_at = self._demo_at
         self.clock_enabled = False
+        self._clock_demo = False
         self._clock_hover = False
         self._clock_started = -100.
         self._clock_source = None
@@ -241,6 +242,8 @@ class Hero(tk.Canvas):
         self._wake()
 
     def _hover_motion(self, event):
+        if self._clock_demo:
+            return
         if not self.clock_enabled or self.mode != "whip":
             self._set_clock(False)
             return
@@ -258,9 +261,21 @@ class Hero(tk.Canvas):
     def _outer_motion(self, event):
         # The expanded hit circle extends outside the canvas; use window events
         # in canvas coordinates, rather than treating canvas leave as clock exit.
-        if self._clock_hover and not self._closed:
+        if self._clock_hover and not self._closed and not self._clock_demo:
             self._hover_motion(SimpleNamespace(x=event.x_root-self.winfo_rootx(),
                                                 y=event.y_root-self.winfo_rooty()))
+
+    def set_clock_demo(self, active):
+        """Keep the onboarding clock steady regardless of pointer movement."""
+        active = bool(active)
+        if active == self._clock_demo:
+            return
+        self._clock_demo = active
+        if active:
+            self._tilt = self._tilt_from = self._tilt_target = (0., 0.)
+            self._set_clock(True)
+        else:
+            self._set_clock(False)
 
     def _retarget_tilt(self, target):
         self._update_tilt()
@@ -561,6 +576,7 @@ class Hero(tk.Canvas):
 
 class Interface:
     TOUR = (
+        ('whip', '自动居中', '请将手柄头部对准屏幕方向，静止三秒；手柄会自动居中。'),
         ('connecting', '正在连接', '连接手柄时会看到旋转的圆环与三个圆点。'),
         ('whip', '方向跟随', '转动手柄，屏幕上的鞭子会跟着转向。'),
         ('strike', '挥鞭抽打', '快速挥动手柄，会播放抽打动画与反馈。'),
@@ -1217,10 +1233,6 @@ class Interface:
                 progress = f"倒计时 {remaining:02d} 秒 · {self.TOUR[self._tour_index][2]}"
             if self.TOUR[self._tour_index][0] == "clock":
                 mode = "whip"
-                self.hero.clock_enabled = True
-                self.hero._set_clock(True)
-            else:
-                self.hero._set_clock(False)
         elif self.stage == "calibrate":
             calibration = {
                 "neutral": (1, "鞭绳端对着屏幕", "按平时使用的姿势握住手柄；轻微手抖没关系。", "我握好了"),
@@ -1300,6 +1312,12 @@ class Interface:
             '请打开 Mac 蓝牙', '请授权蓝牙访问'
         } else '切回 Codex 继续')
         home_subtitle = subtitle if codex_foreground else ''
+        tour_clock = self.stage == "tour" and self.TOUR[self._tour_index][0] == "clock"
+        self.hero.clock_enabled = (
+            tour_clock or (self.stage == "ready" and codex_foreground and connected
+                           and not self._pending and mode == 'whip')
+        )
+        self.hero.set_clock_demo(tour_clock)
         key = (self.stage, self._tour_index, self._mount_inline_state,
                home_title, home_subtitle, step, primary, progress, enabled,
                a.ble_value.get(), a.mode_value.get(), home_mode, self._pending,
@@ -1317,10 +1335,6 @@ class Interface:
                 (tour_deadline or self._pending_until)
                 if home_subtitle == 'beat it, then send' else None)
             self.step_label.configure(text=step)
-            self.hero.clock_enabled = (
-                self.stage == "tour" and self.TOUR[self._tour_index][0] == "clock"
-            ) or (self.stage == "ready" and codex_foreground and connected
-                  and not self._pending and mode == 'whip')
             demo = (self._mount_inline_state.removesuffix('_ready')
                     if self.stage == 'calibrate' and self._mount_inline_state in {'up_ready', 'right_ready'}
                     else 'strike' if self.stage == 'tour' and self.TOUR[self._tour_index][0] == 'strike'

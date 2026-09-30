@@ -38,6 +38,22 @@ def test_clock_tilts_and_exits_when_pointer_is_far(app):
     assert all(hero.itemcget(i,'state')=='hidden' for i in hero._dial_edges)
 
 
+def test_tour_clock_stays_fixed_when_pointer_moves_outside_canvas(app):
+    hero = app.ui.hero
+    hero.clock_enabled = True
+    hero.set_mode('whip')
+    hero.set_clock_demo(True)
+    start = hero._clock_started
+    hero._hover_motion(SimpleNamespace(x=hero.winfo_width() * 2,
+                                       y=hero.winfo_height() * 2))
+    hero._outer_motion(SimpleNamespace(x_root=0, y_root=0))
+    assert hero._clock_hover
+    assert hero._clock_started == start
+    assert hero._tilt_target == (0., 0.)
+    hero.set_clock_demo(False)
+    assert not hero._clock_hover
+
+
 def test_visual_error_does_not_stop_whip_event_pump(app):
     import asyncio
     import threading
@@ -499,8 +515,12 @@ def test_first_use_tour_waits_for_arrows_and_calibration_demos_up_first(app):
     ui = app.ui
     refresh(ui)
     assert ui.stage == "tour"
-    assert ui.TOUR[0][0] == "connecting"
-    assert ui.TOUR[1][0] == "whip"
+    assert len(ui.TOUR) == 9
+    assert ui.TOUR[0][1] == "自动居中"
+    assert "对准屏幕方向" in ui.TOUR[0][2]
+    assert "静止三秒" in ui.TOUR[0][2]
+    assert ui.TOUR[1][0] == "connecting"
+    assert ui.TOUR[2][0] == "whip"
     assert ui._tour_index == 0
     ui._tour_started -= 20
     refresh(ui)
@@ -525,7 +545,7 @@ def test_first_use_tour_waits_for_arrows_and_calibration_demos_up_first(app):
 def test_tour_pending_countdown_repeats_and_explains_expiry(app):
     ui = app.ui
     ui.stage = "tour"
-    ui._tour_index = 5
+    ui._tour_index = next(i for i, item in enumerate(ui.TOUR) if item[0] == "pending")
     ui._tour_started = time.monotonic() - 21
     refresh(ui)
     assert ui.subtitle.cget("text") == "beat it, then send"

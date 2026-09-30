@@ -116,13 +116,23 @@ def main(argv=None) -> int:
             fake_effects.target_active.return_value = True
             settle_and_capture("02-return-to-codex", .35)
             app.ui.stage = "tour"
-            app.ui._tour_index = 5
+            app.ui._tour_index = 0
+            app.ui._render_key = None
+            settle_and_capture("02c-tour-auto-center")
+            app.ui._tour_index = next(
+                i for i, item in enumerate(app.ui.TOUR) if item[0] == "pending"
+            )
             app.ui._tour_started = time.monotonic()
             app.ui._render_key = None
             settle_and_capture("02d-tour-countdown")
             app.ui._tour_index = len(app.ui.TOUR) - 1
             app.ui._render_key = None
             settle_and_capture("02e-tour-final")
+            clock_started = app.ui.hero._clock_started
+            app.ui.hero._outer_motion(SimpleNamespace(x_root=0, y_root=0))
+            if not app.ui.hero._clock_hover or app.ui.hero._clock_started != clock_started:
+                report["callback_errors"].append("tour clock changed after outside pointer motion")
+            settle_and_capture("02e-tour-clock-stable", .35)
             app.ui.stage = "calibrate"
             app.ui._mount_token = "synthetic"
             app.ui._mount_inline_state = "up_ready"
