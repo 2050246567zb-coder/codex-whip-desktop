@@ -312,6 +312,35 @@ def test_idle_auto_center_keeps_rope_and_interpolation_without_persisting(tmp_pa
     assert not effect._position_path.exists()
 
 
+def test_background_auto_center_updates_neutral_without_showing_overlay(tmp_path):
+    from unittest.mock import Mock
+
+    effect = object.__new__(CodexWhipEffects)
+    effect._target_hwnd = 101
+    effect._manual_armed = False
+    effect._target_available = lambda: False
+    effect._position_path = tmp_path / 'parking.json'
+    effect._parking_position = WhipParkingPosition(.3, .4)
+    effect._sensor_pose_current = previous = SensorPose(80, 20, 3, .1)
+    effect._sensor_physics = rope = object()
+    effect._sync_damage_overlay = Mock()
+    effect._move_visual = Mock()
+    effect._draw_pose = Mock()
+
+    # Repeated three-second resets must not briefly map native overlay windows.
+    for _ in range(4):
+        effect.auto_center_sensor()
+
+    assert effect._parking_position == WhipParkingPosition(.5, .5)
+    assert effect._sensor_pose_target == SensorPose(0, 0, 0, 0, False)
+    assert effect._sensor_pose_current is previous
+    assert effect._sensor_physics is rope
+    assert not effect._position_path.exists()
+    effect._sync_damage_overlay.assert_not_called()
+    effect._move_visual.assert_not_called()
+    effect._draw_pose.assert_not_called()
+
+
 def test_idle_auto_center_does_not_take_over_mouse_whip():
     effect = object.__new__(CodexWhipEffects)
     effect._manual_armed = True
@@ -443,6 +472,7 @@ def test_sensor_position_uses_live_window_size_after_resize_and_fullscreen(
 
     effect = object.__new__(CodexWhipEffects)
     effect._target_hwnd = 123
+    effect._target_available = lambda: True
     effect._manual_armed = False
     effect._animations_enabled = False
     effect._sensor_pose_current = SensorPose(offset_x, offset_y, 0, 1, True)

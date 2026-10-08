@@ -1,4 +1,6 @@
-> Windows 产品版 **2.2.92**（`codex/product-windows`）；macOS 产品版 **2.2.90**（`codex/product-macos`）。两端独立开发，使用相同的 XIAO 固件 0.8.6。下载请到 [GitHub Releases](https://github.com/2050246567zb-coder/codex-whip-desktop/releases)，按系统选择对应安装包；不要只按数字大小选择跨平台安装包。
+> Windows 产品版 **2.2.93**（`codex/product-windows`）；macOS 产品版 **2.2.90**（`codex/product-macos`）。两端独立开发，使用相同的 XIAO 固件 0.8.6。下载请到 [GitHub Releases](https://github.com/2050246567zb-coder/codex-whip-desktop/releases)，按系统选择对应安装包；不要只按数字大小选择跨平台安装包。
+
+Windows 2.2.93 修复 Codex 和鞭子软件均在后台时，静止三秒归中会短暂闪现鞭子的问题：后台归中只更新姿态数据，覆盖层保持隐藏；切回后正常显示。
 
 Windows 2.2.92 修复开启 Codex pet 桌宠后显示“未连接”的问题：自动排除桌宠和被动工具悬浮窗，鞭子覆盖层及发送功能继续定位主聊天窗口。
 

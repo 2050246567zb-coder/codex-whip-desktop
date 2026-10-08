@@ -2985,7 +2985,10 @@ class CodexWhipEffects:
     def _sync_position(self) -> bool:
         if getattr(self, "_settings_open", False):
             return False
-        if self._target_hwnd is None:
+        if self._target_hwnd is None or not self._target_available():
+            # Recenter/calibration callbacks can reach this outside _sync_tick.
+            # Native geometry updates use SWP_SHOWWINDOW, so a hidden overlay
+            # must not be repositioned until Codex or the product UI is active.
             return False
         rectangle = _window_rectangle(self._target_hwnd)
         if rectangle is None:
