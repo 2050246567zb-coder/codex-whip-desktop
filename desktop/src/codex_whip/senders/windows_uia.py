@@ -16,6 +16,11 @@ from ..settings import CodexSettings
 from .base import SendResult
 
 
+GWL_EXSTYLE = -20
+WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_NOACTIVATE = 0x08000000
+
+
 class CodexTargetError(RuntimeError):
     pass
 
@@ -206,6 +211,8 @@ if sys.platform == "win32":
     _user32.IsWindowVisible.restype = wintypes.BOOL
     _user32.GetWindowTextLengthW.argtypes = (wintypes.HWND,)
     _user32.GetWindowTextLengthW.restype = ctypes.c_int
+    _user32.GetWindowLongW.argtypes = (wintypes.HWND, ctypes.c_int)
+    _user32.GetWindowLongW.restype = wintypes.LONG
     _user32.GetWindowThreadProcessId.argtypes = (
         wintypes.HWND,
         ctypes.POINTER(wintypes.DWORD),
@@ -290,6 +297,19 @@ class WindowsCodexSender:
         _user32.EnumWindows(collect, 0)
         return windows
 
+    @staticmethod
+    def _is_auxiliary_window(hwnd: int) -> bool:
+        """Exclude Codex pets and passive tools using native window metadata.
+
+        Pets share the main app's process, title and Chromium window class, but
+        are tool windows. Check this before UIA so the periodic overlay lookup
+        remains cheap and cannot select a pet as the message destination.
+        """
+        if sys.platform != "win32":
+            return False
+        extended_style = _user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        return bool(extended_style & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE))
+
     def _codex_windows(self) -> list[Any]:
         candidates: list[Any] = []
         desktop = self._desktop()
@@ -297,6 +317,8 @@ class WindowsCodexSender:
             try:
                 executable = psutil.Process(pid).exe()
                 if not is_target_executable(executable, self._settings):
+                    continue
+                if self._is_auxiliary_window(hwnd):
                     continue
                 window = desktop.window(handle=hwnd).wrapper_object()
                 if window.window_text().strip():

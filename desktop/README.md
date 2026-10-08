@@ -11,7 +11,7 @@ automatically and remains in safe-listening mode until the user explicitly
 checks the live-send arm control. A packaged build can be created from the
 repository root with `scripts\build-desktop.ps1`.
 
-## Current product branches: Windows 2.2.91 / macOS 2.2.90 / shared firmware 0.8.6
+## Current product branches: Windows 2.2.92 / macOS 2.2.90 / shared firmware 0.8.6
 
 The 2.2.68 Windows/macOS product uses the XIAO nRF52840 Sense LSM6DS3TR-C hardware
 Shock/Quiet/Duration state machine for double taps. The desktop exposes only a
