@@ -34,6 +34,8 @@ def main(argv=None) -> int:
               "high_rate_event_buffer_drained": False, "factory_defaults_loaded": False,
               "bundled_https_ca": False, "offline_model_ready": False,
               "settings_wheel_scroll": False, "settings_touchpad_scroll": False,
+              "settings_wheel_step_down": False, "settings_wheel_step_up": False,
+              "codex_connection_status": False,
               "new_user_tour_and_calibration": False}
     with tempfile.TemporaryDirectory(prefix="codex-whip-ui-") as data, ExitStack() as stack:
         stack.enter_context(patch.dict(os.environ, {"CODEX_WHIP_DATA_DIR": data}))
@@ -151,7 +153,7 @@ def main(argv=None) -> int:
             if root.state() != "withdrawn" or app.ui.settings.state() != "normal":
                 report["callback_errors"].append("home and settings window visibility overlap")
             canvas = app.ui._advanced_canvas
-            for sequence, delta, key in (("<MouseWheel>", -2, "settings_wheel_scroll"),
+            for sequence, delta, key in (("<MouseWheel>", -120, "settings_wheel_scroll"),
                                           ("<TouchpadScroll>", 65516, "settings_touchpad_scroll")):
                 canvas.yview_moveto(0)
                 app.arm_check.event_generate(sequence, delta=delta)
@@ -159,6 +161,21 @@ def main(argv=None) -> int:
                 report[key] = canvas.yview()[0] > 0
                 if not report[key]:
                     report["callback_errors"].append(f"{key} failed over settings control")
+            for delta, key in ((-120, "settings_wheel_step_down"),
+                               (120, "settings_wheel_step_up")):
+                canvas.yview_moveto(.3)
+                before = canvas.canvasy(0)
+                app.arm_check.event_generate("<MouseWheel>", delta=delta)
+                root.update_idletasks()
+                report[key] = abs(canvas.canvasy(0) - before + delta / 120 * 40) <= 1
+                if not report[key]:
+                    report["callback_errors"].append(f"{key} jumped instead of scrolling one notch")
+            app.emit("effect_target_auto", (True, {"handle": 42, "pid": 42}))
+            app.emit("codex_result", (False, "synthetic composer not ready"))
+            app._drain_events()
+            report["codex_connection_status"] = app.codex_value.get() == "已连接"
+            if not report["codex_connection_status"]:
+                report["callback_errors"].append("window discovery did not update Codex connection status")
             canvas.yview_moveto(0)
             app.settings_window._start_message_drag(0, SimpleNamespace())
             settle_and_capture("02a-message-drag", .2, app.ui.settings)

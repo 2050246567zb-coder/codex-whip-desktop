@@ -776,15 +776,13 @@ class CodexWhipWindow:
     def _open_permission_settings(self, permission: str) -> None:
         from . import macos_api
 
-        first_attempt = permission not in self._permission_opened
         # Record before calling external APIs: a failed call must not make
         # polling repeatedly reopen System Settings or native prompts.
         self._permission_opened.add(permission)
         try:
-            if permission == "accessibility" and first_attempt:
-                # Register this exact app with TCC. macOS only shows its native
-                # prompt once; subsequent checks use the silent status API.
-                macos_api.accessibility_trusted(prompt=True)
+            # Our guide already explains the exact app and the + fallback.
+            # Requesting the native AX prompt here opens a second, different
+            # authorization dialog alongside that guide.
             if not macos_api.open_privacy_settings(permission):
                 self._append_log("无法自动打开权限设置，请从系统设置 > 隐私与安全性中手动打开")
         except Exception as exc:
@@ -1471,7 +1469,8 @@ class CodexWhipWindow:
             self.emit("arm_result", (False, str(exc), generation))
 
     def check_codex(self) -> None:
-        self.codex_value.set("未连接")
+        if self._effect_target_handle is None:
+            self.codex_value.set("检查中")
         self.check_button.configure(state="disabled")
 
         selected = self.settings.codex
@@ -1545,6 +1544,9 @@ class CodexWhipWindow:
             if not isinstance(target, dict) or "handle" not in target:
                 return
             handle = int(target["handle"])
+            # Window presence is the connection state, including after the
+            # user grants permission. Composer readiness is checked separately.
+            self.codex_value.set("已连接")
             if handle != self._effect_target_handle:
                 self.effects.attach(handle)
                 self._effect_target_handle = handle
@@ -1555,6 +1557,7 @@ class CodexWhipWindow:
                 )
             return
 
+        self.codex_value.set("未连接")
         if str(detail) != getattr(self, "_effect_target_error", None):
             logging.getLogger(__name__).warning("Overlay target unavailable: %s", detail)
             self._effect_target_error = str(detail)
@@ -1877,7 +1880,7 @@ class CodexWhipWindow:
                         self.codex_value.set("已连接")
                         self._append_log(f"{self.settings.codex.target_app} 已就绪：PID {detail['pid']}")
                     else:
-                        self.codex_value.set("未连接")
+                        self.codex_value.set("已连接" if self._effect_target_handle is not None else "未连接")
                         self._append_log(f"{self.settings.codex.target_app} 检查：{detail}")
                 elif kind == "effect_target":
                     ok, detail = payload

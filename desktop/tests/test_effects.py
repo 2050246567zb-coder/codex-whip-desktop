@@ -495,7 +495,9 @@ def test_damage_direction_tracks_the_sensor_motion_axis(monkeypatch) -> None:
 def test_effect_target_reattaches_only_when_codex_window_changes() -> None:
     window = object.__new__(CodexWhipWindow)
     from codex_whip.settings import Settings
+    from unittest.mock import Mock
     window.settings = Settings()
+    window.codex_value = Mock()
     window._effect_target_handle = None
     window.effects = FakeEffects()
     logs: list[str] = []
@@ -508,6 +510,7 @@ def test_effect_target_reattaches_only_when_codex_window_changes() -> None:
     assert window.effects.attached == [100]
     assert window.effects.detached == 1
     assert window._effect_target_handle is None
+    assert [call.args[0] for call in window.codex_value.set.call_args_list] == ["已连接", "已连接", "未连接"]
     assert any("自动显示" in line for line in logs)
     assert any("同步隐藏" in line for line in logs)
 

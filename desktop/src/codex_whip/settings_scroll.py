@@ -1,7 +1,6 @@
 """Route wheel and Tk 9 touchpad events throughout a settings viewport."""
 from __future__ import annotations
 
-import sys
 import tkinter as tk
 
 
@@ -10,13 +9,21 @@ class SettingsScroll:
         self.window = window
         self.canvas = canvas
         self.tag = f"CodexWhipScroll{canvas}"
+        window_system = window.tk.call("tk", "windowingsystem")
+        # Aqua used +/-1 per wheel notch through Tk 8.6. Tk 8.7/9 uses
+        # +/-120, like Windows/X11; applying the old Mac multiplier jumps
+        # thousands of pixels on a single ordinary mouse-wheel event.
+        legacy_aqua = window_system == "aqua" and int(window.tk.call(
+            "package", "vcompare", window.tk.call("package", "provide", "Tk"), "8.7a0"
+        )) < 0
+        self._wheel_delta_unit = 1 if legacy_aqua else 120
         canvas.configure(yscrollincrement=1)
         window.bind_class(self.tag, "<MouseWheel>", self._wheel)
         try:
             window.bind_class(self.tag, "<TouchpadScroll>", self._touchpad)
         except tk.TclError:
             pass  # Tk 8.6 delivers touchpad gestures as MouseWheel.
-        if window.tk.call("tk", "windowingsystem") == "x11":
+        if window_system == "x11":
             window.bind_class(self.tag, "<Button-4>", lambda e: self._scroll(e, -40))
             window.bind_class(self.tag, "<Button-5>", lambda e: self._scroll(e, 40))
         # Rows created after opening settings receive the same routing tag.
@@ -34,7 +41,7 @@ class SettingsScroll:
         delta = event.delta
         if not delta:
             return None
-        pixels = -delta * (40 if sys.platform == "darwin" else 40 / 120)
+        pixels = -delta * 40 / self._wheel_delta_unit
         return self._scroll(event, pixels)
 
     def _touchpad(self, event):

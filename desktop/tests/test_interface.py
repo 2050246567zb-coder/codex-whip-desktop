@@ -254,7 +254,7 @@ def test_macos_permission_guide_opens_settings_once_and_closes_after_grant(app, 
                         lambda permission: opened.append(permission) or True)
     app.check_macos_permissions()
     assert opened == ['accessibility']
-    assert prompts == [False, True]
+    assert prompts == [False]
     assert app._permission_guide is not None
     app.check_macos_permissions()
     assert opened == ['accessibility']
@@ -288,7 +288,7 @@ def test_permission_open_exception_does_not_repeat_native_prompt(app, monkeypatc
     guide = app._permission_guide
     app.check_macos_permissions()
     assert app._permission_guide is guide
-    assert prompts.count(True) == 1
+    assert not any(prompts)
     app._dismiss_permission_guide("accessibility")
     app.check_macos_permissions()
     assert app._permission_guide is None
@@ -308,6 +308,27 @@ def test_granted_permission_does_not_reopen_guide_on_transient_status(app, monke
     app.check_macos_permissions()
     assert app._permission_guide is None
     assert opened == ["accessibility"]
+
+
+def test_codex_connection_status_recovers_with_automatic_window_discovery(app):
+    app.emit("codex_result", (False, "permission not granted yet"))
+    app._drain_events()
+    assert app.codex_value.get() == "未连接"
+    app.emit("effect_target_auto", (True, {"handle": 42, "pid": 42}))
+    app._drain_events()
+    app.ui.open_preferences()
+    assert app.codex_value.get() == "已连接"
+    app.emit("effect_target_auto", (False, "window closed"))
+    app._drain_events()
+    assert app.codex_value.get() == "未连接"
+
+
+def test_codex_composer_not_ready_does_not_hide_window_connection(app):
+    app.emit("effect_target_auto", (True, {"handle": 42, "pid": 42}))
+    app.emit("codex_result", (False, "composer not available in background"))
+    app._drain_events()
+    assert app.codex_value.get() == "已连接"
+    assert "composer not available" in app.log_text.get("1.0", "end")
 
 
 def test_initial_codex_check_failure_keeps_send_switch_enabled(app, monkeypatch):
@@ -834,7 +855,7 @@ def test_advanced_small_window_has_scrollable_content(app):
     assert app.settings_window.save_button.winfo_exists()
 
 
-@pytest.mark.parametrize("gesture,delta", [("<MouseWheel>", -2), ("<TouchpadScroll>", 65516)])
+@pytest.mark.parametrize("gesture,delta", [("<MouseWheel>", -120), ("<TouchpadScroll>", 65516)])
 @pytest.mark.parametrize("target", ["label", "switch", "text", "new_row"])
 def test_settings_scrolls_over_content_controls(app, gesture, delta, target):
     app.ui.open_preferences()
@@ -872,12 +893,28 @@ def test_settings_scrolls_long_text_internally_then_page_at_boundary(app):
     canvas = app.ui._advanced_canvas
     canvas.yview_moveto(0)
     widget.yview_moveto(0)
-    widget.event_generate("<MouseWheel>", delta=-2)
+    delta = -app.ui._settings_scroll._wheel_delta_unit
+    widget.event_generate("<MouseWheel>", delta=delta)
     assert widget.yview()[0] > 0
     assert canvas.yview()[0] == 0
     widget.yview_moveto(1)
-    widget.event_generate("<MouseWheel>", delta=-2)
+    widget.event_generate("<MouseWheel>", delta=delta)
     assert canvas.yview()[0] > 0
+
+
+@pytest.mark.parametrize("delta", [-120, 120, -240, 240, -30, 30])
+def test_settings_mouse_wheel_moves_incrementally_in_both_directions(app, delta):
+    app.ui.open_preferences()
+    app.ui.settings.geometry("970x760+10000+10000")
+    app.root.update()
+    canvas = app.ui._advanced_canvas
+    canvas.yview_moveto(.3)
+    before = canvas.canvasy(0)
+    widget = app.ui._input_heading.winfo_children()[0]
+    widget.event_generate("<MouseWheel>", delta=delta)
+    app.root.update_idletasks()
+    assert canvas.canvasy(0) - before == pytest.approx(-delta / 120 * 40, abs=1)
+    assert 0 < canvas.yview()[0] < 1 - (canvas.yview()[1] - canvas.yview()[0])
 
 
 @pytest.mark.parametrize("section", ["general", "messages", "detector", "voice", "visual", "calibration"])
