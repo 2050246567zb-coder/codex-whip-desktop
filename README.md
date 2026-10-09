@@ -2,6 +2,10 @@
 
 # Codex 鞭子
 
+## 自动安装入口
+
+请打开 [扫码安装页面](https://2050246567zb-coder.github.io/codex-whip-desktop/)，复制指令给当前 Mac 上的 Codex，并先阅读 [完整安装说明](https://2050246567zb-coder.github.io/codex-whip-desktop/INSTALL.md)。说明提供自动安装脚本，校验后将软件完整复制到 `/Applications`（无写入权限且没有该位置旧版时使用 `~/Applications`），再从固定位置启动。不要直接从 DMG 或临时目录运行后就宣布安装完成。桌面可放快捷方式；辅助功能、蓝牙及系统安全确认由用户亲自完成。安装不刷固件、不覆盖个人设置。
+
 挥动握柄后，由 XIAO nRF52840 Sense 在本地识别动作，通过 BLE 向 Windows/macOS
 发送挥动数据；电脑端去重、选择文案，再把文案提交到当前打开的
 Codex 桌面窗口。
