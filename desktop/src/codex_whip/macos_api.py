@@ -4,7 +4,9 @@ import logging
 import sys
 import threading
 import time
+from collections import deque
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -15,6 +17,7 @@ class MacOSAPIError(RuntimeError):
 
 _active_sounds: list[Any] = []
 _sound_lock = threading.Lock()
+_ax_errors: ContextVar[dict[str, int] | None] = ContextVar("ax_errors", default=None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,8 +90,43 @@ def ax_copy(element: Any, attribute: str) -> Any | None:
     result = services.AXUIElementCopyAttributeValue(element, attribute, None)
     if isinstance(result, tuple) and len(result) == 2:
         error, value = result
+        errors = _ax_errors.get()
+        if errors is not None and int(error) != int(services.kAXErrorSuccess):
+            key = f"{attribute}:{int(error)}"
+            errors[key] = errors.get(key, 0) + 1
         return value if int(error) == int(services.kAXErrorSuccess) else None
     return None
+
+
+@contextmanager
+def ax_diagnostics():
+    """Collect attribute/error counts, never attribute values or user text."""
+    errors: dict[str, int] = {}
+    token = _ax_errors.set(errors)
+    try:
+        yield errors
+    finally:
+        _ax_errors.reset(token)
+
+
+def prepare_codex_accessibility(pid: int) -> None:
+    """Ask Electron to expose its web UI; native apps may not support this."""
+    _appkit, services = _frameworks()
+    application = services.AXUIElementCreateApplication(int(pid))
+    error = services.AXUIElementSetAttributeValue(application, "AXManualAccessibility", True)
+    # Requesting the focused element also starts lazy accessibility bridges.
+    ax_copy(application, services.kAXFocusedUIElementAttribute)
+    logging.getLogger(__name__).debug("Codex AX initialization: code=%s", int(error))
+
+
+def running_app_path() -> str:
+    """Identify the actual bundle rather than recommending a different copy."""
+    from pathlib import Path
+    executable = Path(sys.executable).resolve()
+    for parent in executable.parents:
+        if parent.suffix == ".app":
+            return str(parent)
+    return str(executable)
 
 
 def ax_set(element: Any, attribute: str, value: Any) -> bool:
@@ -437,18 +475,32 @@ def escape_pressed() -> bool:
     )
 
 
-def ax_descendants(root: Any, *, maximum: int = 1800) -> list[Any]:
+def ax_descendants(root: Any, *, maximum: int = 6000,
+                   diagnostics: dict[str, Any] | None = None,
+                   prune_static_text: bool = False) -> list[Any]:
     _appkit, services = _frameworks()
-    pending = [root]
+    pending = deque([root])
+    seen = {root}
     result: list[Any] = []
+    truncated = False
     while pending and len(result) < maximum:
-        current = pending.pop(0)
+        current = pending.popleft()
+        # Conversation text can contain thousands of nested inline nodes.
+        # Editors cannot be descendants of a static-text leaf.
+        if prune_static_text and ax_copy(current, services.kAXRoleAttribute) == "AXStaticText":
+            continue
         children = ax_copy(current, services.kAXChildrenAttribute)
         for child in list(children or ()):
+            if child in seen:
+                continue
+            seen.add(child)
             result.append(child)
             pending.append(child)
             if len(result) >= maximum:
+                truncated = True
                 break
+    if diagnostics is not None:
+        diagnostics.update(nodes=len(result), truncated=truncated)
     return result
 
 

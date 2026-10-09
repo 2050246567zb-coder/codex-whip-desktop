@@ -277,6 +277,51 @@ def test_macos_permission_guide_uses_bluetooth_pane_when_denied(app, monkeypatch
     assert app._permission_guide_kind == 'bluetooth'
 
 
+def test_permission_open_exception_does_not_repeat_native_prompt(app, monkeypatch):
+    from codex_whip import macos_api
+    prompts = []
+    monkeypatch.setattr(macos_api, "accessibility_trusted", lambda *, prompt=False: prompts.append(prompt) or False)
+    def unavailable(_):
+        raise RuntimeError("settings unavailable")
+    monkeypatch.setattr(macos_api, "open_privacy_settings", unavailable)
+    app.check_macos_permissions()
+    guide = app._permission_guide
+    app.check_macos_permissions()
+    assert app._permission_guide is guide
+    assert prompts.count(True) == 1
+    app._dismiss_permission_guide("accessibility")
+    app.check_macos_permissions()
+    assert app._permission_guide is None
+
+
+def test_granted_permission_does_not_reopen_guide_on_transient_status(app, monkeypatch):
+    from codex_whip import macos_api
+    trusted = [False]
+    opened = []
+    monkeypatch.setattr(macos_api, "accessibility_trusted", lambda **_: trusted[0])
+    monkeypatch.setattr(macos_api, "bluetooth_authorization", lambda: "allowed")
+    monkeypatch.setattr(macos_api, "open_privacy_settings", lambda p: opened.append(p) or True)
+    app.check_macos_permissions()
+    trusted[0] = True
+    app.check_macos_permissions()
+    trusted[0] = False
+    app.check_macos_permissions()
+    assert app._permission_guide is None
+    assert opened == ["accessibility"]
+
+
+def test_initial_codex_check_failure_keeps_send_switch_enabled(app, monkeypatch):
+    monkeypatch.setattr("codex_whip.gui.messagebox.showwarning", lambda *a, **kw: None)
+    app.ui.stage = "ready"
+    app.ui.preferences.send_enabled = True
+    app.arm_value.set(True)
+    app.emit("arm_result", (False, "输入框暂不可读", app._arm_generation))
+    app._drain_events()
+    assert app.ui.preferences.send_enabled
+    assert app.arm_value.get()
+    assert app.armed.is_set()
+
+
 def test_home_shows_bluetooth_power_problem_instead_of_generic_loader(app):
     app.ui.stage = 'ready'
     app.emit('ble', 'bluetooth_off')
@@ -787,6 +832,52 @@ def test_advanced_small_window_has_scrollable_content(app):
     canvas.yview_moveto(1)
     app.root.update_idletasks()
     assert app.settings_window.save_button.winfo_exists()
+
+
+@pytest.mark.parametrize("gesture,delta", [("<MouseWheel>", -2), ("<TouchpadScroll>", 65516)])
+@pytest.mark.parametrize("target", ["label", "switch", "text", "new_row"])
+def test_settings_scrolls_over_content_controls(app, gesture, delta, target):
+    app.ui.open_preferences()
+    app.ui.settings.geometry("970x760+10000+10000")
+    canvas = app.ui._advanced_canvas
+    if target == "label":
+        widget = app.ui._input_heading.winfo_children()[0]
+    elif target == "switch":
+        widget = app.arm_check
+    elif target == "text":
+        widget = app.voice_text
+        app.ui._speech_panel.toggle_open()
+    else:
+        widget = tk.Label(app.ui._general_body, text="New control")
+        widget.pack()
+    app.root.update()
+    canvas.yview_moveto(0)
+    start = canvas.yview()[0]
+    try:
+        widget.event_generate(gesture, delta=delta)
+    except tk.TclError:
+        if gesture == "<TouchpadScroll>":
+            pytest.skip("Tk 8.6")
+        raise
+    app.root.update_idletasks()
+    assert canvas.yview()[0] > start
+
+
+def test_settings_scrolls_long_text_internally_then_page_at_boundary(app):
+    app.ui.open_preferences()
+    app.ui._speech_panel.toggle_open()
+    widget = app.voice_text
+    widget.insert("1.0", "\n".join(str(i) for i in range(60)))
+    app.root.update()
+    canvas = app.ui._advanced_canvas
+    canvas.yview_moveto(0)
+    widget.yview_moveto(0)
+    widget.event_generate("<MouseWheel>", delta=-2)
+    assert widget.yview()[0] > 0
+    assert canvas.yview()[0] == 0
+    widget.yview_moveto(1)
+    widget.event_generate("<MouseWheel>", delta=-2)
+    assert canvas.yview()[0] > 0
 
 
 @pytest.mark.parametrize("section", ["general", "messages", "detector", "voice", "visual", "calibration"])

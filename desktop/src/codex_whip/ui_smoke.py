@@ -33,6 +33,7 @@ def main(argv=None) -> int:
               "screenshots": [], "capture_errors": [], "callback_errors": [],
               "high_rate_event_buffer_drained": False, "factory_defaults_loaded": False,
               "bundled_https_ca": False, "offline_model_ready": False,
+              "settings_wheel_scroll": False, "settings_touchpad_scroll": False,
               "new_user_tour_and_calibration": False}
     with tempfile.TemporaryDirectory(prefix="codex-whip-ui-") as data, ExitStack() as stack:
         stack.enter_context(patch.dict(os.environ, {"CODEX_WHIP_DATA_DIR": data}))
@@ -149,6 +150,16 @@ def main(argv=None) -> int:
             settle_and_capture("02a-hardware-tap-settings", .3, app.ui.settings)
             if root.state() != "withdrawn" or app.ui.settings.state() != "normal":
                 report["callback_errors"].append("home and settings window visibility overlap")
+            canvas = app.ui._advanced_canvas
+            for sequence, delta, key in (("<MouseWheel>", -2, "settings_wheel_scroll"),
+                                          ("<TouchpadScroll>", 65516, "settings_touchpad_scroll")):
+                canvas.yview_moveto(0)
+                app.arm_check.event_generate(sequence, delta=delta)
+                root.update_idletasks()
+                report[key] = canvas.yview()[0] > 0
+                if not report[key]:
+                    report["callback_errors"].append(f"{key} failed over settings control")
+            canvas.yview_moveto(0)
             app.settings_window._start_message_drag(0, SimpleNamespace())
             settle_and_capture("02a-message-drag", .2, app.ui.settings)
             card = app.settings_window._message_cards[0]

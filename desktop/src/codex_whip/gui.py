@@ -728,6 +728,7 @@ class CodexWhipWindow:
         self._permission_guide_kind: str | None = None
         self._permission_dismissed: set[str] = set()
         self._permission_opened: set[str] = set()
+        self._permission_granted: set[str] = set()
 
         self.arm_value = tk.BooleanVar(value=False)
         self.ble_value = tk.StringVar(value="连接中")
@@ -775,19 +776,22 @@ class CodexWhipWindow:
     def _open_permission_settings(self, permission: str) -> None:
         from . import macos_api
 
+        first_attempt = permission not in self._permission_opened
+        # Record before calling external APIs: a failed call must not make
+        # polling repeatedly reopen System Settings or native prompts.
+        self._permission_opened.add(permission)
         try:
-            if permission == "accessibility" and permission not in self._permission_opened:
+            if permission == "accessibility" and first_attempt:
                 # Register this exact app with TCC. macOS only shows its native
                 # prompt once; subsequent checks use the silent status API.
                 macos_api.accessibility_trusted(prompt=True)
             if not macos_api.open_privacy_settings(permission):
                 self._append_log("无法自动打开权限设置，请从系统设置 > 隐私与安全性中手动打开")
-            self._permission_opened.add(permission)
         except Exception as exc:
             logging.getLogger(__name__).warning("Permission settings unavailable: %s", exc)
 
     def _show_permission_guide(self, permission: str) -> None:
-        if permission in self._permission_dismissed:
+        if permission in self._permission_dismissed or permission in self._permission_granted:
             return
         if self._permission_guide is not None and self._permission_guide.winfo_exists():
             if self._permission_guide_kind == permission:
@@ -797,16 +801,18 @@ class CodexWhipWindow:
 
         guide = tk.Toplevel(self.root)
         guide.title("Codex Whip 权限引导")
-        guide.geometry("530x290")
-        guide.minsize(500, 270)
+        guide.geometry("570x370")
+        guide.minsize(530, 340)
         guide.configure(bg=BG)
         guide.protocol("WM_DELETE_WINDOW", lambda: self._dismiss_permission_guide(permission))
         body = tk.Frame(guide, bg=CARD, padx=28, pady=25)
         body.pack(fill="both", expand=True, padx=18, pady=18)
         title = "开启设备控制和数据访问" if permission == "accessibility" else "开启蓝牙访问"
+        from . import macos_api
+        app_path = macos_api.running_app_path()
         steps = (
             "1. 在系统设置 > 隐私与安全性 > 设备控制和数据访问中找到 CodexWhip（旧版系统称辅助功能）。\n"
-            "2. 如果已有旧版条目却无法授权，移除旧条目，再添加 /Applications/CodexWhip.app。\n"
+            f"2. 授权当前运行的应用：{app_path}。已有失效条目时，移除后重新添加这份应用。\n"
             "3. 打开开关，返回软件；若仍未生效，请重启软件。"
             if permission == "accessibility" else
             "1. 在系统设置 > 隐私与安全性 > 蓝牙中找到 CodexWhip。\n"
@@ -817,7 +823,7 @@ class CodexWhipWindow:
         tk.Label(body, text="系统尚未授权鞭子软件使用所需的设备控制或数据访问功能。",
                  bg=CARD, fg=TEXT, font=(FONT, 10), anchor="w").pack(fill="x", pady=(12, 10))
         tk.Label(body, text=steps, bg=CARD, fg=TEXT, font=(FONT, 10),
-                 anchor="nw", justify="left", wraplength=455).pack(fill="x")
+                 anchor="nw", justify="left", wraplength=495).pack(fill="x")
         actions = tk.Frame(body, bg=CARD)
         actions.pack(side="bottom", anchor="e")
         ActionButton(actions, "稍后", lambda: self._dismiss_permission_guide(permission)).pack(side="right", padx=(8, 0))
@@ -844,13 +850,17 @@ class CodexWhipWindow:
         try:
             if not macos_api.accessibility_trusted(prompt=False):
                 missing = "accessibility"
-            elif macos_api.bluetooth_authorization() in {"denied", "restricted"}:
-                missing = "bluetooth"
             else:
-                missing = None
+                self._permission_granted.add("accessibility")
+                bluetooth = macos_api.bluetooth_authorization()
+                if bluetooth == "allowed":
+                    self._permission_granted.add("bluetooth")
+                missing = "bluetooth" if bluetooth in {"denied", "restricted"} else None
         except Exception as exc:
             logging.getLogger(__name__).warning("Permission status unavailable: %s", exc)
-            missing = None
+            # Query failure is not a grant. Keep the existing guide stable.
+            self._permission_after = self.root.after(5000, self.check_macos_permissions)
+            return
         if missing is None:
             if self._permission_guide is not None and self._permission_guide.winfo_exists():
                 self._permission_guide.destroy()
@@ -859,17 +869,9 @@ class CodexWhipWindow:
             self._permission_after = self.root.after(5000, self.check_macos_permissions)
             return
         self._show_permission_guide(missing)
-        if missing not in self._permission_opened:
+        if missing not in self._permission_opened and missing not in self._permission_granted:
             self._open_permission_settings(missing)
         self._permission_after = self.root.after(1500, self.check_macos_permissions)
-
-    def _restore_send_state(self) -> None:
-        if self.ui.stage != "ready" or not self.ui.preferences.send_enabled:
-            return
-        self.armed.set()
-        self.arm_value.set(True)
-        self.mode_value.set("实际发送已开启")
-
 
     def _restore_send_state(self) -> None:
         if self.ui.stage != "ready" or not self.ui.preferences.send_enabled:
@@ -1862,11 +1864,10 @@ class CodexWhipWindow:
                             self._append_log("Codex 有未发送草稿；识别文字将追加，普通消息不会覆盖它")
                     else:
                         logging.getLogger(__name__).warning("Codex arming failed: %s", detail)
-                        self.armed.clear()
-                        self.arm_value.set(False)
-                        self.mode_value.set("安全监听")
-                        self.ui.preferences.send_enabled = False
-                        self.ui._persist()
+                        # Keep user intent enabled across temporary AX errors.
+                        self.armed.set()
+                        self.arm_value.set(True)
+                        self.mode_value.set("发送已开启，等待 Codex 就绪")
                         self._append_log(f"无法武装：{detail}")
                         messagebox.showwarning("无法武装", str(detail))
                 elif kind == "codex_result":
@@ -2130,6 +2131,15 @@ def main() -> int:
     if "--ui-smoke" in sys.argv:
         from .ui_smoke import main as smoke_main
         return smoke_main(sys.argv[sys.argv.index("--ui-smoke") + 1:])
+    instance = None
+    if sys.platform == "darwin":
+        from .app_instance import AppInstance
+        from . import macos_api
+        instance = AppInstance(user_data_dir())
+        if not instance.acquire():
+            if instance.existing_pid is not None:
+                macos_api.activate_application(instance.existing_pid)
+            return 0
     migration = import_bundled_profile_once()
     initialize_fresh_preferences(user_data_dir())
     factory_calibration = import_factory_calibration_once()
@@ -2169,7 +2179,11 @@ def main() -> int:
         window.emit("log", f"已继承 Windows 数据：{len(migration.imported)} 个文件")
     for error in migration.errors:
         window.emit("log", f"数据继承失败：{error}")
-    root.mainloop()
+    try:
+        root.mainloop()
+    finally:
+        if instance is not None:
+            instance.close()
     return 0
 
 

@@ -845,13 +845,8 @@ class Interface:
         a.log_text = tk.Text(diagnostics, height=8, bg=BG, fg=MUTED, wrap="word",
                              relief="flat", padx=10, pady=10, font=("Consolas", 9), state="disabled")
         a.log_text.pack(fill="x")
-        def scroll_general(event):
-            if not advanced_canvas.winfo_ismapped() or event.widget.winfo_class() == 'Text':
-                return
-            if event.delta:
-                advanced_canvas.yview_scroll(-1 if event.delta > 0 else 1, 'units')
-                return 'break'
-        self.settings.bind("<MouseWheel>", scroll_general, add="+")
+        from .settings_scroll import SettingsScroll
+        self._settings_scroll = SettingsScroll(self.settings, advanced_canvas)
         style.restyle_fields(self.settings)
 
     def open_preferences(self, section="general"):
@@ -894,6 +889,7 @@ class Interface:
                 panel.pack(in_=window._content, fill='x', pady=(0,16))
         for panel in external:
             panel.lift()
+        self._settings_scroll.install(self.settings)
         self.settings.update_idletasks()
         self._resize_advanced()
         self._advanced_canvas.yview_moveto(0)

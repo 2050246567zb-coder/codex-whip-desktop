@@ -42,8 +42,10 @@ def _fake_accessibility(monkeypatch, *, value: str, placeholder: str = "Message 
 
     monkeypatch.setattr(macos_ax.sys, "platform", "darwin")
     monkeypatch.setattr(macos_api, "accessibility_trusted", lambda **_: True)
+    monkeypatch.setattr(macos_api, "prepare_codex_accessibility", lambda _pid: None)
+    monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
     monkeypatch.setattr(macos_api, "codex_windows", lambda: [window])
-    monkeypatch.setattr(macos_api, "ax_descendants", lambda _root: [composer])
+    monkeypatch.setattr(macos_api, "ax_descendants", lambda _root, **_kw: [composer])
     monkeypatch.setattr(macos_api, "_frameworks", lambda: (SimpleNamespace(), quartz))
     monkeypatch.setattr(
         macos_api,
@@ -86,6 +88,80 @@ def test_macos_placeholder_is_treated_as_empty(monkeypatch) -> None:
     ready = sender.check_ready()
 
     assert ready["composer_empty"] is True
+
+
+def test_macos_waits_for_lazy_web_accessibility_tree(monkeypatch):
+    _, composer, _ = _fake_accessibility(monkeypatch, value="")
+    snapshots = iter([[], [], [composer]])
+    monkeypatch.setattr(macos_api, "ax_descendants", lambda _root, **_kw: next(snapshots))
+    delays = []
+    monkeypatch.setattr(macos_ax.time, "sleep", delays.append)
+    assert macos_ax.MacOSCodexSender(CodexSettings()).check_ready()["composer_empty"]
+    assert delays == [.15, .35]
+
+
+@pytest.mark.parametrize("frame", [((850, 420), (170, 22)), ((250, 720), (210, 44))])
+def test_macos_finds_named_composer_in_split_view(monkeypatch, frame):
+    attrs, editor, _ = _fake_accessibility(monkeypatch, value="")
+    attrs[editor].update(position=frame[0], size=frame[1])
+    assert macos_ax.MacOSCodexSender(CodexSettings()).check_ready()["composer_empty"]
+
+
+def test_macos_refuses_search_and_offscreen_editors_without_logging_text(monkeypatch, caplog):
+    attrs, editor, _ = _fake_accessibility(monkeypatch, value="private draft")
+    attrs[editor].update(description="Search Codex", placeholder="Search", position=(250, 720))
+    monkeypatch.setattr(macos_ax.time, "sleep", lambda _: None)
+    with pytest.raises(macos_ax.CodexTargetError, match="无法识别"):
+        macos_ax.MacOSCodexSender(CodexSettings()).check_ready()
+    assert "other_editor" in caplog.text
+    assert "private draft" not in caplog.text
+    attrs[editor].update(description="Message Codex", placeholder="", position=(250, 950))
+    with pytest.raises(macos_ax.CodexTargetError, match="无法识别"):
+        macos_ax.MacOSCodexSender(CodexSettings()).check_ready()
+
+
+def test_macos_refuses_ambiguous_composers_and_truncated_tree(monkeypatch):
+    attrs, editor, window = _fake_accessibility(monkeypatch, value="")
+    second = object()
+    attrs[second] = dict(attrs[editor])
+    monkeypatch.setattr(macos_api, "ax_descendants", lambda _root, **_kw: [editor, second])
+    sender = macos_ax.MacOSCodexSender(CodexSettings())
+    with pytest.raises(macos_ax.CodexTargetError, match="不唯一"):
+        sender._composer(window)
+    attrs[second].update(position=(250, 550))
+    with pytest.raises(macos_ax.CodexTargetError, match="不唯一"):
+        sender._composer(window)
+    def truncated(_root, *, diagnostics, **_kw):
+        diagnostics.update(nodes=6000, truncated=True)
+        return [editor]
+    monkeypatch.setattr(macos_api, "ax_descendants", truncated)
+    with pytest.raises(macos_ax.CodexTargetError, match="节点过多"):
+        sender._composer(window)
+
+
+def test_macos_ax_traversal_skips_history_text_and_reports_errors(monkeypatch):
+    root, history, leaf, editor = (object() for _ in range(4))
+    children = {root: [history, editor], history: [leaf], leaf: [root]}
+    services = SimpleNamespace(kAXChildrenAttribute="children", kAXRoleAttribute="role",
+                              kAXErrorSuccess=0)
+    def copy(element, attribute, _unused):
+        if attribute == "children":
+            return (0, children[element]) if element in children else (-25212, None)
+        return (0, "AXStaticText" if element is history else "AXGroup")
+    services.AXUIElementCopyAttributeValue = copy
+    monkeypatch.setattr(macos_api, "_frameworks", lambda: (None, services))
+    stats = {}
+    with macos_api.ax_diagnostics() as errors:
+        nodes = macos_api.ax_descendants(root, diagnostics=stats, prune_static_text=True)
+    assert nodes == [history, editor]
+    assert stats == {"nodes": 2, "truncated": False}
+    assert errors == {"children:-25212": 1}
+    assert len(macos_api.ax_descendants(root)) == 3  # cyclic edge does not loop
+
+
+def test_running_app_path_reports_the_launched_copy(monkeypatch):
+    monkeypatch.setattr(macos_api.sys, "executable", "/Users/test/Desktop/CodexWhip.app/Contents/MacOS/CodexWhip")
+    assert macos_api.running_app_path() == "/Users/test/Desktop/CodexWhip.app"
 
 
 def test_macos_sender_can_arm_without_overwriting_existing_draft(monkeypatch) -> None:
@@ -185,7 +261,7 @@ def test_macos_targets_return_for_normal_message(monkeypatch) -> None:
         "role": "AXButton", "position": (980.0, 760.0), "size": (36.0, 36.0),
         "title": "Send", "description": "", "help": "",
     }
-    monkeypatch.setattr(macos_api, "ax_descendants", lambda _root: [composer, button])
+    monkeypatch.setattr(macos_api, "ax_descendants", lambda _root, **_kw: [composer, button])
     monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
     monkeypatch.setattr(macos_api, "frontmost_pid", lambda: 321)
     monkeypatch.setattr(macos_api, "ax_set", lambda *_args: True)
@@ -207,11 +283,12 @@ def test_macos_targets_return_for_normal_message(monkeypatch) -> None:
     assert "定向发送回车" in result.detail
 
 
-def test_macos_targets_return_after_physical_composer_focus_when_send_button_is_missing(monkeypatch) -> None:
+@pytest.mark.parametrize("focus_writable", [True, False])
+def test_macos_targets_return_after_physical_composer_focus_when_send_button_is_missing(monkeypatch, focus_writable) -> None:
     _fake_accessibility(monkeypatch, value="Message Codex")
     monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
     monkeypatch.setattr(macos_api, "frontmost_pid", lambda: 321)
-    monkeypatch.setattr(macos_api, "ax_set", lambda *_args: True)
+    monkeypatch.setattr(macos_api, "ax_set", lambda *_args: focus_writable)
     events = []
     @contextmanager
     def clipboard(_text):
@@ -427,7 +504,7 @@ def test_macos_dictation_stops_the_exact_button_that_started_it(monkeypatch) -> 
         "role": "AXButton", "position": (980.0, 760.0), "size": (36.0, 36.0),
         "title": "", "description": "Dictate", "help": "",
     }
-    monkeypatch.setattr(macos_api, "ax_descendants", lambda _root: [composer, button])
+    monkeypatch.setattr(macos_api, "ax_descendants", lambda _root, **_kw: [composer, button])
     monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
     monkeypatch.setattr(macos_api, "window_for_pid", lambda _pid: window)
     pressed = []

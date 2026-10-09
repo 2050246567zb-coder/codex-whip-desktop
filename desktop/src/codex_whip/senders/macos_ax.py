@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import time
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -97,31 +98,81 @@ class MacOSCodexSender:
         return _Candidate(element, role, name, value, placeholder, *frame)
 
     def _composer(self, window: macos_api.MacWindow) -> _Candidate:
-        candidates: list[tuple[float, _Candidate]] = []
-        for element in macos_api.ax_descendants(window.element):
-            candidate = self._candidate(element)
-            if candidate is None:
-                continue
-            if candidate.width < max(240, window.width * 0.25):
-                continue
-            if candidate.height < 24 or candidate.height > max(280, window.height * 0.38):
-                continue
-            center_y = candidate.top + candidate.height / 2
-            if center_y < window.top + window.height * 0.52:
-                continue
-            normalized = candidate.name.casefold()
-            score = (candidate.top + candidate.height - window.top) / max(window.height, 1) * 100
-            if any(hint.casefold() in normalized for hint in self._settings.composer_name_hints):
-                score += 250
-            if candidate.role == "AXTextArea":
-                score += 100
-            candidates.append((score, candidate))
-        candidates.sort(key=lambda item: item[0], reverse=True)
+        macos_api.prepare_codex_accessibility(window.pid)
+        # Electron can initially expose only window chrome, even with TCC
+        # permission granted. Give the renderer time to publish its AX tree.
+        for delay in (0.0, 0.15, 0.35, 0.6):
+            if delay:
+                time.sleep(delay)
+            candidate = self._scan_composer(window)
+            if candidate is not None:
+                return candidate
+        raise CodexTargetError("无法识别 Codex 消息输入框；请打开会话输入框后重试，诊断已写入运行日志")
+
+    def _scan_composer(self, window: macos_api.MacWindow) -> _Candidate | None:
+        candidates: list[_Candidate] = []
+        named_candidates: list[_Candidate] = []
+        stats: dict[str, Any] = {}
+        rejected: Counter[str] = Counter()
+        roles: Counter[str] = Counter()
+        frames = []
+        _appkit, services = macos_api._frameworks()
+        with macos_api.ax_diagnostics() as errors:
+            nodes = macos_api.ax_descendants(window.element, diagnostics=stats, prune_static_text=True)
+            for element in nodes:
+                role = str(macos_api.ax_copy(element, services.kAXRoleAttribute) or "")
+                roles[role] += 1
+                if role not in {"AXTextArea", "AXTextField"}:
+                    rejected["role"] += 1
+                    continue
+                candidate = self._candidate(element)
+                if candidate is None:
+                    rejected["frame"] += 1
+                    continue
+                frames.append((candidate.role, candidate.left, candidate.top, candidate.width, candidate.height))
+                normalized = f"{candidate.name} {candidate.placeholder}".casefold()
+                named = any(hint.casefold() in normalized for hint in self._settings.composer_name_hints)
+                center_x = candidate.left + candidate.width / 2
+                center_y = candidate.top + candidate.height / 2
+                if not (window.left <= center_x <= window.left + window.width
+                        and window.top <= center_y <= window.top + window.height):
+                    rejected["outside_window"] += 1
+                    continue
+                if any(hint in normalized for hint in ("search", "搜索", "rename", "重命名")):
+                    rejected["other_editor"] += 1
+                    continue
+                # Split views and narrow windows have smaller editors. A
+                # semantic label permits a smaller field; unlabeled fields
+                # still need the familiar lower-window text-area geometry.
+                if candidate.width < (120 if named else min(240, max(180, window.width * 0.18))):
+                    rejected["width"] += 1
+                    continue
+                if candidate.height < 18 or candidate.height > max(400, window.height * 0.55):
+                    rejected["height"] += 1
+                    continue
+                if center_y < window.top + window.height * (0.35 if named else 0.52):
+                    rejected["position"] += 1
+                    continue
+                if candidate.role == "AXTextField" and not named:
+                    rejected["unlabeled_field"] += 1
+                    continue
+                if named:
+                    named_candidates.append(candidate)
+                candidates.append(candidate)
+        logger = logging.getLogger(__name__)
+        if not candidates or stats.get("truncated"):
+            logger.warning("Codex composer AX: window=%s nodes=%s truncated=%s roles=%s rejected=%s editors=%s errors=%s",
+                           (window.left, window.top, window.width, window.height), stats.get("nodes", len(nodes)),
+                           stats.get("truncated", False), dict(roles), dict(rejected), frames[:12], errors)
+        if stats.get("truncated"):
+            # An unseen second editor must not silently defeat uniqueness.
+            raise CodexTargetError("Codex 界面节点过多，无法确认输入框唯一性；请切换到较短会话后重试")
+        candidates = named_candidates or candidates
         if not candidates:
-            raise CodexTargetError("无法识别 Codex 消息输入框")
-        if len(candidates) > 1 and abs(candidates[0][0] - candidates[1][0]) < 1:
+            return None
+        if len(candidates) > 1:
             raise CodexTargetError("Codex 消息输入框不唯一，已拒绝发送")
-        return candidates[0][1]
+        return candidates[0]
 
     @staticmethod
     def _normalized_value(candidate: _Candidate) -> str | None:
@@ -298,6 +349,9 @@ class MacOSCodexSender:
         if not prompt:
             raise CodexTargetError("没有可发送的文字")
         window = self._single_window()
+        if not macos_api.activate_application(window.pid):
+            raise CodexTargetError("macOS 拒绝激活 Codex 窗口")
+        time.sleep(0.16)
         composer = self._composer(window)
         existing = self._normalized_value(composer)
         if existing is None and (append_to_draft or self._settings.refuse_when_composer_has_text):
@@ -305,11 +359,9 @@ class MacOSCodexSender:
         if existing and not append_to_draft and self._settings.refuse_when_composer_has_text:
             raise CodexTargetError("Codex 输入框已有未发送草稿")
         _appkit, services = macos_api._frameworks()
-        if not macos_api.activate_application(window.pid):
-            raise CodexTargetError("macOS 拒绝激活 Codex 窗口")
-        time.sleep(0.16)
-        if not macos_api.ax_set(composer.element, services.kAXFocusedAttribute, True):
-            raise CodexTargetError("无法聚焦 Codex 输入框")
+        # Some web editors expose a read-only AXFocused attribute. The real
+        # click below establishes keyboard focus for those editors as well.
+        macos_api.ax_set(composer.element, services.kAXFocusedAttribute, True)
         time.sleep(0.08)
         if macos_api.frontmost_pid() != window.pid:
             raise CodexTargetError("输入前 Codex 已失去前台焦点")
