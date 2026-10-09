@@ -782,10 +782,15 @@ def sanitize_voice_transcript(text: str) -> str:
 class WhisperCppTranscriber:
     def __init__(self, runtime_dir: Path | None = None) -> None:
         self.runtime_dir = runtime_dir or default_voice_runtime_dir()
+        self._bundled_model_prepared = False
 
     @property
     def model_path(self) -> Path:
         return self.runtime_dir / MODEL_NAME
+
+    @property
+    def bundled_model_path(self) -> Path:
+        return _asset_root() / "stt" / f"whispercpp-{WHISPER_VERSION}" / MODEL_NAME
 
     @property
     def executable_path(self) -> Path:
@@ -821,7 +826,25 @@ class WhisperCppTranscriber:
             and self.model_path.stat().st_size == MODEL_SIZE
             and self.vad_model_path.is_file()
             and self.vad_model_path.stat().st_size == VAD_MODEL_SIZE
+            and (not self.bundled_model_path.is_file() or self._bundled_model_prepared)
         )
+
+    def _prepare_bundled_model(self) -> None:
+        source = self.bundled_model_path
+        if not _file_matches(source, MODEL_SIZE, MODEL_SHA256):
+            raise OSError("程序包中的语音模型缺失或校验失败，请重新安装完整版本")
+        if not _file_matches(self.model_path, MODEL_SIZE, MODEL_SHA256):
+            # Do not pass the bundle extraction path to whisper.cpp: Windows
+            # can put it under a Chinese username, which its narrow API rejects.
+            temporary = self.model_path.with_suffix(".bin.copy")
+            try:
+                shutil.copyfile(source, temporary)
+                if not _file_matches(temporary, MODEL_SIZE, MODEL_SHA256):
+                    raise OSError("语音模型复制后校验失败")
+                temporary.replace(self.model_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        self._bundled_model_prepared = True
 
     def _prepare_vad_model(self) -> None:
         source = self.bundled_vad_model_path
@@ -847,7 +870,13 @@ class WhisperCppTranscriber:
             raise FileNotFoundError("程序包中缺少 whisper.cpp 运行时")
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self._prepare_vad_model()
-        if self.model_path.is_file() and self.model_path.stat().st_size == MODEL_SIZE:
+        if self.bundled_model_path.is_file():
+            self._prepare_bundled_model()
+            return
+        # A distributed Windows app must never depend on a first-run download.
+        if getattr(sys, "frozen", False) and sys.platform == "win32":
+            raise FileNotFoundError("安装包缺少本地语音模型，请重新安装完整版本")
+        if _file_matches(self.model_path, MODEL_SIZE, MODEL_SHA256):
             return
         temporary = self.model_path.with_suffix(self.model_path.suffix + ".download")
         request = urllib.request.Request(

@@ -1,4 +1,4 @@
-> Windows 产品版 **2.2.93**（`codex/product-windows`）；macOS 产品版 **2.2.90**（`codex/product-macos`）。两端独立开发，使用相同的 XIAO 固件 0.8.6。下载请到 [GitHub Releases](https://github.com/2050246567zb-coder/codex-whip-desktop/releases)，按系统选择对应安装包；不要只按数字大小选择跨平台安装包。
+> Windows 产品版 **2.2.94**（`codex/product-windows`）；macOS 产品版 **2.2.90**（`codex/product-macos`）。两端独立开发，使用相同的 XIAO 固件 0.8.6。下载请到 [GitHub Releases](https://github.com/2050246567zb-coder/codex-whip-desktop/releases)，按系统选择对应安装包；不要只按数字大小选择跨平台安装包。
 
 Windows 2.2.93 修复 Codex 和鞭子软件均在后台时，静止三秒归中会短暂闪现鞭子的问题：后台归中只更新姿态数据，覆盖层保持隐藏；切回后正常显示。
 
@@ -7,6 +7,8 @@ Windows 2.2.92 修复开启 Codex pet 桌宠后显示“未连接”的问题：
 Windows 2.2.91 的功能演示增加“自动居中”第一页：将手柄头部对准屏幕方向，静止三秒即可自动居中；引导共九页。此更新不改变固件或已有用户设置。
 
 Windows 新安装会装载经确认的出厂预设：本机挥鞭与双敲参数、方向模板、语音与发送设置、省电、音效、伤口频率及一条公开的预设消息。已有用户的设置不会被升级覆盖；“恢复默认”会备份并恢复这些预设，保留首次引导状态。蓝牙设备身份、传感器偏置、窗口位置、录音及识别日志不会随包分发。
+
+Windows 2.2.94 内置完整 Whisper small-q5_1 识别模型，首次本地识别无需联网下载。构建前及成品 EXE 都校验模型大小与 SHA-256；运行时从包内复制到兼容中文用户名的 ProgramData 目录，并校验、修复损坏缓存。精准识别仍优先豆包，失败后回退本地。固件、出厂预设和 Mac 分支不变。
 
 # Codex 鞭子
 

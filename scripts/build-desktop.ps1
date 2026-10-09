@@ -28,6 +28,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "Installing build dependencies failed with exit code $LASTEXITCODE."
 }
 
+& $pythonPath (Join-Path $PSScriptRoot 'prepare-whisper-model.py')
+if ($LASTEXITCODE -ne 0) {
+    throw 'Preparing the bundled offline speech model failed.'
+}
+
 & $pythonPath -m PyInstaller `
     --noconfirm `
     --clean `
@@ -48,6 +53,12 @@ if ($LASTEXITCODE -ne 0) {
 
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed with exit code $LASTEXITCODE."
+}
+
+& $pythonPath (Join-Path $PSScriptRoot 'prepare-whisper-model.py') `
+    --verify-package (Join-Path $distPath ($Name + '.exe'))
+if ($LASTEXITCODE -ne 0) {
+    throw 'The built application is missing a verified offline speech model.'
 }
 
 Copy-Item -LiteralPath (Join-Path $desktopRoot 'config.example.toml') `

@@ -25,3 +25,5 @@ macos/.venv-macos/
 .env
 .env.*
 desktop/assets/private/doubao-api-key.txt
+desktop/assets/stt/whispercpp-*/ggml-small-q5_1.bin
+desktop/assets/stt/whispercpp-*/*.preparing

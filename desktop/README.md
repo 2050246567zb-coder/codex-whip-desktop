@@ -11,7 +11,7 @@ automatically and remains in safe-listening mode until the user explicitly
 checks the live-send arm control. A packaged build can be created from the
 repository root with `scripts\build-desktop.ps1`.
 
-## Current product branches: Windows 2.2.93 / macOS 2.2.90 / shared firmware 0.8.6
+## Current product branches: Windows 2.2.94 / macOS 2.2.90 / shared firmware 0.8.6
 
 The 2.2.68 Windows/macOS product uses the XIAO nRF52840 Sense LSM6DS3TR-C hardware
 Shock/Quiet/Duration state machine for double taps. The desktop exposes only a
@@ -267,8 +267,11 @@ independently decodable IMA ADPCM blocks with sequence numbers, and ends on
 silence or the configured time limit. The desktop rejects incomplete sessions,
 transcribes complete audio locally with the bundled whisper.cpp 1.8.1 runtime,
 and retains editable text as a one-shot prompt until Codex reports a successful
-send. The multilingual small-q5_1 model is downloaded once, SHA-256 checked, and
-stored under an ASCII ProgramData path for compatibility with Chinese usernames.
+send. Windows product builds from 2.2.94 bundle the multilingual small-q5_1
+model, verify it during packaging, and copy it offline into an ASCII ProgramData
+path with SHA-256 validation for compatibility with Chinese usernames. A corrupt
+cache is repaired from the bundled copy. Source-only runs without bundled assets
+can still download and verify the model once.
 The module is off by default and exposes its switch, tap thresholds, timing, and
 manual five-sample calibration in Settings > Voice Input. Calibration caches the
 latest raw IMU window without applying the old tap threshold: start learning,

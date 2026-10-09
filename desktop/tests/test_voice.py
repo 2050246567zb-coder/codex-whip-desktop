@@ -171,6 +171,104 @@ def test_bundled_vad_model_is_verified_and_copied_to_ascii_runtime(
     assert hashlib.sha256(transcriber.vad_model_path.read_bytes()).hexdigest() == VAD_MODEL_SHA256
 
 
+@pytest.fixture
+def offline_model_bundle(tmp_path, monkeypatch):
+    import codex_whip.voice as voice
+
+    assets = tmp_path / "中文安装路径" / "assets"
+    bundle = assets / "stt" / f"whispercpp-{voice.WHISPER_VERSION}"
+    bundle.mkdir(parents=True)
+    model = b"offline-model"
+    vad = b"vad-model"
+    (bundle / voice.MODEL_NAME).write_bytes(model)
+    (bundle / voice.VAD_MODEL_NAME).write_bytes(vad)
+    (bundle / "whisper-cli.exe").touch()
+    monkeypatch.setattr(voice, "_asset_root", lambda: assets)
+    monkeypatch.setattr(voice, "MODEL_SIZE", len(model))
+    monkeypatch.setattr(voice, "MODEL_SHA256", hashlib.sha256(model).hexdigest())
+    monkeypatch.setattr(voice, "VAD_MODEL_SIZE", len(vad))
+    monkeypatch.setattr(voice, "VAD_MODEL_SHA256", hashlib.sha256(vad).hexdigest())
+    monkeypatch.setattr(voice.sys, "platform", "win32")
+
+    def no_network(*args, **kwargs):
+        pytest.fail("Bundled Windows recognition must not download a model")
+
+    monkeypatch.setattr(voice.urllib.request, "urlopen", no_network)
+    return WhisperCppTranscriber(tmp_path / "runtime"), model
+
+
+def test_bundled_model_prepares_offline_in_runtime_directory(offline_model_bundle):
+    transcriber, model = offline_model_bundle
+    assert not transcriber.ready
+    transcriber.prepare()
+    assert transcriber.model_path.read_bytes() == model
+    assert transcriber.model_path.parent == transcriber.runtime_dir
+    assert transcriber.model_path != transcriber.bundled_model_path
+    assert transcriber.ready
+
+
+def test_bundled_model_repairs_same_size_corrupt_cache(offline_model_bundle):
+    transcriber, model = offline_model_bundle
+    transcriber.runtime_dir.mkdir()
+    transcriber.model_path.write_bytes(b"x" * len(model))
+    transcriber._prepare_vad_model()
+    assert not transcriber.ready
+    transcriber.prepare()
+    assert transcriber.model_path.read_bytes() == model
+    assert transcriber.ready
+
+
+def test_bundled_model_reuses_verified_cache(offline_model_bundle, monkeypatch):
+    import codex_whip.voice as voice
+
+    transcriber, model = offline_model_bundle
+    transcriber.runtime_dir.mkdir()
+    transcriber.model_path.write_bytes(model)
+    transcriber._prepare_vad_model()
+    monkeypatch.setattr(voice.shutil, "copyfile", lambda *a, **k: pytest.fail("Valid cache was copied"))
+    transcriber.prepare()
+    assert transcriber.ready
+
+
+def test_invalid_bundled_model_fails_without_network(offline_model_bundle):
+    transcriber, model = offline_model_bundle
+    transcriber.bundled_model_path.write_bytes(b"x" * len(model))
+    with pytest.raises(OSError, match="校验失败"):
+        transcriber.prepare()
+    assert not transcriber.ready
+
+
+def test_failed_model_copy_preserves_cache_and_removes_partial(offline_model_bundle, monkeypatch):
+    import codex_whip.voice as voice
+
+    transcriber, model = offline_model_bundle
+    transcriber.runtime_dir.mkdir()
+    old_cache = b"x" * len(model)
+    transcriber.model_path.write_bytes(old_cache)
+    transcriber._prepare_vad_model()
+
+    def interrupted_copy(source, target):
+        target.write_bytes(b"partial")
+        raise OSError("copy interrupted")
+
+    monkeypatch.setattr(voice.shutil, "copyfile", interrupted_copy)
+    with pytest.raises(OSError, match="interrupted"):
+        transcriber.prepare()
+    assert transcriber.model_path.read_bytes() == old_cache
+    assert not transcriber.model_path.with_suffix(".bin.copy").exists()
+    assert not transcriber.ready
+
+
+def test_frozen_windows_missing_bundle_fails_without_network(offline_model_bundle, monkeypatch):
+    import codex_whip.voice as voice
+
+    transcriber, _ = offline_model_bundle
+    transcriber.bundled_model_path.unlink()
+    monkeypatch.setattr(voice.sys, "frozen", True, raising=False)
+    with pytest.raises(FileNotFoundError, match="缺少本地语音模型"):
+        transcriber.prepare()
+
+
 class _FakeTranscriber:
     ready = True
 

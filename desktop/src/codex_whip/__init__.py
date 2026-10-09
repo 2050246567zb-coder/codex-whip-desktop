@@ -1,3 +1,3 @@
 """Codex Whip desktop companion."""
 
-__version__ = "2.2.93"
+__version__ = "2.2.94"
