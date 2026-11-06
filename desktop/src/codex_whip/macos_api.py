@@ -109,14 +109,31 @@ def ax_diagnostics():
         _ax_errors.reset(token)
 
 
-def prepare_codex_accessibility(pid: int) -> None:
-    """Ask Electron to expose its web UI; native apps may not support this."""
+def prepare_codex_accessibility(pid: int, *, enhanced: bool = False) -> None:
+    """Request the target process's AX tree, without changing TCC permissions.
+
+    Prefer Electron's manual bridge. Some native/WebKit clients expose their
+    editor only in enhanced mode; callers opt in after the normal scan fails.
+    """
     _appkit, services = _frameworks()
     application = services.AXUIElementCreateApplication(int(pid))
-    error = services.AXUIElementSetAttributeValue(application, "AXManualAccessibility", True)
+    attribute = "AXEnhancedUserInterface" if enhanced else "AXManualAccessibility"
+    # Reading the live process avoids stale PID caches and re-enables the
+    # bridge after a client restart/reset. Do not repeatedly rebuild a tree
+    # that is already enabled, which can stall Electron's UI thread.
+    before = ax_copy(application, attribute)
+    error = None
+    if not before:
+        error = int(services.AXUIElementSetAttributeValue(application, attribute, True))
+    after = ax_copy(application, attribute)
     # Requesting the focused element also starts lazy accessibility bridges.
     ax_copy(application, services.kAXFocusedUIElementAttribute)
-    logging.getLogger(__name__).debug("Codex AX initialization: code=%s", int(error))
+    # Some clients return kAXErrorNotImplemented (-25208) despite applying
+    # the attribute. Log the readback, but only a real editor scan proves ready.
+    logger = logging.getLogger(__name__)
+    log = logger.info if enhanced else logger.debug
+    log("Codex AX initialization: attribute=%s code=%s enabled=%s",
+        attribute, error, None if after is None else bool(after))
 
 
 def running_app_path() -> str:

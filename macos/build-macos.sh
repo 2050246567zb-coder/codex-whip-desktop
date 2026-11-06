@@ -82,6 +82,20 @@ PY
 
 safe_remove_tree "$DESKTOP_DIR/build/CodexWhip" "$DESKTOP_DIR/build"
 safe_remove_tree "$DESKTOP_DIR/dist/CodexWhip.app" "$DESKTOP_DIR/dist"
+# Some managed Python runtimes load an adjacent CA rejection policy when an
+# SSLContext is created. Preserve it at ssl.__file__'s frozen directory; do
+# not disable that policy or ship a bundle that fails before loading our CA.
+PYINSTALLER_DATA_ARGS=(--add-data "assets:assets")
+SSL_REJECTION_FILE="$("$VENV_DIR/bin/python" - <<'PY'
+from pathlib import Path
+import ssl
+policy = Path(ssl.__file__).with_name("codex-rejected-cas.pem")
+print(policy if policy.is_file() else "")
+PY
+)"
+if [[ -n "$SSL_REJECTION_FILE" ]]; then
+  PYINSTALLER_DATA_ARGS+=(--add-data "$SSL_REJECTION_FILE:.")
+fi
 cd "$DESKTOP_DIR"
 "$VENV_DIR/bin/pyinstaller" \
   --noconfirm \
@@ -90,7 +104,7 @@ cd "$DESKTOP_DIR"
   --name CodexWhip \
   --osx-bundle-identifier com.codexwhip.desktop \
   --icon "$DESKTOP_DIR/assets/icon/codex-whip.icns" \
-  --add-data "assets:assets" \
+  "${PYINSTALLER_DATA_ARGS[@]}" \
   --collect-submodules AppKit \
   --collect-submodules Quartz \
   --collect-submodules ApplicationServices \

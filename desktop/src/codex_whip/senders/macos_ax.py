@@ -99,14 +99,26 @@ class MacOSCodexSender:
 
     def _composer(self, window: macos_api.MacWindow) -> _Candidate:
         macos_api.prepare_codex_accessibility(window.pid)
-        # Electron can initially expose only window chrome, even with TCC
-        # permission granted. Give the renderer time to publish its AX tree.
-        for delay in (0.0, 0.15, 0.35, 0.6):
-            if delay:
-                time.sleep(delay)
-            candidate = self._scan_composer(window)
-            if candidate is not None:
-                return candidate
+        for enhanced in (False, True):
+            if enhanced:
+                macos_api.prepare_codex_accessibility(window.pid, enhanced=True)
+            # Both bridges can publish their web content asynchronously.
+            # Ambiguity/truncation errors deliberately escape this loop;
+            # enhanced mode is only a fallback for a missing editor.
+            delays = (0.0, 0.15, 0.35, 0.6, 1.0) if enhanced else (0.0, 0.15, 0.35, 0.6)
+            for delay in delays:
+                if delay:
+                    time.sleep(delay)
+                # Switching bridges can replace AX window objects. Refresh
+                # them instead of continuing to walk an obsolete shallow tree.
+                current = self._single_window() if enhanced else window
+                if current.pid != window.pid:
+                    raise CodexTargetError("Codex 在输入框初始化期间已重启，请重试")
+                candidate = self._scan_composer(current)
+                if candidate is not None:
+                    if enhanced:
+                        logging.getLogger(__name__).info("Codex composer ready via enhanced accessibility")
+                    return candidate
         raise CodexTargetError("无法识别 Codex 消息输入框；请打开会话输入框后重试，诊断已写入运行日志")
 
     def _scan_composer(self, window: macos_api.MacWindow) -> _Candidate | None:

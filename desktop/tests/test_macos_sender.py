@@ -9,6 +9,7 @@ from codex_whip import macos_api
 from codex_whip.senders import macos_ax
 from codex_whip.settings import CodexSettings
 
+_real_prepare_codex_accessibility = macos_api.prepare_codex_accessibility
 
 def _fake_accessibility(monkeypatch, *, value: str, placeholder: str = "Message Codex"):
     quartz = SimpleNamespace(
@@ -42,7 +43,7 @@ def _fake_accessibility(monkeypatch, *, value: str, placeholder: str = "Message 
 
     monkeypatch.setattr(macos_ax.sys, "platform", "darwin")
     monkeypatch.setattr(macos_api, "accessibility_trusted", lambda **_: True)
-    monkeypatch.setattr(macos_api, "prepare_codex_accessibility", lambda _pid: None)
+    monkeypatch.setattr(macos_api, "prepare_codex_accessibility", lambda _pid, **_kw: None)
     monkeypatch.setattr(macos_api, "activate_application", lambda _pid: True)
     monkeypatch.setattr(macos_api, "codex_windows", lambda: [window])
     monkeypatch.setattr(macos_api, "ax_descendants", lambda _root, **_kw: [composer])
@@ -98,6 +99,132 @@ def test_macos_waits_for_lazy_web_accessibility_tree(monkeypatch):
     monkeypatch.setattr(macos_ax.time, "sleep", delays.append)
     assert macos_ax.MacOSCodexSender(CodexSettings()).check_ready()["composer_empty"]
     assert delays == [.15, .35]
+
+
+def test_legacy_composer_does_not_request_enhanced_mode(monkeypatch):
+    _fake_accessibility(monkeypatch, value="")
+    requests = []
+    monkeypatch.setattr(macos_api, "prepare_codex_accessibility",
+                        lambda pid, **kw: requests.append((pid, kw.get("enhanced", False))))
+    assert macos_ax.MacOSCodexSender(CodexSettings()).check_ready()["composer_empty"]
+    assert requests == [(321, False)]
+
+
+def test_new_client_expands_tree_after_enhanced_request(monkeypatch):
+    _, editor, _ = _fake_accessibility(monkeypatch, value="preserved draft")
+    enabled = [False]
+    requests = []
+    def prepare(pid, *, enhanced=False):
+        requests.append((pid, enhanced))
+        if enhanced:
+            enabled[0] = True
+    monkeypatch.setattr(macos_api, "prepare_codex_accessibility", prepare)
+    monkeypatch.setattr(macos_api, "ax_descendants", lambda _root, **_kw: [editor] if enabled[0] else [])
+    monkeypatch.setattr(macos_ax.time, "sleep", lambda _: None)
+    result = macos_ax.MacOSCodexSender(CodexSettings()).check_ready()
+    assert result["composer_empty"] is False
+    assert requests == [(321, False), (321, True)]
+
+
+def test_enhanced_flag_without_an_editor_does_not_mean_ready(monkeypatch):
+    _fake_accessibility(monkeypatch, value="")
+    requests = []
+    monkeypatch.setattr(macos_api, "prepare_codex_accessibility",
+                        lambda pid, **kw: requests.append(kw.get("enhanced", False)))
+    monkeypatch.setattr(macos_api, "ax_descendants", lambda _root, **_kw: [])
+    monkeypatch.setattr(macos_ax.time, "sleep", lambda _: None)
+    with pytest.raises(macos_ax.CodexTargetError, match="无法识别"):
+        macos_ax.MacOSCodexSender(CodexSettings()).check_ready()
+    assert requests == [False, True]
+
+
+@pytest.mark.parametrize("failure", ["ambiguous", "truncated"])
+def test_enhanced_mode_keeps_uniqueness_and_traversal_limits(monkeypatch, failure):
+    attrs, editor, _ = _fake_accessibility(monkeypatch, value="")
+    second = object()
+    attrs[second] = dict(attrs[editor])
+    enabled = [False]
+    def prepare(_pid, *, enhanced=False):
+        enabled[0] = enhanced
+    def nodes(_root, *, diagnostics, **_kw):
+        if not enabled[0]:
+            return []
+        if failure == "truncated":
+            diagnostics.update(nodes=6000, truncated=True)
+            return [editor]
+        return [editor, second]
+    monkeypatch.setattr(macos_api, "prepare_codex_accessibility", prepare)
+    monkeypatch.setattr(macos_api, "ax_descendants", nodes)
+    monkeypatch.setattr(macos_ax.time, "sleep", lambda _: None)
+    with pytest.raises(macos_ax.CodexTargetError, match="不唯一|节点过多"):
+        macos_ax.MacOSCodexSender(CodexSettings()).check_ready()
+
+
+def test_enhanced_initialization_checks_readback_and_reinitializes_new_process(monkeypatch):
+    prepare = _real_prepare_codex_accessibility
+    state = {}
+    writes = []
+    def set_value(app, key, value):
+        writes.append((app, key, value))
+        state[app] = value
+        return -25208  # The report's client applies the change despite this code.
+    services = SimpleNamespace(AXUIElementCreateApplication=lambda pid: pid,
+        AXUIElementSetAttributeValue=set_value, kAXFocusedUIElementAttribute="focus")
+    monkeypatch.setattr(macos_api, "_frameworks", lambda: (None, services))
+    monkeypatch.setattr(macos_api, "ax_copy", lambda app, key: state.get(app) if key == "AXEnhancedUserInterface" else None)
+    prepare(321, enhanced=True)
+    prepare(321, enhanced=True)
+    prepare(654, enhanced=True)
+    assert writes == [(321, "AXEnhancedUserInterface", True), (654, "AXEnhancedUserInterface", True)]
+
+
+def test_reported_native_client_nonzero_codes_still_reveal_readable_draft(monkeypatch):
+    attrs, editor, _ = _fake_accessibility(monkeypatch, value="draft kept intact")
+    _, services = macos_api._frameworks()
+    application = object()
+    attrs[application] = {}
+    services.AXUIElementCreateApplication = lambda _pid: application
+    services.kAXFocusedUIElementAttribute = "focus"
+    writes = []
+    def set_value(app, key, value):
+        writes.append(key)
+        if key == "AXEnhancedUserInterface":
+            attrs[app][key] = value
+            return -25208
+        return -25205
+    services.AXUIElementSetAttributeValue = set_value
+    monkeypatch.setattr(macos_api, "prepare_codex_accessibility", _real_prepare_codex_accessibility)
+    monkeypatch.setattr(macos_api, "ax_descendants", lambda _root, **_kw:
+                        [editor] if attrs[application].get("AXEnhancedUserInterface") else [])
+    monkeypatch.setattr(macos_ax.time, "sleep", lambda _: None)
+    def forbidden(*_a, **_kw):
+        pytest.fail("Readiness check must not focus, activate or send")
+    for name in ("activate_application", "post_left_click", "post_command_paste", "post_return_to_pid", "ax_set"):
+        monkeypatch.setattr(macos_api, name, forbidden)
+    result = macos_ax.MacOSCodexSender(CodexSettings()).check_ready()
+    assert result["composer_empty"] is False
+    assert attrs[editor]["value"] == "draft kept intact"
+    assert writes == ["AXManualAccessibility", "AXEnhancedUserInterface"]
+
+
+def test_enhanced_bridge_replaces_window_tree_and_publishes_late(monkeypatch):
+    _, editor, window = _fake_accessibility(monkeypatch, value="")
+    new_root = object()
+    new_window = macos_api.MacWindow(window.pid, window.title, window.left, window.top,
+                                   window.width, window.height, new_root)
+    enabled = [False]
+    enhanced_scans = [0]
+    monkeypatch.setattr(macos_api, "prepare_codex_accessibility",
+                        lambda _pid, enhanced=False: enabled.__setitem__(0, enhanced))
+    monkeypatch.setattr(macos_api, "codex_windows", lambda: [new_window if enabled[0] else window])
+    def descendants(root, **_kw):
+        if root is not new_root:
+            return []
+        enhanced_scans[0] += 1
+        return [editor] if enhanced_scans[0] == 5 else []
+    monkeypatch.setattr(macos_api, "ax_descendants", descendants)
+    monkeypatch.setattr(macos_ax.time, "sleep", lambda _: None)
+    assert macos_ax.MacOSCodexSender(CodexSettings()).check_ready()["composer_empty"]
 
 
 @pytest.mark.parametrize("frame", [((850, 420), (170, 22)), ((250, 720), (210, 44))])
